@@ -847,7 +847,7 @@ graph TB
 
 Replace static API key authentication with [RFC 8628 OAuth Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628). Three key constraints:
 
-1. **TTS code readout**: A dedicated TTS service generates an audio recording of the authorization code, which the device plays through its speaker. The user hears the code and authorizes it in their browser — no screen needed on the device.
+1. **TTS code readout**: A dedicated TTS service generates an audio recording of the authorization code, which the device plays through its speaker. The user hears the code and authorizes it in their browser — no screen needed on the device. **Hardware note**: This requires a speaker and I2S amplifier (e.g. MAX98357A) connected to the ESP32-S3. The XIAO ESP32-S3 dev board does not include audio output hardware, so TTS playback is limited to custom board designs that add the amplifier and speaker.
 
 2. **Flash storage for tokens**: Refresh tokens are stored in ESP32 flash memory (persists across restarts and power failures), **not** on the SD card. SD cards are removable and less secure; flash is soldered to the board.
 
