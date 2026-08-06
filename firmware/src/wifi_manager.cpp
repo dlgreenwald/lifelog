@@ -17,6 +17,7 @@ void wifiManagerTask(void *pvParameters) {
     while (true) {
         if (WiFi.status() != WL_CONNECTED) {
             xEventGroupClearBits(wifiEvent, WIFI_CONNECTED_BIT);
+            Serial.printf("[WIFI] Disconnected (status=%d)\n", WiFi.status());
             vTaskDelay(pdMS_TO_TICKS(reconnectDelay));
             reconnectDelay = (reconnectDelay * 2 > 30000) ? 30000 : reconnectDelay * 2;
             WiFi.begin(WIFI_SSID, WIFI_PASSWORD);

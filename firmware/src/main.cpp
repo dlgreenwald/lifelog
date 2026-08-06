@@ -1,8 +1,11 @@
 #include <Arduino.h>
+#include <SPI.h>
+#include <SD.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include <freertos/event_groups.h>
+#include <driver/i2s.h>
 #include "config.h"
 #include "audio_capture.h"
 #include "opus_encoder.h"
@@ -37,6 +40,7 @@ void initSDCard() {
     // Create lifelog directory if not exists
     if (!SD.exists("/lifelog")) {
         SD.mkdir("/lifelog");
+        Serial.println("[SD] Created /lifelog directory");
     }
 }
 
@@ -62,9 +66,17 @@ void initI2SMic() {
         .data_in_num = I2S_MIC_SD
     };
     
-    i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
-    i2s_set_pin(I2S_NUM_0, &pin_config);
-    Serial.println("[I2S] Mic initialized");
+    esp_err_t err = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+    if (err != ESP_OK) {
+        Serial.printf("[I2S] Driver install failed: %d\n", err);
+        return;
+    }
+    err = i2s_set_pin(I2S_NUM_0, &pin_config);
+    if (err != ESP_OK) {
+        Serial.printf("[I2S] Pin config failed: %d\n", err);
+        return;
+    }
+    Serial.printf("[I2S] Mic initialized (rate=%d, buf=%d)\n", SAMPLE_RATE, PCM_BUFFER_SIZE);
 }
 
 void initBatteryADC() {

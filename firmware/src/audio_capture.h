@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "config.h"
 
 typedef struct {
     int16_t data[PCM_BUFFER_SIZE];

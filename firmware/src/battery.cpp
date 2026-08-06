@@ -21,6 +21,13 @@ void batteryMonitorTask(void *pvParameters) {
                 digitalWrite(LED_BLUE_PIN, ledState);
                 lastBlink = now;
             }
+            if (percent <= 5) {
+                static bool criticalLogged = false;
+                if (!criticalLogged) {
+                    Serial.printf("[BATT] LOW: %.2fV (%d%%)\n", voltage, percent);
+                    criticalLogged = true;
+                }
+            }
         } else {
             digitalWrite(LED_BLUE_PIN, LOW);
         }

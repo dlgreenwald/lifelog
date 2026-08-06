@@ -11,7 +11,7 @@ void audioCaptureTask(void *pvParameters) {
     bool voiceActive = false;
     uint32_t silenceMs = 0;
     
-    Serial.println("[AUDIO] Capture task started");
+    Serial.printf("[AUDIO] Capture task started (buf=%d samples)\n", PCM_BUFFER_SIZE);
     
     while (true) {
         if (!recording) {
@@ -22,7 +22,12 @@ void audioCaptureTask(void *pvParameters) {
         size_t bytesRead = 0;
         esp_err_t err = i2s_read(I2S_NUM_0, buffer, sizeof(buffer), &bytesRead, pdMS_TO_TICKS(100));
         
-        if (err != ESP_OK || bytesRead == 0) {
+        if (err != ESP_OK) {
+            Serial.printf("[AUDIO] I2S read error: %d\n", err);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        if (bytesRead == 0) {
             continue;
         }
         
@@ -31,13 +36,18 @@ void audioCaptureTask(void *pvParameters) {
         float rms = computeRMS(buffer, sampleCount);
         
         if (rms > VAD_THRESHOLD) {
+            if (!voiceActive) {
+                Serial.printf("[VAD] Voice started (RMS=%.0f)\n", rms);
+            }
             voiceActive = true;
             silenceMs = 0;
             
             AudioChunk chunk;
             memcpy(chunk.data, buffer, bytesRead);
             chunk.length = bytesRead;
-            xQueueSend(pcmQueue, &chunk, pdMS_TO_TICKS(50));
+            if (xQueueSend(pcmQueue, &chunk, pdMS_TO_TICKS(50)) != pdTRUE) {
+                Serial.println("[AUDIO] PCM queue full, dropping chunk");
+            }
             
         } else if (voiceActive) {
             silenceMs += 30;

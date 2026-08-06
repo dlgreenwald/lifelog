@@ -1,6 +1,7 @@
 #include "opus_encoder.h"
 #include "config.h"
 #include <string.h>
+#include <opus.h>
 
 extern QueueHandle_t pcmQueue;
 extern QueueHandle_t opusQueue;
@@ -21,7 +22,8 @@ void opusEncodeTask(void *pvParameters) {
     opus_encoder_ctl(encoder, OPUS_SET_BITRATE(OPUS_BITRATE));
     opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(5));
     
-    Serial.println("[OPUS] Encoder initialized");
+    Serial.printf("[OPUS] Encoder ready (rate=%d, complexity=5, frame=%d)\n",
+                  OPUS_BITRATE, OPUS_FRAME_SIZE);
     
     uint8_t opusBuffer[1024];
     int16_t pcmBuffer[OPUS_FRAME_SIZE];  // 60ms at 16kHz = 960 samples
@@ -33,6 +35,7 @@ void opusEncodeTask(void *pvParameters) {
         
         // End-of-utterance marker: flush remaining PCM
         if (chunk.length == 0) {
+            Serial.printf("[OPUS] End-of-utterance, flushing %d samples\n", pcmIndex);
             if (pcmIndex > 0) {
                 // Pad remaining buffer with zeros
                 memset(pcmBuffer + pcmIndex, 0, (OPUS_FRAME_SIZE - pcmIndex) * sizeof(int16_t));
@@ -45,6 +48,9 @@ void opusEncodeTask(void *pvParameters) {
                     memcpy(frame.data, opusBuffer, bytesEncoded);
                     frame.length = bytesEncoded;
                     xQueueSend(opusQueue, &frame, portMAX_DELAY);
+                    Serial.printf("[OPUS] Flush encoded: %d bytes\n", bytesEncoded);
+                } else {
+                    Serial.printf("[OPUS] Flush encode failed: %d\n", bytesEncoded);
                 }
                 pcmIndex = 0;
             }
@@ -67,6 +73,9 @@ void opusEncodeTask(void *pvParameters) {
                 memcpy(frame.data, opusBuffer, bytesEncoded);
                 frame.length = bytesEncoded;
                 xQueueSend(opusQueue, &frame, portMAX_DELAY);
+                Serial.printf("[OPUS] Encoded: %d bytes\n", bytesEncoded);
+            } else {
+                Serial.printf("[OPUS] Encode error: %d\n", bytesEncoded);
             }
             pcmIndex = 0;
         }

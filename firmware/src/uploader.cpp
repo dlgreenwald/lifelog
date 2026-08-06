@@ -28,6 +28,7 @@ void uploaderTask(void *pvParameters) {
 
 bool uploadAudio(OpusFrame frame) {
     if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[UPLOAD] WiFi disconnected, skipping");
         return false;
     }
     

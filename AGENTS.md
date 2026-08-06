@@ -90,9 +90,35 @@ npm run build        # Production build
 ### Firmware
 ```bash
 cd lifelog/firmware
-pio run -t upload    # Build and flash to ESP32-S3
-pio device monitor   # Serial monitor
+
+# Build only (compile check)
+pio run
+
+# Build and flash to ESP32-S3 (auto-detects serial port)
+pio run -t upload
+
+# Open serial monitor (115200 baud, auto-detects port)
+pio device monitor
+
+# Monitor with specific baud rate
+pio device monitor -b 115200
+
+# List available serial ports
+pio device list
+
+# Flash + monitor in one step
+pio run -t upload && pio device monitor
 ```
+
+**Serial port connection:**
+- The XIAO ESP32-S3 uses a USB-C port for both power and serial communication
+- Connect via USB-C cable (data-capable, not charge-only)
+- PlatformIO auto-detects the port; if it fails, specify manually: `pio device monitor -p /dev/ttyUSB0`
+- On Linux, your user must be in the `dialout` group: `sudo usermod -aG dialout $USER` (log out/in after)
+- On macOS, the port is typically `/dev/cu.usbmodem*` or `/dev/cu.SLAB_USBtoUART*`
+- On Windows, it's `COM3`, `COM4`, etc. — check Device Manager
+- Baud rate must match `monitor_speed` in `platformio.ini` (115200)
+- If upload fails, hold the BOOT button on the XIAO while pressing upload to enter download mode
 
 ### Infrastructure
 ```bash
