@@ -1,0 +1,149 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database - Encrypted Data Service
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=lifelog
+      - POSTGRES_USER=lifelog
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    command: >
+      postgres
+        -c ssl=on
+        -c ssl_cert_file=/var/lib/postgresql/server.crt
+        -c ssl_key_file=/var/lib/postgresql/server.key
+        -c ssl_ca_file=/var/lib/postgresql/ca.crt
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lifelog"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Main orchestrator - ONLY service with direct DB access
+  server:
+    build: ./server
+    ports:
+      - "8443:8443"
+    environment:
+      - WYOMING_HOST=${WYOMING_HOST:-wyoming-whisper}
+      - WYOMING_PORT=${WYOMING_PORT:-10700}
+      - DIARIZATION_URL=${DIARIZATION_URL:-https://diarization:8443}
+      - DIARIZATION_CERT=/app/certs/ca.crt
+      - SPEAKER_ID_URL=${SPEAKER_ID_URL:-https://speaker-id:8443}
+      - SPEAKER_ID_CERT=/app/certs/ca.crt
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:11434/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-ollama}
+      - OPENAI_MODEL=${OPENAI_MODEL:-llama3}
+      - OIDC_ISSUER_URL=${OIDC_ISSUER_URL}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}
+      - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI}
+      - AUDIO_STORAGE_PATH=/data/audio
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=lifelog
+      - POSTGRES_USER=lifelog
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - audio-data:/data/audio
+      - ./server/certs:/app/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      speaker-id:
+        condition: service_started
+    command: >
+      uvicorn lifelog.main:app
+        --host 0.0.0.0
+        --port 8443
+        --ssl-keyfile=/app/certs/server.key
+        --ssl-certfile=/app/certs/server.crt
+
+  # Wyoming Whisper STT — runs on a dedicated GPU machine outside this stack.
+  # Set WYOMING_HOST and WYOMING_PORT in .env to point to it.
+  # Example: WYOMING_HOST=192.168.1.50  WYOMING_PORT=10700
+  #
+  # wyoming-whisper:
+  #   image: rhasspy/wyoming-faster-whisper:latest
+  #   ports:
+  #     - "10700:10700"
+  #   command: --model large-v3 --language en --dtype float16
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+
+  # Diarization (pyannote.audio) — runs on a dedicated GPU machine outside this stack.
+  # Set DIARIZATION_URL in .env to point to it.
+  # Example: DIARIZATION_URL=https://192.168.1.50:8443
+  #
+  # To run on your GPU machine:
+  #   1. Copy the diarization/ directory to the GPU machine
+  #   2. Generate certs: ./scripts/generate-certs.sh
+  #   3. Create .env with HF_TOKEN
+  #   4. Run: docker-compose up diarization
+  #
+  # diarization:
+  #   build: ./diarization
+  #   ports:
+  #     - "8443:8443"
+  #   environment:
+  #     - HF_TOKEN=${HF_TOKEN}
+  #   volumes:
+  #     - ./diarization/certs:/app/certs:ro
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   command: >
+  #     uvicorn diarization.main:app
+  #       --host 0.0.0.0
+  #       --port 8443
+  #       --ssl-keyfile=/app/certs/server.key
+  #       --ssl-certfile=/app/certs/server.crt
+
+  # Speaker identification - HTTPS, No DB access
+  speaker-id:
+    build: ./speaker-id
+    ports:
+      - "8445:8443"
+    volumes:
+      - ./speaker-id/certs:/app/certs:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      uvicorn speaker_id.main:app
+        --host 0.0.0.0
+        --port 8443
+        --ssl-keyfile=/app/certs/server.key
+        --ssl-certfile=/app/certs/server.crt
+
+  # Web dashboard - No DB access
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "3000:80"
+    depends_on:
+      - server
+
+volumes:
+  postgres-data:
+  audio-data:
