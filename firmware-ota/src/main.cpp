@@ -176,8 +176,16 @@ static void audioCaptureTask(void *pvParameters) {
                     captured += samplesRead;
                 }
 
-                // Flush when buffer full
-                if (captured >= CHUNK_SAMPLES) {
+                // Log recording duration periodically
+                uint32_t elapsed = millis() - startMs;
+                static uint32_t lastDurationLog = 0;
+                if (elapsed - lastDurationLog >= 5000) {
+                    LOG("[VAD] Recording... %d sec active, %d bytes captured", elapsed / 1000, captured * 2);
+                    lastDurationLog = elapsed;
+                }
+
+                // Flush when buffer full or can't fit next chunk
+                if (captured + samplesRead > CHUNK_SAMPLES) {
                     LOG("[VAD] Flushing %d samples", captured);
                     totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
                     captured = 0;
@@ -193,7 +201,7 @@ static void audioCaptureTask(void *pvParameters) {
                 }
 
                 // Flush periodically even during silence
-                if (captured >= CHUNK_SAMPLES) {
+                if (captured + samplesRead > CHUNK_SAMPLES) {
                     totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
                     captured = 0;
                 }
@@ -242,8 +250,8 @@ static void audioCaptureTask(void *pvParameters) {
                 captured += samplesRead;
             }
 
-            // Flush when buffer full
-            if (captured >= CHUNK_SAMPLES) {
+            // Flush when buffer full or can't fit next chunk
+            if (captured + samplesRead > CHUNK_SAMPLES) {
                 totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
                 captured = 0;
             }
