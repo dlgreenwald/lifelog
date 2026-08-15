@@ -7,6 +7,7 @@
 #include <Preferences.h>
 #include <esp_ota_ops.h>
 #include <RemoteDebug.h>
+#include <opus.h>
 
 #define LED_PIN  21
 #define MAX_BOOT 3
@@ -20,7 +21,14 @@
 
 // Audio
 #define SAMPLE_RATE     16000
+#define OPUS_BITRATE    24000
+#define OPUS_FRAME_SIZE 960   // 60ms at 16kHz
 #define REC_BUF_SAMPLES (SAMPLE_RATE * 5)  // 5 seconds
+
+// Opus encoder state
+static OpusEncoder* opusEncoder = NULL;
+static uint8_t opusBuffer[1024];
+static int16_t encodeBuffer[OPUS_FRAME_SIZE];
 
 static Preferences prefs;
 static const char* NS = "ota";
@@ -40,10 +48,18 @@ void processCommand();
 // ── Audio Capture ──────────────────────────────────────────────────
 
 static void audioCaptureTask(void *pvParameters) {
+    // Allocate PCM buffer in PSRAM if available
     int16_t* recBuffer = (int16_t*)ps_malloc(REC_BUF_SAMPLES * 2);
     if (!recBuffer) recBuffer = (int16_t*)malloc(REC_BUF_SAMPLES * 2);
     if (!recBuffer) { LOG("[AUDIO] Buffer alloc FAILED"); return; }
-    LOG("[AUDIO] Buffer ready (%d bytes)", REC_BUF_SAMPLES * 2);
+    LOG("[AUDIO] PCM buffer ready (%d bytes)", REC_BUF_SAMPLES * 2);
+
+    // Create Opus encoder
+    opusEncoder = opus_encoder_create(SAMPLE_RATE, 1, OPUS_APPLICATION_RESTRICTED_LOWDELAY, NULL);
+    if (!opusEncoder) { LOG("[AUDIO] Opus encoder creation failed"); return; }
+    opus_encoder_ctl(opusEncoder, OPUS_SET_BITRATE(OPUS_BITRATE));
+    opus_encoder_ctl(opusEncoder, OPUS_SET_COMPLEXITY(1));
+    LOG("[AUDIO] Opus encoder ready (bitrate=%d, complexity=1)", OPUS_BITRATE);
 
     while (true) {
         if (!recording) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
@@ -63,35 +79,41 @@ static void audioCaptureTask(void *pvParameters) {
 
         LOG("[AUDIO] Captured %d samples in %d ms", captured, millis() - startMs);
 
-        // Write WAV to SD
+        // Compress with Opus and write to SD
         char filename[64];
-        snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
+        snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+
         File file = SD.open(filename, FILE_WRITE);
-        if (file) {
-            uint32_t dataSize = captured * 2;
-            uint32_t fileSize = 36 + dataSize;
-            uint32_t byteRate = SAMPLE_RATE * 2;
-            uint16_t audioFmt = 1, numCh = 1, bits = 16, blockAlign = 2, fmtSize = 16;
-            file.write((uint8_t*)"RIFF", 4);
-            file.write((uint8_t*)&fileSize, 4);
-            file.write((uint8_t*)"WAVE", 4);
-            file.write((uint8_t*)"fmt ", 4);
-            file.write((uint8_t*)&fmtSize, 4);
-            file.write((uint8_t*)&audioFmt, 2);
-            file.write((uint8_t*)&numCh, 2);
-            uint32_t sampleRate = SAMPLE_RATE;
-            file.write((uint8_t*)&sampleRate, 4);
-            file.write((uint8_t*)&byteRate, 4);
-            file.write((uint8_t*)&blockAlign, 2);
-            file.write((uint8_t*)&bits, 2);
-            file.write((uint8_t*)"data", 4);
-            file.write((uint8_t*)&dataSize, 4);
-            file.write((uint8_t*)recBuffer, dataSize);
-            file.close();
-            LOG("[AUDIO] Saved: %s (%d bytes)", filename, fileSize + 8);
-        } else {
-            LOG("[AUDIO] Failed to open %s", filename);
+        if (!file) { LOG("[AUDIO] Failed to open %s", filename); recording = false; continue; }
+
+        uint32_t totalEncoded = 0;
+        uint32_t pcmIndex = 0;
+
+        while (pcmIndex < captured) {
+            int samplesAvailable = captured - pcmIndex;
+            int samplesToEncode = (samplesAvailable < OPUS_FRAME_SIZE) ? samplesAvailable : OPUS_FRAME_SIZE;
+
+            memcpy(encodeBuffer, recBuffer + pcmIndex, samplesToEncode * 2);
+            if (samplesToEncode < OPUS_FRAME_SIZE) {
+                memset(encodeBuffer + samplesToEncode, 0, (OPUS_FRAME_SIZE - samplesToEncode) * 2);
+            }
+
+            int bytesEncoded = opus_encode(opusEncoder, encodeBuffer, OPUS_FRAME_SIZE,
+                                           opusBuffer, sizeof(opusBuffer));
+
+            if (bytesEncoded > 0) {
+                uint16_t frameLen = (uint16_t)bytesEncoded;
+                file.write((uint8_t*)&frameLen, 2);
+                file.write(opusBuffer, bytesEncoded);
+                totalEncoded += bytesEncoded + 2;
+            }
+
+            pcmIndex += samplesToEncode;
         }
+
+        file.close();
+        LOG("[AUDIO] Saved: %s (%d bytes opus, %d bytes PCM)",
+            filename, totalEncoded, captured * 2);
         recording = false;
     }
 }
@@ -247,7 +269,7 @@ void setup() {
     setupMic();
     setupOTA();
 
-    xTaskCreatePinnedToCore(audioCaptureTask, "audio", 8192, NULL, 2, &audioTaskHandle, 1);
+    xTaskCreatePinnedToCore(audioCaptureTask, "audio", 32768, NULL, 2, &audioTaskHandle, 1);
     LOG("[RTOS] Audio capture task created");
 
     bootConfirm();
