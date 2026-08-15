@@ -108,7 +108,8 @@ void setup() {
     setupOTA();
     commandsInit();
 
-    xTaskCreatePinnedToCore(audioTask, "audio", 32768, NULL, 2, &audioTaskHandle, 1);
+    xTaskCreatePinnedToCore(audioTask, "audio", 32768, NULL, 5, &audioTaskHandle, 1);
+    xTaskCreatePinnedToCore(writerTask, "writer", 16384, NULL, 2, NULL, 0);
     bootConfirm();
 
     recording = true;

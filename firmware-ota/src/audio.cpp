@@ -11,6 +11,17 @@ static int16_t encodeBuffer[OPUS_FRAME_SIZE];
 // Ogg page counter
 static uint32_t oggPageCounter = 0;
 
+// Queue for audio chunks
+static QueueHandle_t audioQueue = NULL;
+
+// Chunk metadata
+typedef struct {
+    int16_t* data;
+    uint32_t samples;
+    bool isEnd;  // true = end of utterance
+    char filename[64];
+} AudioChunkMsg;
+
 // Global state
 volatile bool recording = false;
 volatile bool vadMode = true;
@@ -45,48 +56,29 @@ static void highPassFilter(int16_t* buffer, int count) {
 
 // Write Ogg/Opus headers to file
 static void writeOggHeaders(File& file) {
-    // OpusHead header
     uint8_t opusHead[19] = {
-        'O', 'p', 'u', 's', 'H', 'e', 'a', 'd',  // Magic
-        1,           // Version
-        1,           // Channel count
-        0, 0,        // Pre-skip (little endian)
+        'O', 'p', 'u', 's', 'H', 'e', 'a', 'd',
+        1, 1, 0, 0,
         (uint8_t)(SAMPLE_RATE & 0xFF),
         (uint8_t)((SAMPLE_RATE >> 8) & 0xFF),
         (uint8_t)((SAMPLE_RATE >> 16) & 0xFF),
         (uint8_t)((SAMPLE_RATE >> 24) & 0xFF),
-        0, 0,        // Output gain
-        0            // Channel mapping family
+        0, 0, 0
     };
     
-    // OggS header + OpusHead page
     uint8_t oggS[28] = {
-        'O', 'g', 'g', 'S',  // Magic
-        0,           // Version
-        0x02,        // Header type (BOS)
-        0, 0, 0, 0, 0, 0, 0, 0,  // Granule position
-        0, 0, 0, 0,  // Serial number
-        0, 0, 0, 0,  // Page sequence
-        0, 0, 0, 0,  // CRC checksum (placeholder)
-        1,           // Segment count
-        19           // Segment size
+        'O', 'g', 'g', 'S', 0, 0x02,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 1, 19
     };
     
-    // Set serial number (random)
     uint32_t serial = 12345;
     oggS[10] = serial & 0xFF;
     oggS[11] = (serial >> 8) & 0xFF;
     oggS[12] = (serial >> 16) & 0xFF;
     oggS[13] = (serial >> 24) & 0xFF;
     
-    // Set page sequence
-    oggS[14] = oggPageCounter & 0xFF;
-    oggS[15] = (oggPageCounter >> 8) & 0xFF;
-    oggS[16] = (oggPageCounter >> 16) & 0xFF;
-    oggS[17] = (oggPageCounter >> 24) & 0xFF;
-    oggPageCounter++;
-    
-    // Calculate CRC (simplified - using sum of bytes)
     uint32_t crc = 0;
     for (int i = 0; i < 27; i++) crc += oggS[i];
     for (int i = 0; i < 19; i++) crc += opusHead[i];
@@ -105,28 +97,23 @@ static void writeOggPage(File& file, uint8_t* data, uint32_t len) {
     memset(oggS, 0, 28);
     
     oggS[0] = 'O'; oggS[1] = 'g'; oggS[2] = 'g'; oggS[3] = 'S';
-    oggS[4] = 0;    // Version
-    oggS[5] = 0x00; // Header type (continuation)
+    oggS[4] = 0; oggS[5] = 0x00;
     
-    // Serial number (same as header)
     uint32_t serial = 12345;
     oggS[10] = serial & 0xFF;
     oggS[11] = (serial >> 8) & 0xFF;
     oggS[12] = (serial >> 16) & 0xFF;
     oggS[13] = (serial >> 24) & 0xFF;
     
-    // Page sequence
     oggS[14] = oggPageCounter & 0xFF;
     oggS[15] = (oggPageCounter >> 8) & 0xFF;
     oggS[16] = (oggPageCounter >> 16) & 0xFF;
     oggS[17] = (oggPageCounter >> 24) & 0xFF;
     oggPageCounter++;
     
-    // Segment count and size
-    oggS[26] = 1;       // One segment
-    oggS[27] = (uint8_t)len;  // Segment size
+    oggS[26] = 1;
+    oggS[27] = (uint8_t)len;
     
-    // Calculate CRC
     uint32_t crc = 0;
     for (int i = 0; i < 27; i++) crc += oggS[i];
     for (uint32_t i = 0; i < len; i++) crc += data[i];
@@ -135,40 +122,14 @@ static void writeOggPage(File& file, uint8_t* data, uint32_t len) {
     oggS[24] = (crc >> 16) & 0xFF;
     oggS[25] = (crc >> 24) & 0xFF;
     
-    file.write(oggS, 28);  // 27 + 1 segment size byte
+    file.write(oggS, 28);
     file.write(data, len);
-}
-
-// Flush Opus frames to file with Ogg encapsulation
-static uint32_t flushOpusToFile(File& file, int16_t* buffer, uint32_t samples) {
-    uint32_t totalEncoded = 0;
-    uint32_t pcmIndex = 0;
-
-    while (pcmIndex < samples) {
-        int samplesAvailable = samples - pcmIndex;
-        int samplesToEncode = (samplesAvailable < OPUS_FRAME_SIZE) ? samplesAvailable : OPUS_FRAME_SIZE;
-
-        memcpy(encodeBuffer, buffer + pcmIndex, samplesToEncode * 2);
-        if (samplesToEncode < OPUS_FRAME_SIZE) {
-            memset(encodeBuffer + samplesToEncode, 0, (OPUS_FRAME_SIZE - samplesToEncode) * 2);
-        }
-
-        int bytesEncoded = opus_encode(opusEncoder, encodeBuffer, OPUS_FRAME_SIZE,
-                                       opusBuffer, sizeof(opusBuffer));
-
-        if (bytesEncoded > 0) {
-            writeOggPage(file, opusBuffer, bytesEncoded);
-            totalEncoded += bytesEncoded;
-        }
-        pcmIndex += samplesToEncode;
-    }
-    return totalEncoded;
 }
 
 // ── Public API ─────────────────────────────────────────────────────
 
 void audioInit() {
-    // Mic and encoder are initialized in the task
+    audioQueue = xQueueCreate(AUDIO_QUEUE_SIZE, sizeof(AudioChunkMsg));
 }
 
 void startRecording(uint32_t durationMs) {
@@ -182,10 +143,10 @@ void toggleVAD() {
     LOG("[VAD] Mode: %s", vadMode ? "VAD (auto)" : "Fixed duration");
 }
 
-// ── Main task ──────────────────────────────────────────────────────
+// ── Audio capture task (always running, never blocks) ──────────────
 
 void audioTask(void *pvParameters) {
-    // Allocate chunk buffer
+    // Allocate buffers
     int16_t* chunkBuffer = (int16_t*)ps_malloc(CHUNK_SAMPLES * 2);
     if (!chunkBuffer) chunkBuffer = (int16_t*)malloc(CHUNK_SAMPLES * 2);
     if (!chunkBuffer) { LOG("[AUDIO] Buffer alloc FAILED"); return; }
@@ -230,9 +191,8 @@ void audioTask(void *pvParameters) {
     bool voiceActive = false;
     uint32_t silenceMs = 0;
     uint32_t captured = 0;
-    uint32_t totalEncoded = 0;
     uint32_t startMs = 0;
-    File activeFile;
+    char currentFile[64] = {0};
 
     // Adaptive threshold
     float bgNoise = 200;
@@ -248,29 +208,17 @@ void audioTask(void *pvParameters) {
     int analysisCapacity = VAD_ANALYSIS_MS * SAMPLE_RATE / 1000;
 
     while (true) {
-        if (!recording) {
-            if (activeFile) {
-                if (captured > 0) {
-                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                    captured = 0;
-                }
-                activeFile.close();
-                LOG("[AUDIO] Closed file (%d bytes opus)", totalEncoded);
-            }
-            voiceActive = false;
-            silenceMs = 0;
-            captured = 0;
-            totalEncoded = 0;
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-
-        // Read audio chunk
+        // Always read audio — never block
         int chunkSamples = VAD_CHUNK_MS * SAMPLE_RATE / 1000;
         int16_t readBuffer[480];
         size_t bytesRead = 0;
-        esp_err_t err = i2s_read(I2S_NUM_0, readBuffer, chunkSamples * 2, &bytesRead, pdMS_TO_TICKS(100));
-        if (err != ESP_OK || bytesRead == 0) continue;
+        i2s_read(I2S_NUM_0, readBuffer, chunkSamples * 2, &bytesRead, pdMS_TO_TICKS(10));
+        
+        if (bytesRead == 0) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+        
         int samplesRead = bytesRead / 2;
 
         // Accumulate for RMS analysis
@@ -294,7 +242,6 @@ void audioTask(void *pvParameters) {
                 bgNoise = sum / bgCount;
                 currentThreshold = max((double)(bgNoise * VAD_BG_ADAPT), (double)VAD_THRESHOLD);
 
-                // Log idle status periodically
                 static uint32_t lastIdleLog = 0;
                 uint32_t now = millis();
                 if (now - lastIdleLog >= 5000) {
@@ -310,90 +257,226 @@ void audioTask(void *pvParameters) {
                     voiceActive = true;
                     silenceMs = 0;
                     captured = 0;
-                    totalEncoded = 0;
                     startMs = millis();
-                    char filename[64];
-                    snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
-                    snprintf(lastSavedFile, sizeof(lastSavedFile), "%s", filename);
-                    activeFile = SD.open(filename, FILE_WRITE);
-                    if (!activeFile) { LOG("[VAD] Failed to open %s", filename); recording = false; continue; }
-                    oggPageCounter = 0;
-                    writeOggHeaders(activeFile);
-                    LOG("[VAD] Voice started — %s (RMS=%.0f)", filename, smoothedRMS);
+                    snprintf(currentFile, sizeof(currentFile), "/lifelog/rec_%05lu.opus", fileIndex++);
+                    LOG("[VAD] Voice started — %s (RMS=%.0f)", currentFile, smoothedRMS);
                 }
                 silenceMs = 0;
+
+                // Copy chunk to buffer
                 if (captured + samplesRead <= CHUNK_SAMPLES) {
                     memcpy(chunkBuffer + captured, readBuffer, bytesRead);
                     captured += samplesRead;
                 }
+
                 uint32_t elapsed = millis() - startMs;
                 static uint32_t lastLog = 0;
                 if (elapsed - lastLog >= 5000) {
                     LOG("[VAD] %d sec, RMS=%.0f (thresh=%.0f bg=%.0f)", elapsed / 1000, smoothedRMS, currentThreshold, bgNoise);
                     lastLog = elapsed;
                 }
+
+                // Send to queue when buffer full
                 if (captured + samplesRead > CHUNK_SAMPLES) {
-                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                    captured = 0;
+                    AudioChunkMsg msg;
+                    msg.data = chunkBuffer;
+                    msg.samples = captured;
+                    msg.isEnd = false;
+                    strncpy(msg.filename, currentFile, sizeof(msg.filename));
+                    
+                    // Allocate new buffer for queue (old one will be used by writer)
+                    int16_t* newBuffer = (int16_t*)ps_malloc(CHUNK_SAMPLES * 2);
+                    if (!newBuffer) newBuffer = (int16_t*)malloc(CHUNK_SAMPLES * 2);
+                    if (newBuffer) {
+                        memcpy(newBuffer, chunkBuffer, captured * 2);
+                        msg.data = newBuffer;
+                        xQueueSend(audioQueue, &msg, pdMS_TO_TICKS(100));
+                        captured = 0;
+                    }
                 }
             } else if (voiceActive) {
                 silenceMs += VAD_CHUNK_MS;
+
                 if (captured + samplesRead <= CHUNK_SAMPLES) {
                     memcpy(chunkBuffer + captured, readBuffer, bytesRead);
                     captured += samplesRead;
                 }
+
                 if (captured + samplesRead > CHUNK_SAMPLES) {
-                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                    captured = 0;
+                    AudioChunkMsg msg;
+                    msg.data = chunkBuffer;
+                    msg.samples = captured;
+                    msg.isEnd = false;
+                    strncpy(msg.filename, currentFile, sizeof(msg.filename));
+                    
+                    int16_t* newBuffer = (int16_t*)ps_malloc(CHUNK_SAMPLES * 2);
+                    if (!newBuffer) newBuffer = (int16_t*)malloc(CHUNK_SAMPLES * 2);
+                    if (newBuffer) {
+                        memcpy(newBuffer, chunkBuffer, captured * 2);
+                        msg.data = newBuffer;
+                        xQueueSend(audioQueue, &msg, pdMS_TO_TICKS(100));
+                        captured = 0;
+                    }
                 }
+
                 if (silenceMs >= VAD_SILENCE_MS) {
                     voiceActive = false;
                     bgCount = 0;
                     bgIndex = 0;
+                    
+                    // Send end marker
                     if (captured > 0) {
-                        totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                        captured = 0;
+                        AudioChunkMsg msg;
+                        int16_t* newBuffer = (int16_t*)ps_malloc(captured * 2);
+                        if (!newBuffer) newBuffer = (int16_t*)malloc(captured * 2);
+                        if (newBuffer) {
+                            memcpy(newBuffer, chunkBuffer, captured * 2);
+                            msg.data = newBuffer;
+                            msg.samples = captured;
+                            msg.isEnd = true;
+                            strncpy(msg.filename, currentFile, sizeof(msg.filename));
+                            xQueueSend(audioQueue, &msg, pdMS_TO_TICKS(100));
+                            captured = 0;
+                        }
                     }
-                    activeFile.close();
-                    LOG("[VAD] Voice ended (%d ms, %d bytes)", millis() - startMs, totalEncoded);
-                    if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
-                        uploadFile(lastSavedFile);
-                        SD.remove(lastSavedFile);
-                        LOG("[VAD] Uploaded %s", lastSavedFile);
-                    }
-                    totalEncoded = 0;
+                    
+                    LOG("[VAD] Voice ended (%d ms)", millis() - startMs);
                     silenceMs = 0;
                 }
             }
         } else {
             // Fixed duration mode
-            if (captured == 0 && !activeFile) {
+            if (captured == 0 && currentFile[0] == '\0') {
                 startMs = millis();
-                char filename[64];
-                snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
-                activeFile = SD.open(filename, FILE_WRITE);
-                if (!activeFile) { LOG("[AUDIO] Failed to open %s", filename); recording = false; continue; }
-                LOG("[AUDIO] Recording to %s", filename);
+                snprintf(currentFile, sizeof(currentFile), "/lifelog/rec_%05lu.opus", fileIndex++);
+                LOG("[AUDIO] Recording to %s", currentFile);
             }
+            
             if (captured + samplesRead <= CHUNK_SAMPLES) {
                 memcpy(chunkBuffer + captured, readBuffer, bytesRead);
                 captured += samplesRead;
             }
+            
             if (captured + samplesRead > CHUNK_SAMPLES) {
-                totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                captured = 0;
+                AudioChunkMsg msg;
+                int16_t* newBuffer = (int16_t*)ps_malloc(CHUNK_SAMPLES * 2);
+                if (!newBuffer) newBuffer = (int16_t*)malloc(CHUNK_SAMPLES * 2);
+                if (newBuffer) {
+                    memcpy(newBuffer, chunkBuffer, captured * 2);
+                    msg.data = newBuffer;
+                    msg.samples = captured;
+                    msg.isEnd = false;
+                    strncpy(msg.filename, currentFile, sizeof(msg.filename));
+                    xQueueSend(audioQueue, &msg, pdMS_TO_TICKS(100));
+                    captured = 0;
+                }
             }
+            
             uint32_t elapsed = millis() - startMs;
             if (elapsed >= recordDurationMs) {
                 if (captured > 0) {
-                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                    captured = 0;
+                    AudioChunkMsg msg;
+                    int16_t* newBuffer = (int16_t*)ps_malloc(captured * 2);
+                    if (!newBuffer) newBuffer = (int16_t*)malloc(captured * 2);
+                    if (newBuffer) {
+                        memcpy(newBuffer, chunkBuffer, captured * 2);
+                        msg.data = newBuffer;
+                        msg.samples = captured;
+                        msg.isEnd = true;
+                        strncpy(msg.filename, currentFile, sizeof(msg.filename));
+                        xQueueSend(audioQueue, &msg, pdMS_TO_TICKS(100));
+                        captured = 0;
+                    }
                 }
-                activeFile.close();
-                LOG("[AUDIO] Saved (%d ms, %d bytes)", elapsed, totalEncoded);
-                totalEncoded = 0;
+                currentFile[0] = '\0';
                 recording = false;
             }
+        }
+    }
+}
+
+// ── Writer task (handles SD writes and uploads) ────────────────────
+
+void writerTask(void *pvParameters) {
+    File activeFile;
+    uint32_t totalEncoded = 0;
+    char currentFilename[64] = {0};
+    
+    while (true) {
+        AudioChunkMsg msg;
+        if (xQueueReceive(audioQueue, &msg, portMAX_DELAY)) {
+            // Open new file if needed
+            if (currentFilename[0] == '\0' || strcmp(currentFilename, msg.filename) != 0) {
+                if (activeFile) {
+                    // Close previous file
+                    activeFile.close();
+                    LOG("[WRITER] Closed %s (%d bytes)", currentFilename, totalEncoded);
+                    
+                    // Upload and delete
+                    if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
+                        uploadFile(currentFilename);
+                        SD.remove(currentFilename);
+                        LOG("[WRITER] Uploaded %s", currentFilename);
+                    }
+                    totalEncoded = 0;
+                }
+                
+                // Open new file
+                strncpy(currentFilename, msg.filename, sizeof(currentFilename));
+                activeFile = SD.open(currentFilename, FILE_WRITE);
+                if (activeFile) {
+                    oggPageCounter = 0;
+                    writeOggHeaders(activeFile);
+                    LOG("[WRITER] Opened %s", currentFilename);
+                } else {
+                    LOG("[WRITER] Failed to open %s", currentFilename);
+                    currentFilename[0] = '\0';
+                }
+            }
+            
+            // Write audio data
+            if (activeFile && msg.samples > 0) {
+                // Encode with Opus
+                uint32_t pcmIndex = 0;
+                while (pcmIndex < msg.samples) {
+                    int samplesAvailable = msg.samples - pcmIndex;
+                    int samplesToEncode = (samplesAvailable < OPUS_FRAME_SIZE) ? samplesAvailable : OPUS_FRAME_SIZE;
+                    
+                    memcpy(encodeBuffer, msg.data + pcmIndex, samplesToEncode * 2);
+                    if (samplesToEncode < OPUS_FRAME_SIZE) {
+                        memset(encodeBuffer + samplesToEncode, 0, (OPUS_FRAME_SIZE - samplesToEncode) * 2);
+                    }
+                    
+                    int bytesEncoded = opus_encode(opusEncoder, encodeBuffer, OPUS_FRAME_SIZE,
+                                                   opusBuffer, sizeof(opusBuffer));
+                    
+                    if (bytesEncoded > 0) {
+                        writeOggPage(activeFile, opusBuffer, bytesEncoded);
+                        totalEncoded += bytesEncoded;
+                    }
+                    pcmIndex += samplesToEncode;
+                }
+                activeFile.flush();
+            }
+            
+            // End of utterance
+            if (msg.isEnd) {
+                if (activeFile) {
+                    activeFile.close();
+                    LOG("[WRITER] Closed %s (%d bytes)", currentFilename, totalEncoded);
+                    
+                    if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
+                        uploadFile(currentFilename);
+                        SD.remove(currentFilename);
+                        LOG("[WRITER] Uploaded %s", currentFilename);
+                    }
+                    totalEncoded = 0;
+                    currentFilename[0] = '\0';
+                }
+            }
+            
+            // Free the buffer
+            free(msg.data);
         }
     }
 }
