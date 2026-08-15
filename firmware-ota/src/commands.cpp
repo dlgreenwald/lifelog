@@ -30,7 +30,7 @@ void processCommand() {
         LOG("[UPLOAD] Starting upload of all recordings...");
         uploadAllRecordings();
     } else if (cmd == "ls") {
-        File root = SD.open("/lifelog");
+        File root = SD.open("lifelog");
         if (root) {
             File f = root.openNextFile();
             while (f) { LOG("[LS] %s %d bytes", f.name(), f.size()); f = root.openNextFile(); }

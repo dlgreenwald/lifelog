@@ -97,7 +97,7 @@ bool uploadFile(const char* filename) {
 }
 
 void uploadAllRecordings() {
-    File root = SD.open("/lifelog");
+    File root = SD.open("lifelog");
     if (!root) { LOG("[UPLOAD] Failed to open /lifelog"); return; }
 
     int uploaded = 0;
@@ -105,7 +105,7 @@ void uploadAllRecordings() {
     while (f) {
         if (String(f.name()).endsWith(".opus")) {
             char path[64];
-            snprintf(path, sizeof(path), "/lifelog/%s", f.name());
+            snprintf(path, sizeof(path), "lifelog/%s", f.name());
             if (uploadFile(path)) {
                 uploaded++;
                 SD.remove(path);

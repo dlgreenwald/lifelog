@@ -89,7 +89,7 @@ static void setupSD() {
     if (t == CARD_NONE) { LOG("[SD] No card"); return; }
     const char* names[] = {"UNKNOWN","MMC","SD","SDHC"};
     LOG("[SD] Mounted: %s %llu MB", names[t], SD.cardSize()/(1024*1024));
-    if (!SD.exists("/lifelog")) { SD.mkdir("/lifelog"); LOG("[SD] Created /lifelog"); }
+    if (!SD.exists("lifelog")) { SD.mkdir("lifelog"); LOG("[SD] Created lifelog"); }
 }
 
 // ── Main ───────────────────────────────────────────────────────────
