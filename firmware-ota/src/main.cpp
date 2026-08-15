@@ -23,7 +23,7 @@
 #define SAMPLE_RATE     16000
 #define OPUS_BITRATE    24000
 #define OPUS_FRAME_SIZE 960   // 60ms at 16kHz
-#define REC_BUF_SAMPLES (SAMPLE_RATE * 30)  // 30 seconds max recording
+#define CHUNK_SAMPLES   (SAMPLE_RATE * 5)  // 5 seconds per chunk
 #define VAD_THRESHOLD   500   // RMS threshold for voice detection
 #define VAD_SILENCE_MS  1500  // 1.5s silence = end of utterance
 #define VAD_CHUNK_MS    30    // 30ms audio chunks for VAD processing
@@ -59,166 +59,182 @@ static float computeRMS(int16_t* samples, int count) {
     return sqrtf(sum / count);
 }
 
+// Flush accumulated Opus frames to SD
+static uint32_t flushOpusToFile(File& file, int16_t* buffer, uint32_t samples) {
+    uint32_t totalEncoded = 0;
+    uint32_t pcmIndex = 0;
+
+    while (pcmIndex < samples) {
+        int samplesAvailable = samples - pcmIndex;
+        int samplesToEncode = (samplesAvailable < OPUS_FRAME_SIZE) ? samplesAvailable : OPUS_FRAME_SIZE;
+
+        memcpy(encodeBuffer, buffer + pcmIndex, samplesToEncode * 2);
+        if (samplesToEncode < OPUS_FRAME_SIZE) {
+            memset(encodeBuffer + samplesToEncode, 0, (OPUS_FRAME_SIZE - samplesToEncode) * 2);
+        }
+
+        int bytesEncoded = opus_encode(opusEncoder, encodeBuffer, OPUS_FRAME_SIZE,
+                                       opusBuffer, sizeof(opusBuffer));
+
+        if (bytesEncoded > 0) {
+            uint16_t frameLen = (uint16_t)bytesEncoded;
+            file.write((uint8_t*)&frameLen, 2);
+            file.write(opusBuffer, bytesEncoded);
+            totalEncoded += bytesEncoded + 2;
+        }
+        pcmIndex += samplesToEncode;
+    }
+    return totalEncoded;
+}
+
 static void audioCaptureTask(void *pvParameters) {
-    int16_t* recBuffer = (int16_t*)ps_malloc(REC_BUF_SAMPLES * 2);
-    if (!recBuffer) recBuffer = (int16_t*)malloc(REC_BUF_SAMPLES * 2);
-    if (!recBuffer) { LOG("[AUDIO] Buffer alloc FAILED"); return; }
-    LOG("[AUDIO] PCM buffer ready (%d bytes)", REC_BUF_SAMPLES * 2);
+    // Small buffer for streaming chunks
+    int16_t* chunkBuffer = (int16_t*)ps_malloc(CHUNK_SAMPLES * 2);
+    if (!chunkBuffer) chunkBuffer = (int16_t*)malloc(CHUNK_SAMPLES * 2);
+    if (!chunkBuffer) { LOG("[AUDIO] Buffer alloc FAILED"); return; }
+    LOG("[AUDIO] Chunk buffer ready (%d bytes, %d sec)", CHUNK_SAMPLES * 2, CHUNK_SAMPLES / SAMPLE_RATE);
 
     opusEncoder = opus_encoder_create(SAMPLE_RATE, 1, OPUS_APPLICATION_RESTRICTED_LOWDELAY, NULL);
     if (!opusEncoder) { LOG("[AUDIO] Opus encoder creation failed"); return; }
     opus_encoder_ctl(opusEncoder, OPUS_SET_BITRATE(OPUS_BITRATE));
     opus_encoder_ctl(opusEncoder, OPUS_SET_COMPLEXITY(1));
     LOG("[AUDIO] Opus ready (bitrate=%d)", OPUS_BITRATE);
-    LOG("[AUDIO] VAD mode: threshold=%d, silence=%dms", VAD_THRESHOLD, VAD_SILENCE_MS);
 
     // VAD state
     bool voiceActive = false;
     uint32_t silenceMs = 0;
     uint32_t captured = 0;
+    uint32_t totalEncoded = 0;
     uint32_t startMs = 0;
+    File activeFile;
 
     while (true) {
         if (!recording) {
+            // Close any open file
+            if (activeFile) {
+                activeFile.close();
+                LOG("[AUDIO] Closed file (%d bytes opus)", totalEncoded);
+            }
             voiceActive = false;
             silenceMs = 0;
             captured = 0;
+            totalEncoded = 0;
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
         // Read one chunk of audio
         int chunkSamples = VAD_CHUNK_MS * SAMPLE_RATE / 1000;  // 480 samples for 30ms
-        int16_t chunkBuffer[480];
+        int16_t readBuffer[480];
         size_t bytesRead = 0;
-        esp_err_t err = i2s_read(I2S_NUM_0, chunkBuffer, chunkSamples * 2, &bytesRead, pdMS_TO_TICKS(100));
+        esp_err_t err = i2s_read(I2S_NUM_0, readBuffer, chunkSamples * 2, &bytesRead, pdMS_TO_TICKS(100));
 
         if (err != ESP_OK || bytesRead == 0) continue;
 
         int samplesRead = bytesRead / 2;
-        float rms = computeRMS(chunkBuffer, samplesRead);
+        float rms = computeRMS(readBuffer, samplesRead);
 
         if (vadMode) {
             // VAD mode: detect speech start/end
             if (rms > VAD_THRESHOLD) {
                 if (!voiceActive) {
-                    // Voice started
+                    // Voice started — open new file
                     voiceActive = true;
                     silenceMs = 0;
                     captured = 0;
+                    totalEncoded = 0;
                     startMs = millis();
-                    LOG("[VAD] Voice started (RMS=%.0f)", rms);
+
+                    char filename[64];
+                    snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+                    activeFile = SD.open(filename, FILE_WRITE);
+                    if (!activeFile) {
+                        LOG("[VAD] Failed to open %s", filename);
+                        recording = false;
+                        continue;
+                    }
+                    LOG("[VAD] Voice started — recording to %s (RMS=%.0f)", filename, rms);
                 }
                 silenceMs = 0;
 
-                // Copy chunk to recording buffer
-                if (captured + samplesRead <= REC_BUF_SAMPLES) {
-                    memcpy(recBuffer + captured, chunkBuffer, bytesRead);
+                // Copy chunk to buffer
+                if (captured + samplesRead <= CHUNK_SAMPLES) {
+                    memcpy(chunkBuffer + captured, readBuffer, bytesRead);
                     captured += samplesRead;
+                }
+
+                // Flush when buffer full
+                if (captured >= CHUNK_SAMPLES) {
+                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
+                    captured = 0;
                 }
             } else if (voiceActive) {
                 // Silence during voice
                 silenceMs += VAD_CHUNK_MS;
 
-                // Still copy silence to buffer (keeps audio natural)
-                if (captured + samplesRead <= REC_BUF_SAMPLES) {
-                    memcpy(recBuffer + captured, chunkBuffer, bytesRead);
+                // Copy silence to buffer (keeps audio natural)
+                if (captured + samplesRead <= CHUNK_SAMPLES) {
+                    memcpy(chunkBuffer + captured, readBuffer, bytesRead);
                     captured += samplesRead;
                 }
 
-                if (silenceMs >= VAD_SILENCE_MS) {
-                    // End of utterance
-                    voiceActive = false;
-                    LOG("[VAD] Voice ended (RMS=%.0f, %d ms, %d samples)", rms, millis() - startMs, captured);
-
-                    // Save the utterance
-                    if (captured > 0) {
-                        char filename[64];
-                        snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
-
-                        File file = SD.open(filename, FILE_WRITE);
-                        if (file) {
-                            uint32_t totalEncoded = 0;
-                            uint32_t pcmIndex = 0;
-
-                            while (pcmIndex < captured) {
-                                int samplesAvailable = captured - pcmIndex;
-                                int samplesToEncode = (samplesAvailable < OPUS_FRAME_SIZE) ? samplesAvailable : OPUS_FRAME_SIZE;
-
-                                memcpy(encodeBuffer, recBuffer + pcmIndex, samplesToEncode * 2);
-                                if (samplesToEncode < OPUS_FRAME_SIZE) {
-                                    memset(encodeBuffer + samplesToEncode, 0, (OPUS_FRAME_SIZE - samplesToEncode) * 2);
-                                }
-
-                                int bytesEncoded = opus_encode(opusEncoder, encodeBuffer, OPUS_FRAME_SIZE,
-                                                               opusBuffer, sizeof(opusBuffer));
-
-                                if (bytesEncoded > 0) {
-                                    uint16_t frameLen = (uint16_t)bytesEncoded;
-                                    file.write((uint8_t*)&frameLen, 2);
-                                    file.write(opusBuffer, bytesEncoded);
-                                    totalEncoded += bytesEncoded + 2;
-                                }
-                                pcmIndex += samplesToEncode;
-                            }
-
-                            file.close();
-                            LOG("[VAD] Saved: %s (%d bytes opus)", filename, totalEncoded);
-                        } else {
-                            LOG("[VAD] Failed to open %s", filename);
-                        }
-                    }
-
+                // Flush periodically even during silence
+                if (captured >= CHUNK_SAMPLES) {
+                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
                     captured = 0;
+                }
+
+                if (silenceMs >= VAD_SILENCE_MS) {
+                    // End of utterance — flush remaining and close
+                    voiceActive = false;
+                    if (captured > 0) {
+                        totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
+                        captured = 0;
+                    }
+                    activeFile.close();
+                    LOG("[VAD] Voice ended (%d ms, %d bytes opus)", millis() - startMs, totalEncoded);
+                    totalEncoded = 0;
                     silenceMs = 0;
                 }
             }
         } else {
-            // Fixed duration mode (original behavior)
-            if (captured == 0) startMs = millis();
+            // Fixed duration mode — stream to file
+            if (captured == 0 && !activeFile) {
+                startMs = millis();
+                char filename[64];
+                snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+                activeFile = SD.open(filename, FILE_WRITE);
+                if (!activeFile) {
+                    LOG("[AUDIO] Failed to open %s", filename);
+                    recording = false;
+                    continue;
+                }
+                LOG("[AUDIO] Recording to %s", filename);
+            }
 
-            if (captured + samplesRead <= REC_BUF_SAMPLES) {
-                memcpy(recBuffer + captured, chunkBuffer, bytesRead);
+            // Copy chunk to buffer
+            if (captured + samplesRead <= CHUNK_SAMPLES) {
+                memcpy(chunkBuffer + captured, readBuffer, bytesRead);
                 captured += samplesRead;
             }
 
-            uint32_t totalSamples = SAMPLE_RATE * (recordDurationMs / 1000);
-            if (captured >= totalSamples) {
-                LOG("[AUDIO] Captured %d samples in %d ms", captured, millis() - startMs);
+            // Flush when buffer full
+            if (captured >= CHUNK_SAMPLES) {
+                totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
+                captured = 0;
+            }
 
-                char filename[64];
-                snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
-
-                File file = SD.open(filename, FILE_WRITE);
-                if (file) {
-                    uint32_t totalEncoded = 0;
-                    uint32_t pcmIndex = 0;
-
-                    while (pcmIndex < captured) {
-                        int samplesAvailable = captured - pcmIndex;
-                        int samplesToEncode = (samplesAvailable < OPUS_FRAME_SIZE) ? samplesAvailable : OPUS_FRAME_SIZE;
-
-                        memcpy(encodeBuffer, recBuffer + pcmIndex, samplesToEncode * 2);
-                        if (samplesToEncode < OPUS_FRAME_SIZE) {
-                            memset(encodeBuffer + samplesToEncode, 0, (OPUS_FRAME_SIZE - samplesToEncode) * 2);
-                        }
-
-                        int bytesEncoded = opus_encode(opusEncoder, encodeBuffer, OPUS_FRAME_SIZE,
-                                                       opusBuffer, sizeof(opusBuffer));
-
-                        if (bytesEncoded > 0) {
-                            uint16_t frameLen = (uint16_t)bytesEncoded;
-                            file.write((uint8_t*)&frameLen, 2);
-                            file.write(opusBuffer, bytesEncoded);
-                            totalEncoded += bytesEncoded + 2;
-                        }
-                        pcmIndex += samplesToEncode;
-                    }
-
-                    file.close();
-                    LOG("[AUDIO] Saved: %s (%d bytes opus, %d bytes PCM)",
-                        filename, totalEncoded, captured * 2);
+            // Check if we've reached target duration
+            uint32_t elapsed = millis() - startMs;
+            if (elapsed >= recordDurationMs) {
+                // Flush remaining and close
+                if (captured > 0) {
+                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
+                    captured = 0;
                 }
+                activeFile.close();
+                LOG("[AUDIO] Saved (%d ms, %d bytes opus)", elapsed, totalEncoded);
+                totalEncoded = 0;
                 recording = false;
             }
         }
