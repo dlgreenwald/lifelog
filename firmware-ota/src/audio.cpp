@@ -258,7 +258,7 @@ void audioTask(void *pvParameters) {
                     silenceMs = 0;
                     captured = 0;
                     startMs = millis();
-                    snprintf(currentFile, sizeof(currentFile), "lifelog/rec_%05lu.opus", fileIndex++);
+                    snprintf(currentFile, sizeof(currentFile), "/lifelog/rec_%05lu.opus", fileIndex++);
                     LOG("[VAD] Voice started — %s (RMS=%.0f)", currentFile, smoothedRMS);
                 }
                 silenceMs = 0;
@@ -348,7 +348,7 @@ void audioTask(void *pvParameters) {
             // Fixed duration mode
             if (captured == 0 && currentFile[0] == '\0') {
                 startMs = millis();
-                snprintf(currentFile, sizeof(currentFile), "lifelog/rec_%05lu.opus", fileIndex++);
+                snprintf(currentFile, sizeof(currentFile), "/lifelog/rec_%05lu.opus", fileIndex++);
                 LOG("[AUDIO] Recording to %s", currentFile);
             }
             
