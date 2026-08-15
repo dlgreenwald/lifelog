@@ -58,8 +58,8 @@ static void writeOpusHeaders(OGGZ *oggz, long serialno) {
     memcpy(opusHead, "OpusHead", 8);
     opusHead[8] = 1;    // Version
     opusHead[9] = 1;    // Channel count (mono)
-    opusHead[10] = 0;   // Pre-skip low byte
-    opusHead[11] = 0;   // Pre-skip high byte
+    opusHead[10] = 0;   // Pre-skip low byte (3840 = 0x0F00)
+    opusHead[11] = 15;  // Pre-skip high byte (0x0F = 15)
     // Sample rate (little endian)
     opusHead[12] = SAMPLE_RATE & 0xFF;
     opusHead[13] = (SAMPLE_RATE >> 8) & 0xFF;
@@ -82,7 +82,7 @@ static void writeOpusHeaders(OGGZ *oggz, long serialno) {
     
     // OpusTags comment header
     char vendor[] = "LifeLog";
-    uint8_t opusTags[8 + 4 + 7];
+    uint8_t opusTags[8 + 4 + 7 + 4];  // Magic + vendor len + vendor + comment count
     memcpy(opusTags, "OpusTags", 8);
     // Vendor string length (little endian)
     opusTags[8] = 7;
@@ -90,6 +90,11 @@ static void writeOpusHeaders(OGGZ *oggz, long serialno) {
     opusTags[10] = 0;
     opusTags[11] = 0;
     memcpy(opusTags + 12, vendor, 7);
+    // User comment list length (0 comments)
+    opusTags[19] = 0;
+    opusTags[20] = 0;
+    opusTags[21] = 0;
+    opusTags[22] = 0;
     
     ogg_packet opTags;
     memset(&opTags, 0, sizeof(opTags));
