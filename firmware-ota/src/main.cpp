@@ -1,510 +1,21 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
-#include <driver/i2s.h>
 #include <WiFiManager.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
 #include <esp_ota_ops.h>
-#include <RemoteDebug.h>
-#include <opus.h>
+#include "config.h"
+#include "audio.h"
+#include "upload.h"
+#include "commands.h"
 
-#define LED_PIN  21
 #define MAX_BOOT 3
-
-// Server configuration
-#define SERVER_HOST    "192.168.68.190"  // Dummy server IP
-#define SERVER_PORT    8443
-#define SERVER_PATH    "/api/v1/upload"
-#define API_KEY        "lifelog-key"
-
-// SD Card - XIAO ESP32-S3 Sense built-in slot
-#define SD_CS_PIN   21
-
-// PDM Microphone - Sense built-in
-#define I2S_MIC_CLK  42
-#define I2S_MIC_DIN  41
-
-// Audio
-#define SAMPLE_RATE     16000
-#define OPUS_BITRATE    24000
-#define OPUS_FRAME_SIZE 960   // 60ms at 16kHz
-#define CHUNK_SAMPLES   (SAMPLE_RATE * 5)  // 5 seconds per chunk
-#define VAD_THRESHOLD   800   // Minimum RMS threshold (used during speech)
-#define VAD_SILENCE_MS  1500  // 1.5s silence = end of utterance
-#define VAD_CHUNK_MS    30    // 30ms I2S read chunks
-#define VAD_ANALYSIS_MS 200   // 200ms analysis window for RMS
-#define VAD_BG_ADAPT    1.5   // Speech threshold = background * 1.5
-#define VAD_BG_SAMPLES  50    // Background noise samples to average
-
-// Opus encoder state
-static OpusEncoder* opusEncoder = NULL;
-static uint8_t opusBuffer[1024];
-static int16_t encodeBuffer[OPUS_FRAME_SIZE];
 
 static Preferences prefs;
 static const char* NS = "ota";
-static RemoteDebug Debug;
+RemoteDebug Debug;
 static TaskHandle_t audioTaskHandle = NULL;
-static volatile bool recording = false;
-static volatile bool vadMode = true;
-static uint32_t fileIndex = 0;
-static uint32_t recordDurationMs = 5000;
-static char lastSavedFile[64] = {0};
-
-void processCommand();
-static bool uploadFile(const char* filename);
-
-#define LOG(fmt, ...) do { \
-    Serial.printf(fmt "\n", ##__VA_ARGS__); \
-    debugD(fmt, ##__VA_ARGS__); \
-} while(0)
-
-// ── Audio Capture ──────────────────────────────────────────────────
-
-static float computeRMS(int16_t* samples, int count) {
-    float sum = 0;
-    for (int i = 0; i < count; i++) {
-        sum += (float)samples[i] * (float)samples[i];
-    }
-    return sqrtf(sum / count);
-}
-
-// Simple high-pass filter (removes low-frequency noise)
-// y[n] = alpha * (y[n-1] + x[n] - x[n-1])
-static float hpPrevX = 0;
-static float hpPrevY = 0;
-#define HP_CUTOFF  200  // Hz
-#define HP_ALPHA   0.924  // exp(-2*pi*200/16000)
-
-static void highPassFilter(int16_t* buffer, int count) {
-    for (int i = 0; i < count; i++) {
-        float x = (float)buffer[i];
-        float y = HP_ALPHA * (hpPrevY + x - hpPrevX);
-        hpPrevX = x;
-        hpPrevY = y;
-        buffer[i] = (int16_t)y;
-    }
-}
-
-// Flush accumulated Opus frames to SD
-static uint32_t flushOpusToFile(File& file, int16_t* buffer, uint32_t samples) {
-    uint32_t totalEncoded = 0;
-    uint32_t pcmIndex = 0;
-
-    while (pcmIndex < samples) {
-        int samplesAvailable = samples - pcmIndex;
-        int samplesToEncode = (samplesAvailable < OPUS_FRAME_SIZE) ? samplesAvailable : OPUS_FRAME_SIZE;
-
-        memcpy(encodeBuffer, buffer + pcmIndex, samplesToEncode * 2);
-        if (samplesToEncode < OPUS_FRAME_SIZE) {
-            memset(encodeBuffer + samplesToEncode, 0, (OPUS_FRAME_SIZE - samplesToEncode) * 2);
-        }
-
-        int bytesEncoded = opus_encode(opusEncoder, encodeBuffer, OPUS_FRAME_SIZE,
-                                       opusBuffer, sizeof(opusBuffer));
-
-        if (bytesEncoded > 0) {
-            uint16_t frameLen = (uint16_t)bytesEncoded;
-            file.write((uint8_t*)&frameLen, 2);
-            file.write(opusBuffer, bytesEncoded);
-            totalEncoded += bytesEncoded + 2;
-        }
-        pcmIndex += samplesToEncode;
-    }
-    return totalEncoded;
-}
-
-static void audioCaptureTask(void *pvParameters) {
-    // Small buffer for streaming chunks
-    int16_t* chunkBuffer = (int16_t*)ps_malloc(CHUNK_SAMPLES * 2);
-    if (!chunkBuffer) chunkBuffer = (int16_t*)malloc(CHUNK_SAMPLES * 2);
-    if (!chunkBuffer) { LOG("[AUDIO] Buffer alloc FAILED"); return; }
-    LOG("[AUDIO] Chunk buffer ready (%d bytes, %d sec)", CHUNK_SAMPLES * 2, CHUNK_SAMPLES / SAMPLE_RATE);
-
-    opusEncoder = opus_encoder_create(SAMPLE_RATE, 1, OPUS_APPLICATION_RESTRICTED_LOWDELAY, NULL);
-    if (!opusEncoder) { LOG("[AUDIO] Opus encoder creation failed"); return; }
-    opus_encoder_ctl(opusEncoder, OPUS_SET_BITRATE(OPUS_BITRATE));
-    opus_encoder_ctl(opusEncoder, OPUS_SET_COMPLEXITY(1));
-    LOG("[AUDIO] Opus ready (bitrate=%d)", OPUS_BITRATE);
-
-    // VAD state
-    bool voiceActive = false;
-    uint32_t silenceMs = 0;
-    uint32_t captured = 0;
-    uint32_t totalEncoded = 0;
-    uint32_t startMs = 0;
-    File activeFile;
-
-    // Adaptive threshold state
-    float bgNoise = 200;  // Initial background noise estimate
-    float bgSamples[VAD_BG_SAMPLES];
-    int bgIndex = 0;
-    int bgCount = 0;
-    float currentThreshold = VAD_THRESHOLD;
-
-    while (true) {
-        if (!recording) {
-            // Flush remaining audio and close file
-            if (activeFile) {
-                if (captured > 0) {
-                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                    captured = 0;
-                }
-                activeFile.close();
-                LOG("[AUDIO] Closed file (%d bytes opus)", totalEncoded);
-            }
-            voiceActive = false;
-            silenceMs = 0;
-            captured = 0;
-            totalEncoded = 0;
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-
-        // Read one chunk of audio
-        int chunkSamples = VAD_CHUNK_MS * SAMPLE_RATE / 1000;  // 480 samples for 30ms
-        int16_t readBuffer[480];
-        size_t bytesRead = 0;
-        esp_err_t err = i2s_read(I2S_NUM_0, readBuffer, chunkSamples * 2, &bytesRead, pdMS_TO_TICKS(100));
-
-        if (err != ESP_OK || bytesRead == 0) continue;
-
-        int samplesRead = bytesRead / 2;
-
-        // VAD analysis: accumulate over 200ms window
-        static int16_t analysisBuffer[VAD_ANALYSIS_MS * SAMPLE_RATE / 1000];  // 3200 samples
-        static int analysisIndex = 0;
-        static float smoothedRMS = 0;
-
-        // Copy to analysis buffer
-        int analysisCapacity = VAD_ANALYSIS_MS * SAMPLE_RATE / 1000;
-        int available = analysisCapacity - analysisIndex;
-        int toCopy = (samplesRead < available) ? samplesRead : available;
-        memcpy(analysisBuffer + analysisIndex, readBuffer, toCopy * 2);
-        analysisIndex += toCopy;
-
-        // Compute RMS when analysis window is full
-        if (analysisIndex >= analysisCapacity) {
-            // Apply high-pass filter to remove low-frequency noise
-            highPassFilter(analysisBuffer, analysisCapacity);
-            smoothedRMS = computeRMS(analysisBuffer, analysisCapacity);
-            analysisIndex = 0;
-
-            // Update adaptive threshold when idle (not recording)
-            if (!voiceActive) {
-                // Track background noise using running average
-                bgSamples[bgIndex] = smoothedRMS;
-                bgIndex = (bgIndex + 1) % VAD_BG_SAMPLES;
-                if (bgCount < VAD_BG_SAMPLES) bgCount++;
-
-                float sum = 0;
-                for (int i = 0; i < bgCount; i++) sum += bgSamples[i];
-                bgNoise = sum / bgCount;
-
-                // Speech threshold = background * multiplier, but at least minimum
-                currentThreshold = max((double)(bgNoise * VAD_BG_ADAPT), (double)VAD_THRESHOLD);
-            }
-        }
-
-        if (vadMode) {
-            // VAD mode: detect speech start/end
-            if (smoothedRMS > currentThreshold) {
-                if (!voiceActive) {
-                    // Voice started — open new file
-                    voiceActive = true;
-                    silenceMs = 0;
-                    captured = 0;
-                    totalEncoded = 0;
-                    startMs = millis();
-
-                    char filename[64];
-                    snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
-                    snprintf(lastSavedFile, sizeof(lastSavedFile), "%s", filename);
-                    activeFile = SD.open(filename, FILE_WRITE);
-                    if (!activeFile) {
-                        LOG("[VAD] Failed to open %s", filename);
-                        recording = false;
-                        continue;
-                    }
-                    LOG("[VAD] Voice started — recording to %s (RMS=%.0f)", filename, smoothedRMS);
-                }
-                silenceMs = 0;
-
-                // Copy chunk to buffer
-                if (captured + samplesRead <= CHUNK_SAMPLES) {
-                    memcpy(chunkBuffer + captured, readBuffer, bytesRead);
-                    captured += samplesRead;
-                }
-
-                // Log recording duration periodically
-                uint32_t elapsed = millis() - startMs;
-                static uint32_t lastDurationLog = 0;
-                if (elapsed - lastDurationLog >= 5000) {
-                    LOG("[VAD] Recording... %d sec, %d bytes, RMS=%.0f (thresh=%.0f bg=%.0f)", elapsed / 1000, captured * 2, smoothedRMS, currentThreshold, bgNoise);
-                    lastDurationLog = elapsed;
-                }
-
-                // Flush when buffer full or can't fit next chunk
-                if (captured + samplesRead > CHUNK_SAMPLES) {
-                    LOG("[VAD] Flushing %d samples", captured);
-                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                    captured = 0;
-                }
-            } else if (voiceActive) {
-                // Silence during voice
-                silenceMs += VAD_CHUNK_MS;
-
-                // Copy silence to buffer (keeps audio natural)
-                if (captured + samplesRead <= CHUNK_SAMPLES) {
-                    memcpy(chunkBuffer + captured, readBuffer, bytesRead);
-                    captured += samplesRead;
-                }
-
-                // Flush periodically even during silence
-                if (captured + samplesRead > CHUNK_SAMPLES) {
-                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                    captured = 0;
-                }
-
-                if (silenceMs >= VAD_SILENCE_MS) {
-                    // End of utterance — flush remaining and close
-                    voiceActive = false;
-                    bgCount = 0;  // Reset background tracking
-                    bgIndex = 0;
-                    if (captured > 0) {
-                        totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                        captured = 0;
-                    }
-                    activeFile.close();
-                    LOG("[VAD] Voice ended (%d ms, %d bytes opus)", millis() - startMs, totalEncoded);
-
-                    // Auto-upload the recording
-                    if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
-                        // Reconstruct filename (we need to save it before closing)
-                        // The filename was stored when we opened the file
-                        uploadFile(lastSavedFile);
-                        SD.remove(lastSavedFile);
-                        LOG("[VAD] Uploaded and deleted %s", lastSavedFile);
-                    }
-
-                    totalEncoded = 0;
-                    silenceMs = 0;
-                }
-            }
-        } else {
-            // Fixed duration mode — stream to file
-            if (captured == 0 && !activeFile) {
-                startMs = millis();
-                char filename[64];
-                snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
-                activeFile = SD.open(filename, FILE_WRITE);
-                if (!activeFile) {
-                    LOG("[AUDIO] Failed to open %s", filename);
-                    recording = false;
-                    continue;
-                }
-                LOG("[AUDIO] Recording to %s", filename);
-            }
-
-            // Copy chunk to buffer
-            if (captured + samplesRead <= CHUNK_SAMPLES) {
-                memcpy(chunkBuffer + captured, readBuffer, bytesRead);
-                captured += samplesRead;
-            }
-
-            // Flush when buffer full or can't fit next chunk
-            if (captured + samplesRead > CHUNK_SAMPLES) {
-                totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                captured = 0;
-            }
-
-            // Check if we've reached target duration
-            uint32_t elapsed = millis() - startMs;
-            if (elapsed >= recordDurationMs) {
-                // Flush remaining and close
-                if (captured > 0) {
-                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
-                    captured = 0;
-                }
-                activeFile.close();
-                LOG("[AUDIO] Saved (%d ms, %d bytes opus)", elapsed, totalEncoded);
-                totalEncoded = 0;
-                recording = false;
-            }
-        }
-    }
-}
-
-static void startRecording(uint32_t durationMs) {
-    if (recording) return;
-    recordDurationMs = durationMs;
-    recording = true;
-}
-
-static void toggleVAD() {
-    vadMode = !vadMode;
-    LOG("[VAD] Mode: %s", vadMode ? "VAD (auto)" : "Fixed duration");
-}
-
-// ── PDM Microphone ────────────────────────────────────────────────
-
-static void setupMic() {
-    i2s_config_t i2s_config = {
-        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
-        .sample_rate = SAMPLE_RATE,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 8,
-        .dma_buf_len = 480,
-        .use_apll = false,
-        .tx_desc_auto_clear = false,
-        .fixed_mclk = 0
-    };
-    i2s_pin_config_t pin_config = {
-        .bck_io_num = I2S_PIN_NO_CHANGE,
-        .ws_io_num = I2S_MIC_CLK,
-        .data_out_num = I2S_PIN_NO_CHANGE,
-        .data_in_num = I2S_MIC_DIN
-    };
-    if (i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL) != ESP_OK) {
-        LOG("[I2S] Driver install failed"); return;
-    }
-    if (i2s_set_pin(I2S_NUM_0, &pin_config) != ESP_OK) {
-        LOG("[I2S] Pin config failed"); return;
-    }
-    LOG("[I2S] PDM Mic ready (CLK=%d, DIN=%d)", I2S_MIC_CLK, I2S_MIC_DIN);
-}
-
-// ── SD Card ────────────────────────────────────────────────────────
-
-static void setupSD() {
-    if (!SD.begin(SD_CS_PIN)) { LOG("[SD] Mount failed"); return; }
-    uint8_t t = SD.cardType();
-    if (t == CARD_NONE) { LOG("[SD] No card"); return; }
-    const char* names[] = {"UNKNOWN","MMC","SD","SDHC"};
-    LOG("[SD] Mounted: %s %llu MB", names[t], SD.cardSize()/(1024*1024));
-    if (!SD.exists("/lifelog")) { SD.mkdir("/lifelog"); LOG("[SD] Created /lifelog"); }
-}
-
-// ── WiFi Upload ────────────────────────────────────────────────────
-
-static bool uploadFile(const char* filename) {
-    if (WiFi.status() != WL_CONNECTED) {
-        LOG("[UPLOAD] No WiFi connection");
-        return false;
-    }
-
-    File file = SD.open(filename, FILE_READ);
-    if (!file) {
-        LOG("[UPLOAD] Failed to open %s", filename);
-        return false;
-    }
-
-    uint32_t fileSize = file.size();
-    LOG("[UPLOAD] Uploading %s (%d bytes)...", filename, fileSize);
-
-    // HTTP POST with multipart form data
-    String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT + SERVER_PATH;
-    String boundary = "----LifeLogBoundary" + String(millis());
-    String contentType = "multipart/form-data; boundary=" + boundary;
-
-    // Build multipart body
-    String body = "";
-    body += "--" + boundary + "\r\n";
-    body += "Content-Disposition: form-data; name=\"file\"; filename=\"" + String(filename) + "\"\r\n";
-    body += "Content-Type: application/octet-stream\r\n\r\n";
-
-    // We need to send this in chunks because the body is large
-    // Use WiFiClient directly
-    WiFiClient client;
-    if (!client.connect(SERVER_HOST, SERVER_PORT)) {
-        LOG("[UPLOAD] Connection failed");
-        file.close();
-        return false;
-    }
-
-    // Send headers
-    String headers = "POST " + String(SERVER_PATH) + " HTTP/1.1\r\n";
-    headers += "Host: " + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "\r\n";
-    headers += "X-API-Key: " + String(API_KEY) + "\r\n";
-    headers += "Content-Type: " + contentType + "\r\n";
-
-    // Calculate content length
-    // prefix + file data + suffix
-    uint32_t prefixLen = body.length();
-    uint32_t suffixLen = ("\r\n--" + boundary + "--\r\n").length();
-    uint32_t contentLength = prefixLen + fileSize + suffixLen;
-
-    headers += "Content-Length: " + String(contentLength) + "\r\n";
-    headers += "Connection: close\r\n";
-    headers += "\r\n";
-
-    client.print(headers);
-    client.print(body);
-
-    // Send file data in chunks
-    uint8_t buf[512];
-    uint32_t totalSent = 0;
-    while (file.available()) {
-        int bytesRead = file.read(buf, sizeof(buf));
-        if (bytesRead > 0) {
-            client.write(buf, bytesRead);
-            totalSent += bytesRead;
-        }
-    }
-    file.close();
-
-    // Send suffix
-    client.print("\r\n--" + boundary + "--\r\n");
-
-    // Read response
-    uint32_t startTime = millis();
-    while (!client.available() && millis() - startTime < 10000) {
-        delay(10);
-    }
-
-    String response = "";
-    while (client.available()) {
-        String line = client.readStringUntil('\n');
-        response += line + "\n";
-    }
-    client.stop();
-
-    // Check for 200 OK
-    if (response.indexOf("200") >= 0) {
-        LOG("[UPLOAD] Success: %s", filename);
-        return true;
-    } else {
-        LOG("[UPLOAD] Failed: %s", response.substring(0, 100).c_str());
-        return false;
-    }
-}
-
-static void uploadAllRecordings() {
-    File root = SD.open("/lifelog");
-    if (!root) { LOG("[UPLOAD] Failed to open /lifelog"); return; }
-
-    int uploaded = 0;
-    File f = root.openNextFile();
-    while (f) {
-        if (String(f.name()).endsWith(".opus")) {
-            char path[64];
-            snprintf(path, sizeof(path), "/lifelog/%s", f.name());
-            if (uploadFile(path)) {
-                uploaded++;
-                // Delete after successful upload
-                SD.remove(path);
-                LOG("[UPLOAD] Deleted %s", path);
-            }
-        }
-        f = root.openNextFile();
-    }
-    root.close();
-    LOG("[UPLOAD] Done: %d files uploaded", uploaded);
-}
 
 // ── Boot tracking ──────────────────────────────────────────────────
 
@@ -568,40 +79,17 @@ static void setupOTA() {
 static void setupDebug() {
     Debug.begin("lifelog", RemoteDebug::VERBOSE);
     Debug.setSerialEnabled(true);
-    Debug.setCallBackProjectCmds(processCommand);
-    Debug.setHelpProjectsCmds("rec - start recording\nstop - stop\nls - list files\nupload - upload to server\nvad - toggle VAD mode");
 }
 
-// ── Telnet Commands ────────────────────────────────────────────────
+// ── SD Card ────────────────────────────────────────────────────────
 
-void processCommand() {
-    String cmd = Debug.getLastCommand();
-    cmd.trim();
-    if (cmd == "rec") {
-        if (vadMode) {
-            LOG("[VAD] Listening... (speak to record, silence saves)");
-            recording = true;
-        } else {
-            startRecording(5000);
-        }
-    } else if (cmd == "stop") {
-        recording = false;
-        LOG("[AUDIO] Stopped");
-    } else if (cmd == "vad") {
-        toggleVAD();
-    } else if (cmd == "upload") {
-        LOG("[UPLOAD] Starting upload of all recordings...");
-        uploadAllRecordings();
-    } else if (cmd == "ls") {
-        File root = SD.open("/lifelog");
-        if (root) {
-            File f = root.openNextFile();
-            while (f) { LOG("[LS] %s %d bytes", f.name(), f.size()); f = root.openNextFile(); }
-            root.close();
-        }
-    } else {
-        LOG("[CMD] Unknown: %s", cmd.c_str());
-    }
+static void setupSD() {
+    if (!SD.begin(SD_CS_PIN)) { LOG("[SD] Mount failed"); return; }
+    uint8_t t = SD.cardType();
+    if (t == CARD_NONE) { LOG("[SD] No card"); return; }
+    const char* names[] = {"UNKNOWN","MMC","SD","SDHC"};
+    LOG("[SD] Mounted: %s %llu MB", names[t], SD.cardSize()/(1024*1024));
+    if (!SD.exists("/lifelog")) { SD.mkdir("/lifelog"); LOG("[SD] Created /lifelog"); }
 }
 
 // ── Main ───────────────────────────────────────────────────────────
@@ -616,25 +104,21 @@ void setup() {
     setupWiFi();
     setupDebug();
     setupSD();
-    setupMic();
+    audioInit();
     setupOTA();
+    commandsInit();
 
-    xTaskCreatePinnedToCore(audioCaptureTask, "audio", 32768, NULL, 2, &audioTaskHandle, 1);
-    LOG("[RTOS] Audio capture task created");
-
+    xTaskCreatePinnedToCore(audioTask, "audio", 32768, NULL, 2, &audioTaskHandle, 1);
     bootConfirm();
 
-    // Auto-start VAD recording
     recording = true;
     LOG("[SYSTEM] Ready! VAD active — listening for speech...");
-    LOG("[SYSTEM] Commands: stop, ls, upload, vad (toggle mode)");
 }
 
 void loop() {
     ArduinoOTA.handle();
     Debug.handle();
 
-    // LED status: fast blink when recording, slow blink when idle
     if (recording) {
         digitalWrite(LED_PIN, HIGH);
         delay(200);
