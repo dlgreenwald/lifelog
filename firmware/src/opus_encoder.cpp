@@ -20,13 +20,13 @@ void opusEncodeTask(void *pvParameters) {
     }
     
     opus_encoder_ctl(encoder, OPUS_SET_BITRATE(OPUS_BITRATE));
-    opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(5));
+    opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(1));
     
-    Serial.printf("[OPUS] Encoder ready (rate=%d, complexity=5, frame=%d)\n",
+    Serial.printf("[OPUS] Encoder ready (rate=%d, complexity=1, frame=%d)\n",
                   OPUS_BITRATE, OPUS_FRAME_SIZE);
     
-    uint8_t opusBuffer[1024];
-    int16_t pcmBuffer[OPUS_FRAME_SIZE];  // 60ms at 16kHz = 960 samples
+    static uint8_t opusBuffer[1024];
+    static int16_t pcmBuffer[OPUS_FRAME_SIZE];
     int pcmIndex = 0;
     
     while (true) {

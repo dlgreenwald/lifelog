@@ -29,6 +29,7 @@ graph LR
 ```
 lifelog/
 ├── firmware/src/          ESP32-S3 FreeRTOS firmware (C++/Arduino)
+├── firmware-ota/          OTA-capable firmware with WiFi config + remote logging (WIP)
 ├── server/src/lifelog/    FastAPI orchestrator (Python)
 │   ├── routes/            upload.py, dashboard.py, speakers.py
 │   ├── pipeline/          transcribe.py, diarize_client.py, speaker_client.py, llm.py
@@ -119,6 +120,37 @@ pio run -t upload && pio device monitor
 - On Windows, it's `COM3`, `COM4`, etc. — check Device Manager
 - Baud rate must match `monitor_speed` in `platformio.ini` (115200)
 - If upload fails, hold the BOOT button on the XIAO while pressing upload to enter download mode
+
+### Firmware-OTA (WIP — incremental rebuild of firmware)
+```bash
+cd lifelog/firmware-ota
+
+# Build only
+pio run
+
+# Upload via USB (device must be in download mode: hold BOOT + tap RESET)
+pio run -t upload --upload-port /dev/ttyACM1
+
+# Upload via WiFi (after initial USB upload + WiFi configured)
+pio run -t upload --upload-port 192.168.68.150
+```
+
+**WiFi config:** WiFiManager creates a captive portal AP (`LifeLog-Setup`) on first boot or connection failure. Connect and configure home WiFi at `http://192.168.4.1`.
+
+**Remote logging:** RemoteDebug runs a telnet server on port 23. Connect with `telnet 192.168.x.x` to see live logs and send commands.
+
+**Telnet commands:**
+- `rec` — start 5-second recording to SD card
+- `ls` — list files in `/lifelog/`
+
+**⚠️ CRITICAL: XIAO ESP32-S3 Sense hardware gotchas:**
+- The Sense's built-in microphone is **PDM**, not standard I2S. Use `I2S_MODE_PDM` with `setPinsPdmRx(42, 41)` — only 2 pins (CLK=42, DIN=41), no WS pin
+- The Sense's built-in SD card slot CS pin is **GPIO 21**, NOT GPIO 3. `SD.begin(21)` with default SPI bus
+- I2S DMA and FSPI (SD card) **share internal bus resources** on ESP32-S3 — writing to SD while I2S is actively streaming causes `Card Failed! cmd: 0x0d` errors. Solution: buffer audio in RAM first, write to SD after recording stops
+- Arduino ESP32 core 2.x does NOT include `ESP_I2S.h` (added in 3.x). Use `driver/i2s.h` with `I2S_MODE_PDM` flag instead
+- OTA partition table MUST replace `huge_app.csv` — use custom `partitions_ota.csv` with dual 3MB app slots
+- After changing partition table, full flash erase may be needed: `esptool.py --chip esp32s3 --port /dev/ttyACM1 erase_flash`
+- Device entering deep sleep = battery ADC reads floating voltage. Disable critical shutdown until battery hardware is added
 
 ### Infrastructure
 ```bash
@@ -221,6 +253,9 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `scripts/generate-certs.sh` | TLS cert generation for all services |
 | `ARCHITECTURE.md` | Full architecture doc with endpoint details |
 | `server/alembic/` | Alembic migrations (immutable once committed) |
+| `firmware-ota/src/main.cpp` | OTA firmware: WiFiManager, ArduinoOTA, RemoteDebug, PDM mic, SD card recording |
+| `firmware-ota/partitions/partitions_ota.csv` | Dual OTA partition table (3MB app slots) |
+| `firmware-ota/platformio.ini` | OTA firmware build config |
 
 ## Database Migrations
 
@@ -251,14 +286,15 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 | Diarization | Python 3.11+ | `uv` / pip | hatchling |
 | Speaker ID | Python 3.11+ | `uv` / pip | hatchling |
 | Dashboard | Node.js 20+ | npm | Vite 5 |
-| Firmware | PlatformIO | pio lib | Arduino framework |
+| Firmware | PlatformIO | pio lib | Arduino framework (2.x) |
+| Firmware-OTA | PlatformIO | pio lib | Arduino framework (2.x) |
 | Docker | Docker Compose v3.8 | — | Multi-stage builds |
 
 **Constraints:**
 - Python services use `uv` for venv creation and dependency management
 - No Python lockfiles exist — builds use floating `>=` constraints
 - Dashboard has `package-lock.json` for reproducible npm installs
-- Firmware targets `seeed_xiao_esp32s3` board with `huge_app.csv` partition scheme
+- Firmware targets `seeed_xiao_esp32s3` board with `huge_app.csv` partition scheme (original) or `partitions_ota.csv` (OTA version)
 - Docker images use `python:3.11-slim` base; dashboard uses `node:20-alpine` → `nginx:alpine`
 - GPU services require NVIDIA runtime with CUDA
 - SSL certs are generated at compose level (command overrides), not baked into Dockerfiles

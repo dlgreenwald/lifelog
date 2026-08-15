@@ -12,7 +12,7 @@
 #define SD_SCLK       40
 
 // Battery ADC
-#define BATTERY_ADC_PIN  3  // A0 pin (check XIAO pinout)
+#define BATTERY_ADC_PIN  4  // A4 pin (XIAO ESP32-S3 battery voltage divider)
 
 // Status LED
 #define LED_BLUE_PIN    21  // Built-in blue LED

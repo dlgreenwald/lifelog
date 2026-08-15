@@ -13,6 +13,7 @@
 #include "wifi_manager.h"
 #include "uploader.h"
 #include "battery.h"
+#include "ota_manager.h"
 
 // Task handles
 TaskHandle_t audioCaptureHandle = NULL;
@@ -94,9 +95,12 @@ void initLED() {
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    
+
     Serial.println("\n=== LifeLog Firmware Starting ===");
-    
+
+    // Initialize OTA manager (check boot state)
+    otaManagerInit();
+
     // Init hardware
     initSDCard();
     initI2SMic();
@@ -118,15 +122,23 @@ void setup() {
     
     // Create tasks (core pinning for dual-core ESP32-S3)
     xTaskCreatePinnedToCore(audioCaptureTask, "audio", 4096, NULL, 5, &audioCaptureHandle, 0);
-    xTaskCreatePinnedToCore(opusEncodeTask, "opus", 8192, NULL, 4, &opusEncodeHandle, 1);
+    xTaskCreatePinnedToCore(opusEncodeTask, "opus", 32768, NULL, 4, &opusEncodeHandle, 1);
     xTaskCreatePinnedToCore(uploaderTask, "upload", 4096, NULL, 2, &uploaderHandle, 0);
-    xTaskCreatePinnedToCore(batteryMonitorTask, "batt", 2048, NULL, 1, &batteryMonitorHandle, 0);
+    xTaskCreatePinnedToCore(batteryMonitorTask, "batt", 4096, NULL, 1, &batteryMonitorHandle, 0);
     
     Serial.println("[RTOS] Tasks created");
+
+    // Start OTA server for firmware updates
+    otaServerStart();
+
+    // Mark firmware as confirmed (successful boot)
+    otaConfirmFirmware();
+
     Serial.println("=== LifeLog Ready ===\n");
 }
 
 void loop() {
-    // Empty - FreeRTOS handles everything
-    vTaskDelay(portMAX_DELAY);
+    // Handle OTA server requests
+    otaServerHandleClient();
+    vTaskDelay(pdMS_TO_TICKS(10));
 }

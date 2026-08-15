@@ -40,14 +40,13 @@ void batteryMonitorTask(void *pvParameters) {
             lastLog = now;
         }
         
-        // Critical voltage: graceful shutdown
-        if (voltage < BATTERY_CRITICAL_VOLTAGE) {
-            Serial.println("[BATT] CRITICAL - Shutting down");
-            recording = false;
-            // Wait for current upload to finish
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            esp_deep_sleep_start();
-        }
+        // Critical voltage: graceful shutdown (disabled — no battery divider hardware)
+        // if (voltage < BATTERY_CRITICAL_VOLTAGE) {
+        //     Serial.println("[BATT] CRITICAL - Shutting down");
+        //     recording = false;
+        //     vTaskDelay(pdMS_TO_TICKS(5000));
+        //     esp_deep_sleep_start();
+        // }
         
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
