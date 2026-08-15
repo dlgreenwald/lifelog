@@ -423,11 +423,14 @@ void writerTask(void *pvParameters) {
                     flushOggz(oggz);
                     oggz_close(oggz);
                     oggz = NULL;
+                    activeFile.flush();
+                    delay(100);  // Give SD card time to update FAT
                     activeFile.close();
                     LOG("[WRITER] Closed %s", currentFilename);
                     
                     if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
                         uploadFile(currentFilename);
+                        delay(50);  // Brief pause before delete
                         SD.remove(currentFilename);
                         LOG("[WRITER] Uploaded %s", currentFilename);
                     }
@@ -489,11 +492,14 @@ void writerTask(void *pvParameters) {
                     oggz = NULL;
                 }
                 if (activeFile) {
+                    activeFile.flush();
+                    delay(100);  // Give SD card time to update FAT
                     activeFile.close();
                     LOG("[WRITER] Closed %s (%d bytes)", currentFilename, totalEncoded);
                     
                     if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
                         uploadFile(currentFilename);
+                        delay(50);  // Brief pause before delete
                         SD.remove(currentFilename);
                         LOG("[WRITER] Uploaded %s", currentFilename);
                     }
