@@ -2,25 +2,16 @@
 #include "config.h"
 #include "upload.h"
 #include <opus.h>
+#include <oggz.h>
 
 // Opus encoder state
 static OpusEncoder* opusEncoder = NULL;
-static uint8_t opusBuffer[1024];
-static int16_t encodeBuffer[OPUS_FRAME_SIZE];
 
-// Ogg page counter
-static uint32_t oggPageCounter = 0;
-
-// Queue for audio chunks
-static QueueHandle_t audioQueue = NULL;
-
-// Chunk metadata
-typedef struct {
-    int16_t* data;
-    uint32_t samples;
-    bool isEnd;  // true = end of utterance
-    char filename[64];
-} AudioChunkMsg;
+// Oggz state
+static OGGZ *oggz = NULL;
+static long oggzSerialno = -1;
+static long oggzPacketno = 0;
+static int64_t oggzGranulePos = 0;
 
 // Global state
 volatile bool recording = false;
@@ -28,6 +19,10 @@ volatile bool vadMode = true;
 uint32_t fileIndex = 0;
 uint32_t recordDurationMs = 5000;
 char lastSavedFile[64] = {0};
+
+// Queue settings
+#define AUDIO_QUEUE_SIZE  10
+#define CHUNK_SAMPLES   (SAMPLE_RATE * 5)
 
 // ── Helper functions ───────────────────────────────────────────────
 
@@ -42,7 +37,7 @@ static float computeRMS(int16_t* samples, int count) {
 // High-pass filter (200Hz cutoff)
 static float hpPrevX = 0;
 static float hpPrevY = 0;
-#define HP_ALPHA 0.924  // exp(-2*pi*200/16000)
+#define HP_ALPHA 0.924
 
 static void highPassFilter(int16_t* buffer, int count) {
     for (int i = 0; i < count; i++) {
@@ -54,79 +49,93 @@ static void highPassFilter(int16_t* buffer, int count) {
     }
 }
 
-// Write Ogg/Opus headers to file
-static void writeOggHeaders(File& file) {
-    uint8_t opusHead[19] = {
-        'O', 'p', 'u', 's', 'H', 'e', 'a', 'd',
-        1, 1, 0, 0,
-        (uint8_t)(SAMPLE_RATE & 0xFF),
-        (uint8_t)((SAMPLE_RATE >> 8) & 0xFF),
-        (uint8_t)((SAMPLE_RATE >> 16) & 0xFF),
-        (uint8_t)((SAMPLE_RATE >> 24) & 0xFF),
-        0, 0, 0
-    };
+// ── Ogg/Opus writing using codec-ogg library ───────────────────────
+
+static void writeOpusHeaders(OGGZ *oggz, long serialno) {
+    // OpusHead identification header
+    uint8_t opusHead[19];
+    memset(opusHead, 0, sizeof(opusHead));
+    memcpy(opusHead, "OpusHead", 8);
+    opusHead[8] = 1;    // Version
+    opusHead[9] = 1;    // Channel count (mono)
+    opusHead[10] = 0;   // Pre-skip low byte
+    opusHead[11] = 0;   // Pre-skip high byte
+    // Sample rate (little endian)
+    opusHead[12] = SAMPLE_RATE & 0xFF;
+    opusHead[13] = (SAMPLE_RATE >> 8) & 0xFF;
+    opusHead[14] = (SAMPLE_RATE >> 16) & 0xFF;
+    opusHead[15] = (SAMPLE_RATE >> 24) & 0xFF;
+    opusHead[16] = 0;   // Output gain
+    opusHead[17] = 0;   // Output gain
+    opusHead[18] = 0;   // Channel mapping family
     
-    uint8_t oggS[28] = {
-        'O', 'g', 'g', 'S', 0, 0x02,
-        0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 1, 19
-    };
+    ogg_packet opHead;
+    memset(&opHead, 0, sizeof(opHead));
+    opHead.packet = opusHead;
+    opHead.bytes = sizeof(opusHead);
+    opHead.b_o_s = 1;
+    opHead.e_o_s = 0;
+    opHead.granulepos = 0;
+    opHead.packetno = oggzPacketno++;
     
-    uint32_t serial = 12345;
-    oggS[10] = serial & 0xFF;
-    oggS[11] = (serial >> 8) & 0xFF;
-    oggS[12] = (serial >> 16) & 0xFF;
-    oggS[13] = (serial >> 24) & 0xFF;
+    oggz_write_feed(oggz, &opHead, serialno, OGGZ_FLUSH_BEFORE, NULL);
     
-    uint32_t crc = 0;
-    for (int i = 0; i < 27; i++) crc += oggS[i];
-    for (int i = 0; i < 19; i++) crc += opusHead[i];
-    oggS[22] = crc & 0xFF;
-    oggS[23] = (crc >> 8) & 0xFF;
-    oggS[24] = (crc >> 16) & 0xFF;
-    oggS[25] = (crc >> 24) & 0xFF;
+    // OpusTags comment header
+    char vendor[] = "LifeLog";
+    uint8_t opusTags[8 + 4 + 7];
+    memcpy(opusTags, "OpusTags", 8);
+    // Vendor string length (little endian)
+    opusTags[8] = 7;
+    opusTags[9] = 0;
+    opusTags[10] = 0;
+    opusTags[11] = 0;
+    memcpy(opusTags + 12, vendor, 7);
     
-    file.write(oggS, 28);
-    file.write(opusHead, 19);
+    ogg_packet opTags;
+    memset(&opTags, 0, sizeof(opTags));
+    opTags.packet = opusTags;
+    opTags.bytes = sizeof(opusTags);
+    opTags.b_o_s = 0;
+    opTags.e_o_s = 0;
+    opTags.granulepos = 0;
+    opTags.packetno = oggzPacketno++;
+    
+    oggz_write_feed(oggz, &opTags, serialno, OGGZ_FLUSH_BEFORE, NULL);
 }
 
-// Write Ogg page for Opus frame
-static void writeOggPage(File& file, uint8_t* data, uint32_t len) {
-    uint8_t oggS[28];
-    memset(oggS, 0, 28);
+static void writeOpusFrame(OGGZ *oggz, long serialno, uint8_t* data, int len, int samples) {
+    ogg_packet op;
+    memset(&op, 0, sizeof(op));
+    op.packet = data;
+    op.bytes = len;
+    op.b_o_s = 0;
+    op.e_o_s = 0;
+    oggzGranulePos += samples;
+    op.granulepos = oggzGranulePos;
+    op.packetno = oggzPacketno++;
     
-    oggS[0] = 'O'; oggS[1] = 'g'; oggS[2] = 'g'; oggS[3] = 'S';
-    oggS[4] = 0; oggS[5] = 0x00;
-    
-    uint32_t serial = 12345;
-    oggS[10] = serial & 0xFF;
-    oggS[11] = (serial >> 8) & 0xFF;
-    oggS[12] = (serial >> 16) & 0xFF;
-    oggS[13] = (serial >> 24) & 0xFF;
-    
-    oggS[14] = oggPageCounter & 0xFF;
-    oggS[15] = (oggPageCounter >> 8) & 0xFF;
-    oggS[16] = (oggPageCounter >> 16) & 0xFF;
-    oggS[17] = (oggPageCounter >> 24) & 0xFF;
-    oggPageCounter++;
-    
-    oggS[26] = 1;
-    oggS[27] = (uint8_t)len;
-    
-    uint32_t crc = 0;
-    for (int i = 0; i < 27; i++) crc += oggS[i];
-    for (uint32_t i = 0; i < len; i++) crc += data[i];
-    oggS[22] = crc & 0xFF;
-    oggS[23] = (crc >> 8) & 0xFF;
-    oggS[24] = (crc >> 16) & 0xFF;
-    oggS[25] = (crc >> 24) & 0xFF;
-    
-    file.write(oggS, 28);
-    file.write(data, len);
+    oggz_write_feed(oggz, &op, serialno, 0, NULL);
+}
+
+static void flushOggz(OGGZ *oggz) {
+    unsigned char buf[4096];
+    long n;
+    while ((n = oggz_write(oggz, sizeof(buf))) > 0) {
+        // In a real implementation, write buf to file
+    }
 }
 
 // ── Public API ─────────────────────────────────────────────────────
+
+// Queue for audio chunks
+static QueueHandle_t audioQueue = NULL;
+
+typedef struct {
+    int16_t* data;
+    uint32_t samples;
+    bool isEnd;
+    char filename[64];
+} AudioChunkMsg;
 
 void audioInit() {
     audioQueue = xQueueCreate(AUDIO_QUEUE_SIZE, sizeof(AudioChunkMsg));
@@ -143,10 +152,9 @@ void toggleVAD() {
     LOG("[VAD] Mode: %s", vadMode ? "VAD (auto)" : "Fixed duration");
 }
 
-// ── Audio capture task (always running, never blocks) ──────────────
+// ── Audio capture task ─────────────────────────────────────────────
 
 void audioTask(void *pvParameters) {
-    // Allocate buffers
     int16_t* chunkBuffer = (int16_t*)ps_malloc(CHUNK_SAMPLES * 2);
     if (!chunkBuffer) chunkBuffer = (int16_t*)malloc(CHUNK_SAMPLES * 2);
     if (!chunkBuffer) { LOG("[AUDIO] Buffer alloc FAILED"); return; }
@@ -196,20 +204,19 @@ void audioTask(void *pvParameters) {
 
     // Adaptive threshold
     float bgNoise = 200;
-    float bgSamples[VAD_BG_SAMPLES];
+    float bgSamples[50];
     int bgIndex = 0;
     int bgCount = 0;
-    float currentThreshold = VAD_THRESHOLD;
+    float currentThreshold = 20;
 
     // Analysis buffer
-    static int16_t analysisBuffer[VAD_ANALYSIS_MS * SAMPLE_RATE / 1000];
+    static int16_t analysisBuffer[3200];  // 200ms
     static int analysisIndex = 0;
     static float smoothedRMS = 0;
-    int analysisCapacity = VAD_ANALYSIS_MS * SAMPLE_RATE / 1000;
 
     while (true) {
-        // Always read audio — never block
-        int chunkSamples = VAD_CHUNK_MS * SAMPLE_RATE / 1000;
+        // Always read audio
+        int chunkSamples = 480;  // 30ms
         int16_t readBuffer[480];
         size_t bytesRead = 0;
         i2s_read(I2S_NUM_0, readBuffer, chunkSamples * 2, &bytesRead, pdMS_TO_TICKS(10));
@@ -221,26 +228,25 @@ void audioTask(void *pvParameters) {
         
         int samplesRead = bytesRead / 2;
 
-        // Accumulate for RMS analysis
-        int available = analysisCapacity - analysisIndex;
+        // RMS analysis
+        int available = 3200 - analysisIndex;
         int toCopy = (samplesRead < available) ? samplesRead : available;
         memcpy(analysisBuffer + analysisIndex, readBuffer, toCopy * 2);
         analysisIndex += toCopy;
 
-        if (analysisIndex >= analysisCapacity) {
-            highPassFilter(analysisBuffer, analysisCapacity);
-            smoothedRMS = computeRMS(analysisBuffer, analysisCapacity);
+        if (analysisIndex >= 3200) {
+            highPassFilter(analysisBuffer, 3200);
+            smoothedRMS = computeRMS(analysisBuffer, 3200);
             analysisIndex = 0;
 
-            // Update adaptive threshold when idle
             if (!voiceActive) {
                 bgSamples[bgIndex] = smoothedRMS;
-                bgIndex = (bgIndex + 1) % VAD_BG_SAMPLES;
-                if (bgCount < VAD_BG_SAMPLES) bgCount++;
+                bgIndex = (bgIndex + 1) % 50;
+                if (bgCount < 50) bgCount++;
                 float sum = 0;
                 for (int i = 0; i < bgCount; i++) sum += bgSamples[i];
                 bgNoise = sum / bgCount;
-                currentThreshold = max((double)(bgNoise * VAD_BG_ADAPT), (double)VAD_THRESHOLD);
+                currentThreshold = max((double)(bgNoise * 1.5), (double)20);
 
                 static uint32_t lastIdleLog = 0;
                 uint32_t now = millis();
@@ -263,7 +269,6 @@ void audioTask(void *pvParameters) {
                 }
                 silenceMs = 0;
 
-                // Copy chunk to buffer
                 if (captured + samplesRead <= CHUNK_SAMPLES) {
                     memcpy(chunkBuffer + captured, readBuffer, bytesRead);
                     captured += samplesRead;
@@ -276,26 +281,22 @@ void audioTask(void *pvParameters) {
                     lastLog = elapsed;
                 }
 
-                // Send to queue when buffer full
                 if (captured + samplesRead > CHUNK_SAMPLES) {
                     AudioChunkMsg msg;
-                    msg.data = chunkBuffer;
-                    msg.samples = captured;
-                    msg.isEnd = false;
-                    strncpy(msg.filename, currentFile, sizeof(msg.filename));
-                    
-                    // Allocate new buffer for queue (old one will be used by writer)
                     int16_t* newBuffer = (int16_t*)ps_malloc(CHUNK_SAMPLES * 2);
                     if (!newBuffer) newBuffer = (int16_t*)malloc(CHUNK_SAMPLES * 2);
                     if (newBuffer) {
                         memcpy(newBuffer, chunkBuffer, captured * 2);
                         msg.data = newBuffer;
+                        msg.samples = captured;
+                        msg.isEnd = false;
+                        strncpy(msg.filename, currentFile, sizeof(msg.filename));
                         xQueueSend(audioQueue, &msg, pdMS_TO_TICKS(100));
                         captured = 0;
                     }
                 }
             } else if (voiceActive) {
-                silenceMs += VAD_CHUNK_MS;
+                silenceMs += 30;
 
                 if (captured + samplesRead <= CHUNK_SAMPLES) {
                     memcpy(chunkBuffer + captured, readBuffer, bytesRead);
@@ -304,27 +305,24 @@ void audioTask(void *pvParameters) {
 
                 if (captured + samplesRead > CHUNK_SAMPLES) {
                     AudioChunkMsg msg;
-                    msg.data = chunkBuffer;
-                    msg.samples = captured;
-                    msg.isEnd = false;
-                    strncpy(msg.filename, currentFile, sizeof(msg.filename));
-                    
                     int16_t* newBuffer = (int16_t*)ps_malloc(CHUNK_SAMPLES * 2);
                     if (!newBuffer) newBuffer = (int16_t*)malloc(CHUNK_SAMPLES * 2);
                     if (newBuffer) {
                         memcpy(newBuffer, chunkBuffer, captured * 2);
                         msg.data = newBuffer;
+                        msg.samples = captured;
+                        msg.isEnd = false;
+                        strncpy(msg.filename, currentFile, sizeof(msg.filename));
                         xQueueSend(audioQueue, &msg, pdMS_TO_TICKS(100));
                         captured = 0;
                     }
                 }
 
-                if (silenceMs >= VAD_SILENCE_MS) {
+                if (silenceMs >= 1500) {
                     voiceActive = false;
                     bgCount = 0;
                     bgIndex = 0;
                     
-                    // Send end marker
                     if (captured > 0) {
                         AudioChunkMsg msg;
                         int16_t* newBuffer = (int16_t*)ps_malloc(captured * 2);
@@ -395,14 +393,19 @@ void audioTask(void *pvParameters) {
     }
 }
 
-// ── Writer task (handles SD writes and uploads) ────────────────────
+// ── Writer task ────────────────────────────────────────────────────
+
+// Write callback for oggz
+static size_t writeCallback(void *user_handle, void *buf, size_t n) {
+    File *file = (File*)user_handle;
+    return file->write((uint8_t*)buf, n);
+}
 
 void writerTask(void *pvParameters) {
     File activeFile;
     uint32_t totalEncoded = 0;
     char currentFilename[64] = {0};
     
-    // Wait for SD to be ready
     delay(1000);
     
     while (true) {
@@ -411,11 +414,13 @@ void writerTask(void *pvParameters) {
             // Open new file if needed
             if (currentFilename[0] == '\0' || strcmp(currentFilename, msg.filename) != 0) {
                 if (activeFile) {
-                    // Close previous file
+                    // Flush and close previous file
+                    flushOggz(oggz);
+                    oggz_close(oggz);
+                    oggz = NULL;
                     activeFile.close();
-                    LOG("[WRITER] Closed %s (%d bytes)", currentFilename, totalEncoded);
+                    LOG("[WRITER] Closed %s", currentFilename);
                     
-                    // Upload and delete
                     if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
                         uploadFile(currentFilename);
                         SD.remove(currentFilename);
@@ -426,30 +431,32 @@ void writerTask(void *pvParameters) {
                 
                 // Open new file
                 strncpy(currentFilename, msg.filename, sizeof(currentFilename));
-                if (SD.cardType() == CARD_NONE) {
-                    LOG("[WRITER] SD card not available");
-                    free(msg.data);
-                    continue;
-                }
                 activeFile = SD.open(currentFilename, FILE_WRITE);
                 if (activeFile) {
-                    oggPageCounter = 0;
-                    writeOggHeaders(activeFile);
-                    LOG("[WRITER] Opened %s", currentFilename);
+                    // Create new oggz handle
+                    oggz = oggz_new(OGGZ_WRITE | OGGZ_NONSTRICT);
+                    if (oggz) {
+                        oggzSerialno = oggz_serialno_new(oggz);
+                        oggz_io_set_write(oggz, writeCallback, &activeFile);
+                        writeOpusHeaders(oggz, oggzSerialno);
+                        LOG("[WRITER] Opened %s", currentFilename);
+                    }
                 } else {
                     LOG("[WRITER] Failed to open %s", currentFilename);
                     currentFilename[0] = '\0';
                 }
             }
             
-            // Write audio data
-            if (activeFile && msg.samples > 0) {
-                // Encode with Opus
+            // Encode and write audio data
+            if (oggz && msg.samples > 0) {
+                uint8_t opusBuffer[1024];
                 uint32_t pcmIndex = 0;
+                
                 while (pcmIndex < msg.samples) {
                     int samplesAvailable = msg.samples - pcmIndex;
                     int samplesToEncode = (samplesAvailable < OPUS_FRAME_SIZE) ? samplesAvailable : OPUS_FRAME_SIZE;
                     
+                    int16_t encodeBuffer[OPUS_FRAME_SIZE];
                     memcpy(encodeBuffer, msg.data + pcmIndex, samplesToEncode * 2);
                     if (samplesToEncode < OPUS_FRAME_SIZE) {
                         memset(encodeBuffer + samplesToEncode, 0, (OPUS_FRAME_SIZE - samplesToEncode) * 2);
@@ -459,16 +466,23 @@ void writerTask(void *pvParameters) {
                                                    opusBuffer, sizeof(opusBuffer));
                     
                     if (bytesEncoded > 0) {
-                        writeOggPage(activeFile, opusBuffer, bytesEncoded);
+                        writeOpusFrame(oggz, oggzSerialno, opusBuffer, bytesEncoded, OPUS_FRAME_SIZE);
                         totalEncoded += bytesEncoded;
                     }
                     pcmIndex += samplesToEncode;
                 }
-                activeFile.flush();
+                
+                // Flush oggz periodically
+                flushOggz(oggz);
             }
             
             // End of utterance
             if (msg.isEnd) {
+                if (oggz) {
+                    flushOggz(oggz);
+                    oggz_close(oggz);
+                    oggz = NULL;
+                }
                 if (activeFile) {
                     activeFile.close();
                     LOG("[WRITER] Closed %s (%d bytes)", currentFilename, totalEncoded);
@@ -483,7 +497,6 @@ void writerTask(void *pvParameters) {
                 }
             }
             
-            // Free the buffer
             free(msg.data);
         }
     }
