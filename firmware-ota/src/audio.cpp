@@ -115,7 +115,8 @@ static void writeOpusFrame(OGGZ *oggz, long serialno, uint8_t* data, int len, in
     op.bytes = len;
     op.b_o_s = 0;
     op.e_o_s = 0;
-    oggzGranulePos += samples;
+    // Granule position must be in 48kHz units (our audio is 16kHz, so multiply by 3)
+    oggzGranulePos += samples * 3;
     op.granulepos = oggzGranulePos;
     op.packetno = oggzPacketno++;
     
