@@ -47,8 +47,10 @@ static volatile bool recording = false;
 static volatile bool vadMode = true;
 static uint32_t fileIndex = 0;
 static uint32_t recordDurationMs = 5000;
+static char lastSavedFile[64] = {0};
 
 void processCommand();
+static bool uploadFile(const char* filename);
 
 #define LOG(fmt, ...) do { \
     Serial.printf(fmt "\n", ##__VA_ARGS__); \
@@ -116,8 +118,12 @@ static void audioCaptureTask(void *pvParameters) {
 
     while (true) {
         if (!recording) {
-            // Close any open file
+            // Flush remaining audio and close file
             if (activeFile) {
+                if (captured > 0) {
+                    totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
+                    captured = 0;
+                }
                 activeFile.close();
                 LOG("[AUDIO] Closed file (%d bytes opus)", totalEncoded);
             }
@@ -153,6 +159,7 @@ static void audioCaptureTask(void *pvParameters) {
 
                     char filename[64];
                     snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+                    snprintf(lastSavedFile, sizeof(lastSavedFile), "%s", filename);
                     activeFile = SD.open(filename, FILE_WRITE);
                     if (!activeFile) {
                         LOG("[VAD] Failed to open %s", filename);
@@ -171,6 +178,7 @@ static void audioCaptureTask(void *pvParameters) {
 
                 // Flush when buffer full
                 if (captured >= CHUNK_SAMPLES) {
+                    LOG("[VAD] Flushing %d samples", captured);
                     totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
                     captured = 0;
                 }
@@ -199,6 +207,16 @@ static void audioCaptureTask(void *pvParameters) {
                     }
                     activeFile.close();
                     LOG("[VAD] Voice ended (%d ms, %d bytes opus)", millis() - startMs, totalEncoded);
+
+                    // Auto-upload the recording
+                    if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
+                        // Reconstruct filename (we need to save it before closing)
+                        // The filename was stored when we opened the file
+                        uploadFile(lastSavedFile);
+                        SD.remove(lastSavedFile);
+                        LOG("[VAD] Uploaded and deleted %s", lastSavedFile);
+                    }
+
                     totalEncoded = 0;
                     silenceMs = 0;
                 }
@@ -534,14 +552,27 @@ void setup() {
     LOG("[RTOS] Audio capture task created");
 
     bootConfirm();
-    LOG("[SYSTEM] Ready! Commands: rec, stop, ls");
+
+    // Auto-start VAD recording
+    recording = true;
+    LOG("[SYSTEM] Ready! VAD active — listening for speech...");
+    LOG("[SYSTEM] Commands: stop, ls, upload, vad (toggle mode)");
 }
 
 void loop() {
     ArduinoOTA.handle();
     Debug.handle();
-    digitalWrite(LED_PIN, HIGH);
-    delay(1000);
-    digitalWrite(LED_PIN, LOW);
-    delay(1000);
+
+    // LED status: fast blink when recording, slow blink when idle
+    if (recording) {
+        digitalWrite(LED_PIN, HIGH);
+        delay(200);
+        digitalWrite(LED_PIN, LOW);
+        delay(200);
+    } else {
+        digitalWrite(LED_PIN, HIGH);
+        delay(1000);
+        digitalWrite(LED_PIN, LOW);
+        delay(1000);
+    }
 }
