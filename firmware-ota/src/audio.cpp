@@ -195,6 +195,14 @@ void audioTask(void *pvParameters) {
                 for (int i = 0; i < bgCount; i++) sum += bgSamples[i];
                 bgNoise = sum / bgCount;
                 currentThreshold = max((double)(bgNoise * VAD_BG_ADAPT), (double)VAD_THRESHOLD);
+
+                // Log idle status periodically
+                static uint32_t lastIdleLog = 0;
+                uint32_t now = millis();
+                if (now - lastIdleLog >= 5000) {
+                    LOG("[VAD] Idle: RMS=%.0f, bg=%.0f, thresh=%.0f", smoothedRMS, bgNoise, currentThreshold);
+                    lastIdleLog = now;
+                }
             }
         }
 

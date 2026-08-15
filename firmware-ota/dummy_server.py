@@ -40,7 +40,9 @@ async def upload_audio(
     audio_bytes = await file.read()
 
     if SAVE_FILES:
-        filepath = os.path.join(UPLOAD_DIR, file.filename or f"{int(time.time())}.opus")
+        import os
+        basename = os.path.basename(file.filename or f"{int(time.time())}.opus")
+        filepath = os.path.join(UPLOAD_DIR, basename)
         with open(filepath, "wb") as f:
             f.write(audio_bytes)
         print(f"[UPLOAD] {user['name']}: {file.filename} ({len(audio_bytes)} bytes) -> saved")
