@@ -70,6 +70,23 @@ static float computeRMS(int16_t* samples, int count) {
     return sqrtf(sum / count);
 }
 
+// Simple high-pass filter (removes low-frequency noise)
+// y[n] = alpha * (y[n-1] + x[n] - x[n-1])
+static float hpPrevX = 0;
+static float hpPrevY = 0;
+#define HP_CUTOFF  200  // Hz
+#define HP_ALPHA   0.924  // exp(-2*pi*200/16000)
+
+static void highPassFilter(int16_t* buffer, int count) {
+    for (int i = 0; i < count; i++) {
+        float x = (float)buffer[i];
+        float y = HP_ALPHA * (hpPrevY + x - hpPrevX);
+        hpPrevX = x;
+        hpPrevY = y;
+        buffer[i] = (int16_t)y;
+    }
+}
+
 // Flush accumulated Opus frames to SD
 static uint32_t flushOpusToFile(File& file, int16_t* buffer, uint32_t samples) {
     uint32_t totalEncoded = 0;
@@ -169,6 +186,8 @@ static void audioCaptureTask(void *pvParameters) {
 
         // Compute RMS when analysis window is full
         if (analysisIndex >= analysisCapacity) {
+            // Apply high-pass filter to remove low-frequency noise
+            highPassFilter(analysisBuffer, analysisCapacity);
             smoothedRMS = computeRMS(analysisBuffer, analysisCapacity);
             analysisIndex = 0;
 
