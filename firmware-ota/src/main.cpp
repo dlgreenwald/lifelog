@@ -30,9 +30,12 @@
 #define OPUS_BITRATE    24000
 #define OPUS_FRAME_SIZE 960   // 60ms at 16kHz
 #define CHUNK_SAMPLES   (SAMPLE_RATE * 5)  // 5 seconds per chunk
-#define VAD_THRESHOLD   500   // RMS threshold for voice detection
+#define VAD_THRESHOLD   800   // Minimum RMS threshold (used during speech)
 #define VAD_SILENCE_MS  1500  // 1.5s silence = end of utterance
-#define VAD_CHUNK_MS    30    // 30ms audio chunks for VAD processing
+#define VAD_CHUNK_MS    30    // 30ms I2S read chunks
+#define VAD_ANALYSIS_MS 200   // 200ms analysis window for RMS
+#define VAD_BG_ADAPT    1.5   // Speech threshold = background * 1.5
+#define VAD_BG_SAMPLES  50    // Background noise samples to average
 
 // Opus encoder state
 static OpusEncoder* opusEncoder = NULL;
@@ -116,6 +119,13 @@ static void audioCaptureTask(void *pvParameters) {
     uint32_t startMs = 0;
     File activeFile;
 
+    // Adaptive threshold state
+    float bgNoise = 200;  // Initial background noise estimate
+    float bgSamples[VAD_BG_SAMPLES];
+    int bgIndex = 0;
+    int bgCount = 0;
+    float currentThreshold = VAD_THRESHOLD;
+
     while (true) {
         if (!recording) {
             // Flush remaining audio and close file
@@ -144,11 +154,43 @@ static void audioCaptureTask(void *pvParameters) {
         if (err != ESP_OK || bytesRead == 0) continue;
 
         int samplesRead = bytesRead / 2;
-        float rms = computeRMS(readBuffer, samplesRead);
+
+        // VAD analysis: accumulate over 200ms window
+        static int16_t analysisBuffer[VAD_ANALYSIS_MS * SAMPLE_RATE / 1000];  // 3200 samples
+        static int analysisIndex = 0;
+        static float smoothedRMS = 0;
+
+        // Copy to analysis buffer
+        int analysisCapacity = VAD_ANALYSIS_MS * SAMPLE_RATE / 1000;
+        int available = analysisCapacity - analysisIndex;
+        int toCopy = (samplesRead < available) ? samplesRead : available;
+        memcpy(analysisBuffer + analysisIndex, readBuffer, toCopy * 2);
+        analysisIndex += toCopy;
+
+        // Compute RMS when analysis window is full
+        if (analysisIndex >= analysisCapacity) {
+            smoothedRMS = computeRMS(analysisBuffer, analysisCapacity);
+            analysisIndex = 0;
+
+            // Update adaptive threshold when idle (not recording)
+            if (!voiceActive) {
+                // Track background noise using running average
+                bgSamples[bgIndex] = smoothedRMS;
+                bgIndex = (bgIndex + 1) % VAD_BG_SAMPLES;
+                if (bgCount < VAD_BG_SAMPLES) bgCount++;
+
+                float sum = 0;
+                for (int i = 0; i < bgCount; i++) sum += bgSamples[i];
+                bgNoise = sum / bgCount;
+
+                // Speech threshold = background * multiplier, but at least minimum
+                currentThreshold = max((double)(bgNoise * VAD_BG_ADAPT), (double)VAD_THRESHOLD);
+            }
+        }
 
         if (vadMode) {
             // VAD mode: detect speech start/end
-            if (rms > VAD_THRESHOLD) {
+            if (smoothedRMS > currentThreshold) {
                 if (!voiceActive) {
                     // Voice started — open new file
                     voiceActive = true;
@@ -166,7 +208,7 @@ static void audioCaptureTask(void *pvParameters) {
                         recording = false;
                         continue;
                     }
-                    LOG("[VAD] Voice started — recording to %s (RMS=%.0f)", filename, rms);
+                    LOG("[VAD] Voice started — recording to %s (RMS=%.0f)", filename, smoothedRMS);
                 }
                 silenceMs = 0;
 
@@ -180,7 +222,7 @@ static void audioCaptureTask(void *pvParameters) {
                 uint32_t elapsed = millis() - startMs;
                 static uint32_t lastDurationLog = 0;
                 if (elapsed - lastDurationLog >= 5000) {
-                    LOG("[VAD] Recording... %d sec active, %d bytes captured", elapsed / 1000, captured * 2);
+                    LOG("[VAD] Recording... %d sec, %d bytes, RMS=%.0f (thresh=%.0f bg=%.0f)", elapsed / 1000, captured * 2, smoothedRMS, currentThreshold, bgNoise);
                     lastDurationLog = elapsed;
                 }
 
@@ -209,6 +251,8 @@ static void audioCaptureTask(void *pvParameters) {
                 if (silenceMs >= VAD_SILENCE_MS) {
                     // End of utterance — flush remaining and close
                     voiceActive = false;
+                    bgCount = 0;  // Reset background tracking
+                    bgIndex = 0;
                     if (captured > 0) {
                         totalEncoded += flushOpusToFile(activeFile, chunkBuffer, captured);
                         captured = 0;
