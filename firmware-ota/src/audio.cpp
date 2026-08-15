@@ -8,6 +8,9 @@ static OpusEncoder* opusEncoder = NULL;
 static uint8_t opusBuffer[1024];
 static int16_t encodeBuffer[OPUS_FRAME_SIZE];
 
+// Ogg page counter
+static uint32_t oggPageCounter = 0;
+
 // Global state
 volatile bool recording = false;
 volatile bool vadMode = true;
@@ -40,6 +43,103 @@ static void highPassFilter(int16_t* buffer, int count) {
     }
 }
 
+// Write Ogg/Opus headers to file
+static void writeOggHeaders(File& file) {
+    // OpusHead header
+    uint8_t opusHead[19] = {
+        'O', 'p', 'u', 's', 'H', 'e', 'a', 'd',  // Magic
+        1,           // Version
+        1,           // Channel count
+        0, 0,        // Pre-skip (little endian)
+        (uint8_t)(SAMPLE_RATE & 0xFF),
+        (uint8_t)((SAMPLE_RATE >> 8) & 0xFF),
+        (uint8_t)((SAMPLE_RATE >> 16) & 0xFF),
+        (uint8_t)((SAMPLE_RATE >> 24) & 0xFF),
+        0, 0,        // Output gain
+        0            // Channel mapping family
+    };
+    
+    // OggS header + OpusHead page
+    uint8_t oggS[28] = {
+        'O', 'g', 'g', 'S',  // Magic
+        0,           // Version
+        0x02,        // Header type (BOS)
+        0, 0, 0, 0, 0, 0, 0, 0,  // Granule position
+        0, 0, 0, 0,  // Serial number
+        0, 0, 0, 0,  // Page sequence
+        0, 0, 0, 0,  // CRC checksum (placeholder)
+        1,           // Segment count
+        19           // Segment size
+    };
+    
+    // Set serial number (random)
+    uint32_t serial = 12345;
+    oggS[10] = serial & 0xFF;
+    oggS[11] = (serial >> 8) & 0xFF;
+    oggS[12] = (serial >> 16) & 0xFF;
+    oggS[13] = (serial >> 24) & 0xFF;
+    
+    // Set page sequence
+    oggS[14] = oggPageCounter & 0xFF;
+    oggS[15] = (oggPageCounter >> 8) & 0xFF;
+    oggS[16] = (oggPageCounter >> 16) & 0xFF;
+    oggS[17] = (oggPageCounter >> 24) & 0xFF;
+    oggPageCounter++;
+    
+    // Calculate CRC (simplified - using sum of bytes)
+    uint32_t crc = 0;
+    for (int i = 0; i < 27; i++) crc += oggS[i];
+    for (int i = 0; i < 19; i++) crc += opusHead[i];
+    oggS[22] = crc & 0xFF;
+    oggS[23] = (crc >> 8) & 0xFF;
+    oggS[24] = (crc >> 16) & 0xFF;
+    oggS[25] = (crc >> 24) & 0xFF;
+    
+    file.write(oggS, 28);
+    file.write(opusHead, 19);
+}
+
+// Write Ogg page for Opus frame
+static void writeOggPage(File& file, uint8_t* data, uint32_t len) {
+    uint8_t oggS[27];
+    memset(oggS, 0, 27);
+    
+    oggS[0] = 'O'; oggS[1] = 'g'; oggS[2] = 'g'; oggS[3] = 'S';
+    oggS[4] = 0;    // Version
+    oggS[5] = 0x00; // Header type (continuation)
+    
+    // Serial number (same as header)
+    uint32_t serial = 12345;
+    oggS[10] = serial & 0xFF;
+    oggS[11] = (serial >> 8) & 0xFF;
+    oggS[12] = (serial >> 16) & 0xFF;
+    oggS[13] = (serial >> 24) & 0xFF;
+    
+    // Page sequence
+    oggS[14] = oggPageCounter & 0xFF;
+    oggS[15] = (oggPageCounter >> 8) & 0xFF;
+    oggS[16] = (oggPageCounter >> 16) & 0xFF;
+    oggS[17] = (oggPageCounter >> 24) & 0xFF;
+    oggPageCounter++;
+    
+    // Segment count and size
+    oggS[26] = 1;       // One segment
+    oggS[27] = (uint8_t)len;  // Segment size
+    
+    // Calculate CRC
+    uint32_t crc = 0;
+    for (int i = 0; i < 27; i++) crc += oggS[i];
+    for (uint32_t i = 0; i < len; i++) crc += data[i];
+    oggS[22] = crc & 0xFF;
+    oggS[23] = (crc >> 8) & 0xFF;
+    oggS[24] = (crc >> 16) & 0xFF;
+    oggS[25] = (crc >> 24) & 0xFF;
+    
+    file.write(oggS, 28);  // 27 + 1 segment size byte
+    file.write(data, len);
+}
+
+// Flush Opus frames to file with Ogg encapsulation
 static uint32_t flushOpusToFile(File& file, int16_t* buffer, uint32_t samples) {
     uint32_t totalEncoded = 0;
     uint32_t pcmIndex = 0;
@@ -57,10 +157,8 @@ static uint32_t flushOpusToFile(File& file, int16_t* buffer, uint32_t samples) {
                                        opusBuffer, sizeof(opusBuffer));
 
         if (bytesEncoded > 0) {
-            uint16_t frameLen = (uint16_t)bytesEncoded;
-            file.write((uint8_t*)&frameLen, 2);
-            file.write(opusBuffer, bytesEncoded);
-            totalEncoded += bytesEncoded + 2;
+            writeOggPage(file, opusBuffer, bytesEncoded);
+            totalEncoded += bytesEncoded;
         }
         pcmIndex += samplesToEncode;
     }
@@ -219,6 +317,8 @@ void audioTask(void *pvParameters) {
                     snprintf(lastSavedFile, sizeof(lastSavedFile), "%s", filename);
                     activeFile = SD.open(filename, FILE_WRITE);
                     if (!activeFile) { LOG("[VAD] Failed to open %s", filename); recording = false; continue; }
+                    oggPageCounter = 0;
+                    writeOggHeaders(activeFile);
                     LOG("[VAD] Voice started — %s (RMS=%.0f)", filename, smoothedRMS);
                 }
                 silenceMs = 0;
