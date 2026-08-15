@@ -101,8 +101,8 @@ static void writeOggHeaders(File& file) {
 
 // Write Ogg page for Opus frame
 static void writeOggPage(File& file, uint8_t* data, uint32_t len) {
-    uint8_t oggS[27];
-    memset(oggS, 0, 27);
+    uint8_t oggS[28];
+    memset(oggS, 0, 28);
     
     oggS[0] = 'O'; oggS[1] = 'g'; oggS[2] = 'g'; oggS[3] = 'S';
     oggS[4] = 0;    // Version
