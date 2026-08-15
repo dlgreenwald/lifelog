@@ -402,6 +402,9 @@ void writerTask(void *pvParameters) {
     uint32_t totalEncoded = 0;
     char currentFilename[64] = {0};
     
+    // Wait for SD to be ready
+    delay(1000);
+    
     while (true) {
         AudioChunkMsg msg;
         if (xQueueReceive(audioQueue, &msg, portMAX_DELAY)) {
@@ -423,6 +426,11 @@ void writerTask(void *pvParameters) {
                 
                 // Open new file
                 strncpy(currentFilename, msg.filename, sizeof(currentFilename));
+                if (SD.cardType() == CARD_NONE) {
+                    LOG("[WRITER] SD card not available");
+                    free(msg.data);
+                    continue;
+                }
                 activeFile = SD.open(currentFilename, FILE_WRITE);
                 if (activeFile) {
                     oggPageCounter = 0;
