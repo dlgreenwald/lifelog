@@ -150,8 +150,11 @@ void audioTask(void *pvParameters) {
 
         int samplesRead = bytesRead / 2;
 
-        // Copy to active buffer (no gain yet — applied in write task)
+        // Copy to active buffer with volume gain
         if (audioCount + samplesRead <= bufCapacity) {
+            for (int i = 0; i < samplesRead; i++) {
+                (*(uint16_t*)(readBuffer + i)) <<= VOLUME_GAIN;
+            }
             memcpy(audioBuf + audioCount, readBuffer, bytesRead);
             audioCount += samplesRead;
         }
@@ -198,11 +201,7 @@ void writerTask(void *pvParameters) {
             generate_wav_header(wav_header, totalBytes, SAMPLE_RATE);
             file.write(wav_header, WAV_HEADER_SIZE);
 
-            // Apply volume gain to the buffer we're writing
-            for (uint32_t i = 0; i < samplesToWrite; i++) {
-                (*(uint16_t*)(writeBuf + i)) <<= VOLUME_GAIN;
-            }
-
+            // Write audio data (gain already applied during capture)
             file.write((uint8_t*)writeBuf, totalBytes);
             file.close();
             LOG("[AUDIO] Saved: %s (%d bytes)", filename, totalBytes + WAV_HEADER_SIZE);
