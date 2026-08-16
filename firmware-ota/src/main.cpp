@@ -84,12 +84,25 @@ static void setupDebug() {
 // ── SD Card ────────────────────────────────────────────────────────
 
 static void setupSD() {
-    if (!SD.begin(SD_CS_PIN)) { LOG("[SD] Mount failed"); return; }
+    // Initialize SD like the guide: SD.begin(21)
+    if (!SD.begin(SD_CS_PIN)) {
+        LOG("[SD] Mount failed");
+        return;
+    }
+    
     uint8_t t = SD.cardType();
-    if (t == CARD_NONE) { LOG("[SD] No card"); return; }
+    if (t == CARD_NONE) {
+        LOG("[SD] No card detected");
+        return;
+    }
+    
     const char* names[] = {"UNKNOWN","MMC","SD","SDHC"};
     LOG("[SD] Mounted: %s %llu MB", names[t], SD.cardSize()/(1024*1024));
-    if (!SD.exists("lifelog")) { SD.mkdir("lifelog"); LOG("[SD] Created lifelog"); }
+    
+    if (!SD.exists("lifelog")) {
+        SD.mkdir("lifelog");
+        LOG("[SD] Created /lifelog");
+    }
 }
 
 // ── Main ───────────────────────────────────────────────────────────

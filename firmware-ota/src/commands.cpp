@@ -3,6 +3,7 @@
 #include "audio.h"
 #include "upload.h"
 #include <SD.h>
+#include <I2S.h>
 
 extern RemoteDebug Debug;
 
@@ -44,12 +45,9 @@ void processCommand() {
         uint32_t count = 0;
         uint32_t maxRms = 0;
         while (millis() - startMs < 5000) {
-            size_t bytesRead = 0;
-            i2s_read(I2S_NUM_0, buffer, sizeof(buffer), &bytesRead, pdMS_TO_TICKS(100));
-            if (bytesRead > 0) {
-                float sum = 0;
-                for (int i = 0; i < bytesRead/2; i++) sum += (float)buffer[i] * (float)buffer[i];
-                float rms = sqrtf(sum / (bytesRead/2));
+            int sample = I2S.read();
+            if (sample > 1 || sample < -1) {
+                float rms = abs(sample);
                 sumRms += (uint32_t)rms;
                 count++;
                 if (rms > maxRms) maxRms = (uint32_t)rms;
