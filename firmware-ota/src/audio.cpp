@@ -137,6 +137,14 @@ void audioTask(void *pvParameters) {
         int samplesToRead = SAMPLE_RATE * VAD_CHUNK_MS / 1000;  // 480 samples
         int16_t readBuffer[480];
         size_t bytesRead = 0;
+
+        static uint32_t lastLog = 0;
+        uint32_t now = millis();
+        if (now - lastLog >= 5000) {
+            LOG("[AUDIO] audioCount=%d, writeDone=%d", audioCount, writeDone);
+            lastLog = now;
+        }
+
         esp_i2s::i2s_read(esp_i2s::I2S_NUM_0, readBuffer, samplesToRead * 2, &bytesRead, portMAX_DELAY);
         if (bytesRead == 0) continue;
 
@@ -148,8 +156,9 @@ void audioTask(void *pvParameters) {
             audioCount += samplesRead;
         }
 
-        // When buffer is full, swap and signal write task
-        if (audioCount >= bufCapacity) {
+        // When buffer is full or can't fit next chunk, swap
+        if (audioCount + samplesRead > bufCapacity) {
+            LOG("[AUDIO] Buffer full (%d samples), swapping...", audioCount);
             // Wait for write task to finish previous buffer
             while (!writeDone) { vTaskDelay(pdMS_TO_TICKS(5)); }
 
@@ -162,6 +171,7 @@ void audioTask(void *pvParameters) {
 
             bufferReady = true;
             writeDone = false;
+            LOG("[AUDIO] Swapped buffers, write task notified");
         }
     }
 }
