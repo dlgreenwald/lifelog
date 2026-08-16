@@ -67,36 +67,40 @@ static void applyGain(int16_t* buffer, int count) {
     }
 }
 
-// ── WAV header writing ─────────────────────────────────────────────
+// ── WAV header writing (minimal, tested implementation) ─────────────
 
 static void writeWavHeader(File& file, uint32_t dataSize) {
-    uint32_t fileSize = 36 + dataSize;
-    uint32_t byteRate = SAMPLE_RATE * 2;
-    uint16_t blockAlign = 2;
-    uint16_t bitsPerSample = 16;
-    uint16_t audioFormat = 1;
-    uint16_t numChannels = 1;
-    uint32_t sampleRate = SAMPLE_RATE;
-    uint16_t fmtSize = 16;
+    // Build header in a buffer first, then write atomically
+    uint8_t header[44];
     
     // RIFF header
-    file.write((const uint8_t*)"RIFF", 4);
-    file.write((uint8_t*)&fileSize, 4);
-    file.write((const uint8_t*)"WAVE", 4);
+    header[0] = 'R'; header[1] = 'I'; header[2] = 'F'; header[3] = 'F';
+    uint32_t fileSize = 36 + dataSize;
+    memcpy(header + 4, &fileSize, 4);
+    header[8] = 'W'; header[9] = 'A'; header[10] = 'V'; header[11] = 'E';
     
     // fmt subchunk
-    file.write((const uint8_t*)"fmt ", 4);
-    file.write((uint8_t*)&fmtSize, 4);
-    file.write((uint8_t*)&audioFormat, 2);
-    file.write((uint8_t*)&numChannels, 2);
-    file.write((uint8_t*)&sampleRate, 4);
-    file.write((uint8_t*)&byteRate, 4);
-    file.write((uint8_t*)&blockAlign, 2);
-    file.write((uint8_t*)&bitsPerSample, 2);
+    header[12] = 'f'; header[13] = 'm'; header[14] = 't'; header[15] = ' ';
+    uint32_t fmtSize = 16;
+    memcpy(header + 16, &fmtSize, 4);
+    uint16_t audioFormat = 1;  // PCM
+    memcpy(header + 20, &audioFormat, 2);
+    uint16_t numChannels = 1;
+    memcpy(header + 22, &numChannels, 2);
+    uint32_t sampleRate = SAMPLE_RATE;
+    memcpy(header + 24, &sampleRate, 4);
+    uint32_t byteRate = SAMPLE_RATE * 2;
+    memcpy(header + 28, &byteRate, 4);
+    uint16_t blockAlign = 2;
+    memcpy(header + 32, &blockAlign, 2);
+    uint16_t bitsPerSample = 16;
+    memcpy(header + 34, &bitsPerSample, 2);
     
     // data subchunk
-    file.write((const uint8_t*)"data", 4);
-    file.write((uint8_t*)&dataSize, 4);
+    header[36] = 'd'; header[37] = 'a'; header[38] = 't'; header[39] = 'a';
+    memcpy(header + 40, &dataSize, 4);
+    
+    file.write(header, 44);
 }
 
 static void updateWavHeader(File& file, uint32_t dataSize) {
