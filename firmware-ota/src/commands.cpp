@@ -36,6 +36,28 @@ void processCommand() {
             while (f) { LOG("[LS] %s %d bytes", f.name(), f.size()); f = root.openNextFile(); }
             root.close();
         }
+    } else if (cmd == "mic") {
+        LOG("[MIC] Starting mic test - reading for 5 seconds...");
+        int16_t buffer[480];
+        uint32_t startMs = millis();
+        uint32_t sumRms = 0;
+        uint32_t count = 0;
+        uint32_t maxRms = 0;
+        while (millis() - startMs < 5000) {
+            size_t bytesRead = 0;
+            i2s_read(I2S_NUM_0, buffer, sizeof(buffer), &bytesRead, pdMS_TO_TICKS(100));
+            if (bytesRead > 0) {
+                float sum = 0;
+                for (int i = 0; i < bytesRead/2; i++) sum += (float)buffer[i] * (float)buffer[i];
+                float rms = sqrtf(sum / (bytesRead/2));
+                sumRms += (uint32_t)rms;
+                count++;
+                if (rms > maxRms) maxRms = (uint32_t)rms;
+            }
+        }
+        float avgRms = (count > 0) ? (float)sumRms / count : 0;
+        LOG("[MIC] Test: avg=%.1f, max=%lu, samples=%lu", avgRms, maxRms, count);
+        LOG("[MIC] If avg < 10, mic may not be connected");
     } else {
         LOG("[CMD] Unknown: %s", cmd.c_str());
     }

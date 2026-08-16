@@ -34,10 +34,10 @@ static float computeRMS(int16_t* samples, int count) {
     return sqrtf(sum / count);
 }
 
-// High-pass filter (200Hz cutoff)
+// High-pass filter (50Hz cutoff)
 static float hpPrevX = 0;
 static float hpPrevY = 0;
-#define HP_ALPHA 0.924
+#define HP_ALPHA 0.9806
 
 static void highPassFilter(int16_t* buffer, int count) {
     for (int i = 0; i < count; i++) {
@@ -47,6 +47,59 @@ static void highPassFilter(int16_t* buffer, int count) {
         hpPrevY = y;
         buffer[i] = (int16_t)y;
     }
+}
+
+// Audio format: define AUDIO_FORMAT_WAV for WAV, default is Opus
+// #define AUDIO_FORMAT_WAV
+
+// High-pass filter: define ENABLE_HPF to enable (disabled by default)
+// #define ENABLE_HPF
+
+// Digital gain to boost PDM mic signal (disabled for now)
+#define MIC_GAIN 1  // 1x gain (no boost)
+
+static void applyGain(int16_t* buffer, int count) {
+    for (int i = 0; i < count; i++) {
+        int32_t sample = (int32_t)buffer[i] * MIC_GAIN;
+        if (sample > 32767) sample = 32767;
+        if (sample < -32768) sample = -32768;
+        buffer[i] = (int16_t)sample;
+    }
+}
+
+// ── WAV header writing ─────────────────────────────────────────────
+
+static void writeWavHeader(File& file, uint32_t dataSize) {
+    uint32_t fileSize = 36 + dataSize;
+    uint32_t byteRate = SAMPLE_RATE * 2;  // 16-bit mono
+    uint16_t blockAlign = 2;
+    uint16_t bitsPerSample = 16;
+    uint16_t audioFormat = 1;  // PCM
+    uint16_t numChannels = 1;
+    uint32_t sampleRate = SAMPLE_RATE;
+    uint16_t fmtSize = 16;
+    
+    file.write((uint8_t*)"RIFF", 4);
+    file.write((uint8_t*)&fileSize, 4);
+    file.write((uint8_t*)"WAVE", 4);
+    file.write((uint8_t*)"fmt ", 4);
+    file.write((uint8_t*)&fmtSize, 4);
+    file.write((uint8_t*)&audioFormat, 2);
+    file.write((uint8_t*)&numChannels, 2);
+    file.write((uint8_t*)&sampleRate, 4);
+    file.write((uint8_t*)&byteRate, 4);
+    file.write((uint8_t*)&blockAlign, 2);
+    file.write((uint8_t*)&bitsPerSample, 2);
+    file.write((uint8_t*)"data", 4);
+    file.write((uint8_t*)&dataSize, 4);
+}
+
+static void updateWavHeader(File& file, uint32_t dataSize) {
+    uint32_t fileSize = 36 + dataSize;
+    file.seek(4);
+    file.write((uint8_t*)&fileSize, 4);
+    file.seek(40);
+    file.write((uint8_t*)&dataSize, 4);
 }
 
 // ── Ogg/Opus writing using codec-ogg library ───────────────────────
@@ -195,11 +248,15 @@ void audioTask(void *pvParameters) {
     LOG("[I2S] PDM Mic ready (CLK=%d, DIN=%d)", I2S_MIC_CLK, I2S_MIC_DIN);
 
     // Init Opus encoder
+    #ifndef AUDIO_FORMAT_WAV
     opusEncoder = opus_encoder_create(SAMPLE_RATE, 1, OPUS_APPLICATION_RESTRICTED_LOWDELAY, NULL);
     if (!opusEncoder) { LOG("[AUDIO] Opus encoder creation failed"); return; }
     opus_encoder_ctl(opusEncoder, OPUS_SET_BITRATE(OPUS_BITRATE));
     opus_encoder_ctl(opusEncoder, OPUS_SET_COMPLEXITY(1));
     LOG("[AUDIO] Opus ready (bitrate=%d)", OPUS_BITRATE);
+    #else
+    LOG("[AUDIO] WAV mode (no Opus)");
+    #endif
 
     // VAD state
     bool voiceActive = false;
@@ -234,6 +291,9 @@ void audioTask(void *pvParameters) {
         
         int samplesRead = bytesRead / 2;
 
+        // Apply digital gain to boost PDM mic signal
+        applyGain(readBuffer, samplesRead);
+
         // RMS analysis
         int available = 3200 - analysisIndex;
         int toCopy = (samplesRead < available) ? samplesRead : available;
@@ -241,7 +301,9 @@ void audioTask(void *pvParameters) {
         analysisIndex += toCopy;
 
         if (analysisIndex >= 3200) {
+            #ifdef ENABLE_HPF
             highPassFilter(analysisBuffer, 3200);
+            #endif
             smoothedRMS = computeRMS(analysisBuffer, 3200);
             analysisIndex = 0;
 
@@ -270,7 +332,11 @@ void audioTask(void *pvParameters) {
                     silenceMs = 0;
                     captured = 0;
                     startMs = millis();
+                    #ifdef AUDIO_FORMAT_WAV
+                    snprintf(currentFile, sizeof(currentFile), "/lifelog/rec_%05lu.wav", fileIndex++);
+                    #else
                     snprintf(currentFile, sizeof(currentFile), "/lifelog/rec_%05lu.opus", fileIndex++);
+                    #endif
                     LOG("[VAD] Voice started — %s (RMS=%.0f)", currentFile, smoothedRMS);
                 }
                 silenceMs = 0;
@@ -420,18 +486,29 @@ void writerTask(void *pvParameters) {
             // Open new file if needed
             if (currentFilename[0] == '\0' || strcmp(currentFilename, msg.filename) != 0) {
                 if (activeFile) {
-                    // Flush and close previous file
+                    #ifdef AUDIO_FORMAT_WAV
+                    // WAV: just close, header written at end
+                    activeFile.flush();
+                    delay(200);
+                    activeFile.close();
+                    delay(200);
+                    LOG("[WRITER] Closed %s", currentFilename);
+                    #else
+                    // Opus: flush Ogg and close
                     flushOggz(oggz);
                     oggz_close(oggz);
                     oggz = NULL;
                     activeFile.flush();
-                    delay(100);  // Give SD card time to update FAT
+                    delay(200);
                     activeFile.close();
+                    delay(200);
                     LOG("[WRITER] Closed %s", currentFilename);
+                    #endif
                     
                     if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
+                        delay(100);
                         uploadFile(currentFilename);
-                        delay(50);  // Brief pause before delete
+                        delay(200);
                         SD.remove(currentFilename);
                         LOG("[WRITER] Uploaded %s", currentFilename);
                     }
@@ -442,7 +519,12 @@ void writerTask(void *pvParameters) {
                 strncpy(currentFilename, msg.filename, sizeof(currentFilename));
                 activeFile = SD.open(currentFilename, FILE_WRITE);
                 if (activeFile) {
-                    // Create new oggz handle
+                    #ifdef AUDIO_FORMAT_WAV
+                    // WAV: write placeholder header (updated at end)
+                    writeWavHeader(activeFile, 0);
+                    LOG("[WRITER] Opened %s (WAV)", currentFilename);
+                    #else
+                    // Opus: create oggz handle
                     oggz = oggz_new(OGGZ_WRITE | OGGZ_NONSTRICT);
                     if (oggz) {
                         oggzSerialno = oggz_serialno_new(oggz);
@@ -450,6 +532,7 @@ void writerTask(void *pvParameters) {
                         writeOpusHeaders(oggz, oggzSerialno);
                         LOG("[WRITER] Opened %s", currentFilename);
                     }
+                    #endif
                 } else {
                     LOG("[WRITER] Failed to open %s", currentFilename);
                     currentFilename[0] = '\0';
@@ -457,6 +540,14 @@ void writerTask(void *pvParameters) {
             }
             
             // Encode and write audio data
+            #ifdef AUDIO_FORMAT_WAV
+            // WAV: write raw PCM
+            if (activeFile && msg.samples > 0) {
+                activeFile.write((uint8_t*)msg.data, msg.samples * 2);
+                totalEncoded += msg.samples * 2;
+            }
+            #else
+            // Opus: encode and write
             if (oggz && msg.samples > 0) {
                 uint8_t opusBuffer[1024];
                 uint32_t pcmIndex = 0;
@@ -481,12 +572,33 @@ void writerTask(void *pvParameters) {
                     pcmIndex += samplesToEncode;
                 }
                 
-                // Flush oggz periodically
                 flushOggz(oggz);
             }
+            #endif
             
             // End of utterance
             if (msg.isEnd) {
+                #ifdef AUDIO_FORMAT_WAV
+                // WAV: update header with final size
+                if (activeFile) {
+                    updateWavHeader(activeFile, totalEncoded);
+                    activeFile.flush();
+                    delay(200);
+                    activeFile.close();
+                    delay(200);
+                    LOG("[WRITER] Closed %s (%d bytes WAV)", currentFilename, totalEncoded);
+                    
+                    if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
+                        delay(100);
+                        uploadFile(currentFilename);
+                        delay(200);
+                        SD.remove(currentFilename);
+                        LOG("[WRITER] Uploaded %s", currentFilename);
+                    }
+                    totalEncoded = 0;
+                }
+                #else
+                // Opus: flush and close
                 if (oggz) {
                     flushOggz(oggz);
                     oggz_close(oggz);
@@ -494,19 +606,22 @@ void writerTask(void *pvParameters) {
                 }
                 if (activeFile) {
                     activeFile.flush();
-                    delay(100);  // Give SD card time to update FAT
+                    delay(200);
                     activeFile.close();
+                    delay(200);
                     LOG("[WRITER] Closed %s (%d bytes)", currentFilename, totalEncoded);
                     
                     if (WiFi.status() == WL_CONNECTED && totalEncoded > 0) {
+                        delay(100);
                         uploadFile(currentFilename);
-                        delay(50);  // Brief pause before delete
+                        delay(200);
                         SD.remove(currentFilename);
                         LOG("[WRITER] Uploaded %s", currentFilename);
                     }
                     totalEncoded = 0;
-                    currentFilename[0] = '\0';
                 }
+                #endif
+                currentFilename[0] = '\0';
             }
             
             free(msg.data);
