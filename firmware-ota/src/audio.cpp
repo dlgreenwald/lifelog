@@ -158,6 +158,15 @@ void audioTask(void *pvParameters) {
         file.close();
         LOG("[AUDIO] Recording complete");
 
+        // Auto-upload if WiFi connected
+        if (WiFi.status() == WL_CONNECTED) {
+            LOG("[AUDIO] Uploading %s...", filename);
+            if (uploadFile(filename)) {
+                SD.remove(filename);
+                LOG("[AUDIO] Uploaded and deleted %s", filename);
+            }
+        }
+
         recording = false;
     }
 }
