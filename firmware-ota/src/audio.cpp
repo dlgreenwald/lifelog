@@ -9,7 +9,7 @@
 // WAV header size
 #define WAV_HEADER_SIZE 44
 #define SAMPLE_BITS 16
-#define VOLUME_GAIN 2
+#define VOLUME_GAIN 3
 
 // Queue for audio chunks
 #define AUDIO_QUEUE_SIZE 10
@@ -82,10 +82,21 @@ void toggleVAD() {
     LOG("[VAD] Mode: %s", vadMode ? "VAD (auto)" : "Fixed duration");
 }
 
-// ── Audio capture task (matches guide approach) ────────────────────
+// ── A/B Buffer State ───────────────────────────────────────────────
+
+static int16_t* bufA = NULL;
+static int16_t* bufB = NULL;
+static int16_t* audioBuf = NULL;   // Buffer audio task writes to
+static int16_t* writeBuf = NULL;   // Buffer write task reads from
+static uint32_t audioCount = 0;    // Samples in audio buffer
+static uint32_t writeCount = 0;    // Samples in write buffer
+static volatile bool bufferReady = false;  // Audio buffer full
+static volatile bool writeDone = true;     // Write task idle
+static uint32_t bufCapacity = 0;   // Max samples per buffer
+
+// ── Audio capture task (writes to PSRAM) ───────────────────────────
 
 void audioTask(void *pvParameters) {
-    // Initialize I2S like the guide
     I2S.setAllPins(-1, 42, 41, -1, -1);
     if (!I2S.begin(PDM_MONO_MODE, SAMPLE_RATE, SAMPLE_BITS)) {
         LOG("[I2S] Failed to initialize I2S!");
@@ -93,89 +104,112 @@ void audioTask(void *pvParameters) {
     }
     LOG("[I2S] PDM Mic ready (CLK=42, DIN=41)");
 
-    LOG("[AUDIO] Ready for recording");
+    // Allocate A/B buffers in PSRAM
+    uint32_t bufBytes = (SAMPLE_RATE * SAMPLE_BITS / 8) * 5;  // 5 seconds each
+    bufA = (int16_t*)ps_malloc(bufBytes);
+    bufB = (int16_t*)ps_malloc(bufBytes);
+    if (!bufA || !bufB) {
+        LOG("[AUDIO] PSRAM malloc failed for A/B buffers");
+        return;
+    }
+    bufCapacity = bufBytes / 2;  // 5 seconds worth of samples
+    audioBuf = bufA;
+    writeBuf = bufB;
+    audioCount = 0;
+    writeCount = 0;
+    writeDone = true;
+    LOG("[AUDIO] A/B buffers ready (%d bytes each, %d samples)", bufBytes, bufCapacity);
 
     while (true) {
         if (!recording) {
+            // Flush any remaining audio when recording stops
+            if (audioCount > 0 && writeDone) {
+                writeCount = audioCount;
+                audioCount = 0;
+                bufferReady = true;
+                while (!writeDone) { vTaskDelay(pdMS_TO_TICKS(10)); }
+            }
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
-        // Record to PSRAM buffer (like the guide)
-        uint32_t record_size = (SAMPLE_RATE * SAMPLE_BITS / 8) * (recordDurationMs / 1000);
-        uint8_t *rec_buffer = (uint8_t *)ps_malloc(record_size);
-        if (!rec_buffer) {
-            LOG("[AUDIO] PSRAM malloc failed");
-            recording = false;
+        // Read one chunk from I2S
+        int samplesToRead = SAMPLE_RATE * VAD_CHUNK_MS / 1000;  // 480 samples
+        int16_t readBuffer[480];
+        size_t bytesRead = 0;
+        esp_i2s::i2s_read(esp_i2s::I2S_NUM_0, readBuffer, samplesToRead * 2, &bytesRead, portMAX_DELAY);
+        if (bytesRead == 0) continue;
+
+        int samplesRead = bytesRead / 2;
+
+        // Copy to active buffer (no gain yet — applied in write task)
+        if (audioCount + samplesRead <= bufCapacity) {
+            memcpy(audioBuf + audioCount, readBuffer, bytesRead);
+            audioCount += samplesRead;
+        }
+
+        // When buffer is full, swap and signal write task
+        if (audioCount >= bufCapacity) {
+            // Wait for write task to finish previous buffer
+            while (!writeDone) { vTaskDelay(pdMS_TO_TICKS(5)); }
+
+            // Swap: audio buffer becomes write buffer
+            int16_t* tmp = writeBuf;
+            writeBuf = audioBuf;
+            writeCount = audioCount;
+            audioBuf = tmp;
+            audioCount = 0;
+
+            bufferReady = true;
+            writeDone = false;
+        }
+    }
+}
+
+// ── Write task (reads PSRAM, writes SD, uploads) ──────────────────
+
+void writerTask(void *pvParameters) {
+    while (true) {
+        if (!bufferReady) {
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-        LOG("[AUDIO] Recording %d seconds (%d bytes)...", recordDurationMs / 1000, record_size);
 
-        // Read from I2S into buffer (like the guide)
-        uint32_t sample_size = 0;
-        esp_i2s::i2s_read(esp_i2s::I2S_NUM_0, rec_buffer, record_size, &sample_size, portMAX_DELAY);
+        // Write the ready buffer to SD
+        uint32_t samplesToWrite = writeCount;
+        uint32_t totalBytes = samplesToWrite * 2;
 
-        if (sample_size == 0) {
-            LOG("[AUDIO] Record failed");
-            free(rec_buffer);
-            recording = false;
-            continue;
-        }
-        LOG("[AUDIO] Recorded %d bytes", sample_size);
-
-        // Apply volume gain (like the guide)
-        for (uint32_t i = 0; i < sample_size; i += SAMPLE_BITS / 8) {
-            (*(uint16_t *)(rec_buffer + i)) <<= VOLUME_GAIN;
-        }
-
-        // Write WAV to SD (like the guide)
         char filename[64];
         snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
 
         File file = SD.open(filename, FILE_WRITE);
-        if (!file) {
-            LOG("[AUDIO] Failed to open %s", filename);
-            free(rec_buffer);
-            recording = false;
-            continue;
-        }
+        if (file) {
+            uint8_t wav_header[WAV_HEADER_SIZE];
+            generate_wav_header(wav_header, totalBytes, SAMPLE_RATE);
+            file.write(wav_header, WAV_HEADER_SIZE);
 
-        // Write WAV header
-        uint8_t wav_header[WAV_HEADER_SIZE];
-        generate_wav_header(wav_header, record_size, SAMPLE_RATE);
-        file.write(wav_header, WAV_HEADER_SIZE);
-
-        // Write audio data
-        LOG("[AUDIO] Writing %d bytes to %s...", record_size, filename);
-        if (file.write(rec_buffer, record_size) != record_size) {
-            LOG("[AUDIO] Write failed!");
-        } else {
-            LOG("[AUDIO] Saved: %s (%d bytes)", filename, record_size + WAV_HEADER_SIZE);
-            strncpy(lastSavedFile, filename, sizeof(lastSavedFile));
-        }
-
-        free(rec_buffer);
-        file.close();
-        LOG("[AUDIO] Recording complete");
-
-        // Auto-upload if WiFi connected
-        if (WiFi.status() == WL_CONNECTED) {
-            LOG("[AUDIO] Uploading %s...", filename);
-            if (uploadFile(filename)) {
-                SD.remove(filename);
-                LOG("[AUDIO] Uploaded and deleted %s", filename);
+            // Apply volume gain to the buffer we're writing
+            for (uint32_t i = 0; i < samplesToWrite; i++) {
+                (*(uint16_t*)(writeBuf + i)) <<= VOLUME_GAIN;
             }
+
+            file.write((uint8_t*)writeBuf, totalBytes);
+            file.close();
+            LOG("[AUDIO] Saved: %s (%d bytes)", filename, totalBytes + WAV_HEADER_SIZE);
+
+            // Auto-upload
+            if (WiFi.status() == WL_CONNECTED) {
+                LOG("[AUDIO] Uploading %s...", filename);
+                if (uploadFile(filename)) {
+                    SD.remove(filename);
+                    LOG("[AUDIO] Uploaded and deleted %s", filename);
+                }
+            }
+        } else {
+            LOG("[AUDIO] Failed to open %s", filename);
         }
 
-        recording = false;
-    }
-}
-
-// ── Writer task (not used in WAV mode) ─────────────────────────────
-
-void writerTask(void *pvParameters) {
-    // WAV mode doesn't use the writer task
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        bufferReady = false;
+        writeDone = true;
     }
 }
