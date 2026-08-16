@@ -125,7 +125,6 @@ void setup() {
     xTaskCreatePinnedToCore(writerTask, "writer", 32768, NULL, 2, NULL, 0);
     bootConfirm();
 
-    recording = true;
     LOG("[SYSTEM] Ready! VAD active — listening for speech...");
 }
 

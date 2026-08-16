@@ -161,6 +161,14 @@ void audioTask(void *pvParameters) {
             if (!recording) {
                 bgNoise = bgNoise * 0.95f + smoothedRMS * 0.05f;
                 currentThreshold = max(bgNoise * 1.5f, (float)VAD_THRESHOLD);
+
+                // Log idle status periodically
+                static uint32_t lastIdleLog = 0;
+                uint32_t now = millis();
+                if (now - lastIdleLog >= 5000) {
+                    LOG("[VAD] Idle: RMS=%.0f, bg=%.0f, thresh=%.0f", smoothedRMS, bgNoise, currentThreshold);
+                    lastIdleLog = now;
+                }
             }
         }
 
@@ -176,6 +184,15 @@ void audioTask(void *pvParameters) {
             silenceMs = 0;
         } else if (voiceActive) {
             silenceMs += VAD_CHUNK_MS;
+
+            // Log silence listening periodically
+            static uint32_t lastSilenceLog = 0;
+            uint32_t now = millis();
+            if (now - lastSilenceLog >= 1000) {
+                LOG("[VAD] Listening for silence... %d ms of %d", silenceMs, VAD_SILENCE_MS);
+                lastSilenceLog = now;
+            }
+
             if (silenceMs >= VAD_SILENCE_MS) {
                 voiceActive = false;
                 recording = false;
