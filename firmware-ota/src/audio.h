@@ -7,7 +7,9 @@
 // VAD settings
 #define VAD_THRESHOLD   700
 #define VAD_SILENCE_MS  1500
-#define VAD_CHUNK_MS    30    // 30ms chunks for I2S reading
+#define VAD_CHUNK_MS    30
+#define VAD_ANALYSIS_MS 200
+#define VAD_GAIN        3
 
 // Public state
 extern volatile bool recording;

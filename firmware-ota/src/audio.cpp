@@ -94,7 +94,7 @@ static volatile bool bufferReady = false;  // Audio buffer full
 static volatile bool writeDone = true;     // Write task idle
 static uint32_t bufCapacity = 0;   // Max samples per buffer
 
-// ── Audio capture task (writes to PSRAM) ───────────────────────────
+// ── Audio capture task with VAD trigger ────────────────────────────
 
 void audioTask(void *pvParameters) {
     I2S.setAllPins(-1, 42, 41, -1, -1);
@@ -109,72 +109,98 @@ void audioTask(void *pvParameters) {
     bufA = (int16_t*)ps_malloc(bufBytes);
     bufB = (int16_t*)ps_malloc(bufBytes);
     if (!bufA || !bufB) {
-        LOG("[AUDIO] PSRAM malloc failed for A/B buffers");
+        LOG("[AUDIO] PSRAM malloc failed");
         return;
     }
-    bufCapacity = bufBytes / 2;  // 5 seconds worth of samples
+    bufCapacity = bufBytes / 2;
     audioBuf = bufA;
     writeBuf = bufB;
     audioCount = 0;
     writeCount = 0;
     writeDone = true;
-    LOG("[AUDIO] A/B buffers ready (%d bytes each, %d samples)", bufBytes, bufCapacity);
+    LOG("[AUDIO] A/B buffers ready (%d samples each)", bufCapacity);
+
+    // VAD state
+    bool voiceActive = false;
+    uint32_t silenceMs = 0;
+    float bgNoise = 200;
+    float currentThreshold = VAD_THRESHOLD;
+
+    // RMS analysis
+    int analysisCapacity = VAD_ANALYSIS_MS * SAMPLE_RATE / 1000;
+    int16_t* analysisBuffer = (int16_t*)ps_malloc(analysisCapacity * 2);
+    int analysisIndex = 0;
+    float smoothedRMS = 0;
 
     while (true) {
-        if (!recording) {
-            // Flush any remaining audio when recording stops
-            if (audioCount > 0 && writeDone) {
-                writeCount = audioCount;
-                audioCount = 0;
-                bufferReady = true;
-                while (!writeDone) { vTaskDelay(pdMS_TO_TICKS(10)); }
-            }
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-
-        // Read one chunk from I2S
-        int samplesToRead = SAMPLE_RATE * VAD_CHUNK_MS / 1000;  // 480 samples
+        // Always read from I2S
+        int samplesToRead = SAMPLE_RATE * VAD_CHUNK_MS / 1000;
         int16_t readBuffer[480];
         size_t bytesRead = 0;
-
-        static uint32_t lastLog = 0;
-        uint32_t now = millis();
-        if (now - lastLog >= 5000) {
-            LOG("[AUDIO] audioCount=%d, writeDone=%d", audioCount, writeDone);
-            lastLog = now;
-        }
-
         esp_i2s::i2s_read(esp_i2s::I2S_NUM_0, readBuffer, samplesToRead * 2, &bytesRead, portMAX_DELAY);
         if (bytesRead == 0) continue;
 
         int samplesRead = bytesRead / 2;
 
-        // Copy to active buffer with volume gain
-        if (audioCount + samplesRead <= bufCapacity) {
-            for (int i = 0; i < samplesRead; i++) {
-                (*(uint16_t*)(readBuffer + i)) <<= VOLUME_GAIN;
-            }
-            memcpy(audioBuf + audioCount, readBuffer, bytesRead);
-            audioCount += samplesRead;
+        // Apply volume gain
+        for (int i = 0; i < samplesRead; i++) {
+            (*(uint16_t*)(readBuffer + i)) <<= VOLUME_GAIN;
         }
 
-        // When buffer is full or can't fit next chunk, swap
-        if (audioCount + samplesRead > bufCapacity) {
-            LOG("[AUDIO] Buffer full (%d samples), swapping...", audioCount);
-            // Wait for write task to finish previous buffer
-            while (!writeDone) { vTaskDelay(pdMS_TO_TICKS(5)); }
+        // Compute RMS for VAD
+        int available = analysisCapacity - analysisIndex;
+        int toCopy = (samplesRead < available) ? samplesRead : available;
+        memcpy(analysisBuffer + analysisIndex, readBuffer, toCopy * 2);
+        analysisIndex += toCopy;
 
-            // Swap: audio buffer becomes write buffer
-            int16_t* tmp = writeBuf;
-            writeBuf = audioBuf;
-            writeCount = audioCount;
-            audioBuf = tmp;
-            audioCount = 0;
+        if (analysisIndex >= analysisCapacity) {
+            smoothedRMS = computeRMS(analysisBuffer, analysisCapacity);
+            analysisIndex = 0;
 
-            bufferReady = true;
-            writeDone = false;
-            LOG("[AUDIO] Swapped buffers, write task notified");
+            // Update background noise when idle
+            if (!recording) {
+                bgNoise = bgNoise * 0.95f + smoothedRMS * 0.05f;
+                currentThreshold = max(bgNoise * 1.5f, (float)VAD_THRESHOLD);
+            }
+        }
+
+        // VAD: detect speech to trigger recording
+        if (smoothedRMS > currentThreshold) {
+            if (!recording && !voiceActive) {
+                voiceActive = true;
+                silenceMs = 0;
+                audioCount = 0;
+                recording = true;
+                LOG("[VAD] Voice started (RMS=%.0f, thresh=%.0f)", smoothedRMS, currentThreshold);
+            }
+            silenceMs = 0;
+        } else if (voiceActive) {
+            silenceMs += VAD_CHUNK_MS;
+            if (silenceMs >= VAD_SILENCE_MS) {
+                voiceActive = false;
+                recording = false;
+                LOG("[VAD] Voice ended (silence %d ms)", silenceMs);
+            }
+        }
+
+        // Buffer audio when recording
+        if (recording) {
+            if (audioCount + samplesRead <= bufCapacity) {
+                memcpy(audioBuf + audioCount, readBuffer, bytesRead);
+                audioCount += samplesRead;
+            }
+
+            // Swap when buffer full
+            if (audioCount + samplesRead > bufCapacity) {
+                while (!writeDone) { vTaskDelay(pdMS_TO_TICKS(5)); }
+                int16_t* tmp = writeBuf;
+                writeBuf = audioBuf;
+                writeCount = audioCount;
+                audioBuf = tmp;
+                audioCount = 0;
+                bufferReady = true;
+                writeDone = false;
+            }
         }
     }
 }
