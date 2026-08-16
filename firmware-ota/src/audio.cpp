@@ -227,16 +227,20 @@ void writerTask(void *pvParameters) {
             generate_wav_header(wav_header, totalBytes, SAMPLE_RATE);
             file.write(wav_header, WAV_HEADER_SIZE);
 
-            // Write audio data (gain already applied during capture)
+            // Write audio data
             file.write((uint8_t*)writeBuf, totalBytes);
-            file.flush();  // Ensure all data written to SD
+            file.flush();
+            delay(100);  // Let SD card complete write
             file.close();
+            delay(100);  // Wait after close
             LOG("[AUDIO] Saved: %s (%d bytes)", filename, totalBytes + WAV_HEADER_SIZE);
 
             // Auto-upload
             if (WiFi.status() == WL_CONNECTED) {
+                delay(50);  // Pause before upload
                 LOG("[AUDIO] Uploading %s...", filename);
                 if (uploadFile(filename)) {
+                    delay(200);  // Wait after upload
                     SD.remove(filename);
                     LOG("[AUDIO] Uploaded and deleted %s", filename);
                 }
