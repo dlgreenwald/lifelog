@@ -5,7 +5,7 @@
 #define SAMPLE_RATE     16000
 
 // VAD settings
-#define VAD_THRESHOLD   700
+#define VAD_THRESHOLD   1600
 #define VAD_SILENCE_MS  1500
 #define VAD_CHUNK_MS    30
 #define VAD_ANALYSIS_MS 200

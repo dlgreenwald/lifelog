@@ -94,7 +94,7 @@ static volatile bool bufferReady = false;  // Audio buffer full
 static volatile bool writeDone = true;     // Write task idle
 static uint32_t bufCapacity = 0;   // Max samples per buffer
 
-// ── Audio capture task with VAD trigger ────────────────────────────
+// ── Audio capture task with VAD (records continuously) ─────────────
 
 void audioTask(void *pvParameters) {
     I2S.setAllPins(-1, 42, 41, -1, -1);
@@ -105,7 +105,7 @@ void audioTask(void *pvParameters) {
     LOG("[I2S] PDM Mic ready (CLK=42, DIN=41)");
 
     // Allocate A/B buffers in PSRAM
-    uint32_t bufBytes = (SAMPLE_RATE * SAMPLE_BITS / 8) * 5;  // 5 seconds each
+    uint32_t bufBytes = (SAMPLE_RATE * SAMPLE_BITS / 8) * 5;
     bufA = (int16_t*)ps_malloc(bufBytes);
     bufB = (int16_t*)ps_malloc(bufBytes);
     if (!bufA || !bufB) {
@@ -123,8 +123,9 @@ void audioTask(void *pvParameters) {
     // VAD state
     bool voiceActive = false;
     uint32_t silenceMs = 0;
-    float bgNoise = 200;
-    float currentThreshold = VAD_THRESHOLD;
+    float startThreshold = VAD_THRESHOLD;
+    uint32_t startTime = millis();
+    uint32_t startupGraceMs = 2000;
 
     // RMS analysis
     int analysisCapacity = VAD_ANALYSIS_MS * SAMPLE_RATE / 1000;
@@ -132,8 +133,14 @@ void audioTask(void *pvParameters) {
     int analysisIndex = 0;
     float smoothedRMS = 0;
 
+    // Median filter
+    #define MEDIAN_SAMPLES 5
+    float rmsHistory[MEDIAN_SAMPLES] = {0};
+    int rmsIndex = 0;
+    int rmsCount = 0;
+
     while (true) {
-        // Always read from I2S
+        // ALWAYS read from I2S — never block
         int samplesToRead = SAMPLE_RATE * VAD_CHUNK_MS / 1000;
         int16_t readBuffer[480];
         size_t bytesRead = 0;
@@ -147,7 +154,25 @@ void audioTask(void *pvParameters) {
             (*(uint16_t*)(readBuffer + i)) <<= VOLUME_GAIN;
         }
 
-        // Compute RMS for VAD
+        // ALWAYS buffer audio (even during silence detection)
+        if (audioCount + samplesRead <= bufCapacity) {
+            memcpy(audioBuf + audioCount, readBuffer, bytesRead);
+            audioCount += samplesRead;
+        }
+
+        // Flush when buffer full
+        if (audioCount + samplesRead > bufCapacity) {
+            while (!writeDone) { vTaskDelay(pdMS_TO_TICKS(5)); }
+            int16_t* tmp = writeBuf;
+            writeBuf = audioBuf;
+            writeCount = audioCount;
+            audioBuf = tmp;
+            audioCount = 0;
+            bufferReady = true;
+            writeDone = false;
+        }
+
+        // Compute RMS for VAD (every 200ms)
         int available = analysisCapacity - analysisIndex;
         int toCopy = (samplesRead < available) ? samplesRead : available;
         memcpy(analysisBuffer + analysisIndex, readBuffer, toCopy * 2);
@@ -157,66 +182,52 @@ void audioTask(void *pvParameters) {
             smoothedRMS = computeRMS(analysisBuffer, analysisCapacity);
             analysisIndex = 0;
 
-            // Update background noise when idle
-            if (!recording) {
-                bgNoise = bgNoise * 0.95f + smoothedRMS * 0.05f;
-                currentThreshold = max(bgNoise * 1.5f, (float)VAD_THRESHOLD);
+            // Median filter
+            rmsHistory[rmsIndex] = smoothedRMS;
+            rmsIndex = (rmsIndex + 1) % MEDIAN_SAMPLES;
+            if (rmsCount < MEDIAN_SAMPLES) rmsCount++;
 
-                // Log idle status periodically
-                static uint32_t lastIdleLog = 0;
-                uint32_t now = millis();
-                if (now - lastIdleLog >= 5000) {
-                    LOG("[VAD] Idle: RMS=%.0f, bg=%.0f, thresh=%.0f", smoothedRMS, bgNoise, currentThreshold);
-                    lastIdleLog = now;
+            float sorted[MEDIAN_SAMPLES];
+            memcpy(sorted, rmsHistory, rmsCount * sizeof(float));
+            for (int i = 0; i < rmsCount - 1; i++) {
+                for (int j = i + 1; j < rmsCount; j++) {
+                    if (sorted[i] > sorted[j]) {
+                        float tmp = sorted[i];
+                        sorted[i] = sorted[j];
+                        sorted[j] = tmp;
+                    }
                 }
             }
-        }
+            float medianRMS = sorted[rmsCount / 2];
 
-        // VAD: detect speech to trigger recording
-        if (smoothedRMS > currentThreshold) {
-            if (!recording && !voiceActive) {
+            // VAD logic
+            if (!voiceActive && smoothedRMS > startThreshold && (millis() - startTime) > startupGraceMs) {
                 voiceActive = true;
                 silenceMs = 0;
                 audioCount = 0;
                 recording = true;
-                LOG("[VAD] Voice started (RMS=%.0f, thresh=%.0f)", smoothedRMS, currentThreshold);
-            }
-            silenceMs = 0;
-        } else if (voiceActive) {
-            silenceMs += VAD_CHUNK_MS;
+                LOG("[VAD] Voice started (RMS=%.0f, start=%.0f)", smoothedRMS, startThreshold);
+            } else if (voiceActive) {
+                if (smoothedRMS > startThreshold) {
+                    silenceMs = 0;
+                } else {
+                    silenceMs += VAD_CHUNK_MS;
+                }
 
-            // Log silence listening periodically
-            static uint32_t lastSilenceLog = 0;
-            uint32_t now = millis();
-            if (now - lastSilenceLog >= 1000) {
-                LOG("[VAD] Listening for silence... %d ms of %d", silenceMs, VAD_SILENCE_MS);
-                lastSilenceLog = now;
-            }
+                // Log RMS periodically
+                static uint32_t lastRecLog = 0;
+                uint32_t now = millis();
+                if (now - lastRecLog >= 1000) {
+                    LOG("[VAD] RMS=%.0f, median=%.0f, silence=%d ms / %d", smoothedRMS, medianRMS, silenceMs, VAD_SILENCE_MS);
+                    lastRecLog = now;
+                }
 
-            if (silenceMs >= VAD_SILENCE_MS) {
-                voiceActive = false;
-                recording = false;
-                LOG("[VAD] Voice ended (silence %d ms)", silenceMs);
-            }
-        }
-
-        // Buffer audio when recording
-        if (recording) {
-            if (audioCount + samplesRead <= bufCapacity) {
-                memcpy(audioBuf + audioCount, readBuffer, bytesRead);
-                audioCount += samplesRead;
-            }
-
-            // Swap when buffer full
-            if (audioCount + samplesRead > bufCapacity) {
-                while (!writeDone) { vTaskDelay(pdMS_TO_TICKS(5)); }
-                int16_t* tmp = writeBuf;
-                writeBuf = audioBuf;
-                writeCount = audioCount;
-                audioBuf = tmp;
-                audioCount = 0;
-                bufferReady = true;
-                writeDone = false;
+                if (silenceMs >= VAD_SILENCE_MS) {
+                    voiceActive = false;
+                    recording = false;
+                    LOG("[VAD] Voice ended (silence %d ms)", silenceMs);
+                    lastRecLog = 0;
+                }
             }
         }
     }
@@ -244,20 +255,18 @@ void writerTask(void *pvParameters) {
             generate_wav_header(wav_header, totalBytes, SAMPLE_RATE);
             file.write(wav_header, WAV_HEADER_SIZE);
 
-            // Write audio data
             file.write((uint8_t*)writeBuf, totalBytes);
             file.flush();
-            delay(100);  // Let SD card complete write
+            delay(150);  // Let SD card complete write
             file.close();
-            delay(100);  // Wait after close
+            delay(150);  // Wait after close
             LOG("[AUDIO] Saved: %s (%d bytes)", filename, totalBytes + WAV_HEADER_SIZE);
 
-            // Auto-upload
             if (WiFi.status() == WL_CONNECTED) {
-                delay(50);  // Pause before upload
+                delay(100);  // Pause before upload
                 LOG("[AUDIO] Uploading %s...", filename);
                 if (uploadFile(filename)) {
-                    delay(200);  // Wait after upload
+                    delay(300);  // Wait after upload
                     SD.remove(filename);
                     LOG("[AUDIO] Uploaded and deleted %s", filename);
                 }
