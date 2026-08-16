@@ -71,18 +71,21 @@ static void applyGain(int16_t* buffer, int count) {
 
 static void writeWavHeader(File& file, uint32_t dataSize) {
     uint32_t fileSize = 36 + dataSize;
-    uint32_t byteRate = SAMPLE_RATE * 2;  // 16-bit mono
+    uint32_t byteRate = SAMPLE_RATE * 2;
     uint16_t blockAlign = 2;
     uint16_t bitsPerSample = 16;
-    uint16_t audioFormat = 1;  // PCM
+    uint16_t audioFormat = 1;
     uint16_t numChannels = 1;
     uint32_t sampleRate = SAMPLE_RATE;
     uint16_t fmtSize = 16;
     
-    file.write((uint8_t*)"RIFF", 4);
+    // RIFF header
+    file.write((const uint8_t*)"RIFF", 4);
     file.write((uint8_t*)&fileSize, 4);
-    file.write((uint8_t*)"WAVE", 4);
-    file.write((uint8_t*)"fmt ", 4);
+    file.write((const uint8_t*)"WAVE", 4);
+    
+    // fmt subchunk
+    file.write((const uint8_t*)"fmt ", 4);
     file.write((uint8_t*)&fmtSize, 4);
     file.write((uint8_t*)&audioFormat, 2);
     file.write((uint8_t*)&numChannels, 2);
@@ -90,7 +93,9 @@ static void writeWavHeader(File& file, uint32_t dataSize) {
     file.write((uint8_t*)&byteRate, 4);
     file.write((uint8_t*)&blockAlign, 2);
     file.write((uint8_t*)&bitsPerSample, 2);
-    file.write((uint8_t*)"data", 4);
+    
+    // data subchunk
+    file.write((const uint8_t*)"data", 4);
     file.write((uint8_t*)&dataSize, 4);
 }
 
