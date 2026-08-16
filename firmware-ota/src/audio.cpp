@@ -203,6 +203,7 @@ void writerTask(void *pvParameters) {
 
             // Write audio data (gain already applied during capture)
             file.write((uint8_t*)writeBuf, totalBytes);
+            file.flush();  // Ensure all data written to SD
             file.close();
             LOG("[AUDIO] Saved: %s (%d bytes)", filename, totalBytes + WAV_HEADER_SIZE);
 
