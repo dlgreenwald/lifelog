@@ -37,7 +37,19 @@
 #define LOG_UPLOAD_LEVEL  LOG_WARN
 #define LOG_CMD_LEVEL     LOG_DEBUG
 #define LOG_MIC_LEVEL     LOG_DEBUG
-#define LOG_LS_LEVEL      LOG_DEBUG
+#define LOG_LS_LEVEL     LOG_DEBUG
+
+// ── Audio format selection (set via build_flags: -DAUDIO_FORMAT_OPUS) ──
+#if defined(AUDIO_FORMAT_OPUS)
+  #define AUDIO_FORMAT_OPUS_ACTIVE 1
+#else
+  #define AUDIO_FORMAT_WAV_ACTIVE 1
+#endif
+
+// Opus encoder settings (used when AUDIO_FORMAT_OPUS_ACTIVE)
+#define AUDIO_OPUS_FRAME_MS   20    // Opus frame size: 20ms (320 samples at 16kHz)
+#define AUDIO_OPUS_BITRATE    24000 // 24 kbps — good quality for speech at 16kHz
+#define AUDIO_OPUS_COMPLEXITY 5     // 0-10, balance CPU vs quality
 
 // ── Component macros ───────────────────────────────────────────────
 // Usage: LOG_SD(LOG_INFO, "Mounted: %s", name);

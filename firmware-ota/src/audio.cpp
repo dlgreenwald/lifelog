@@ -7,6 +7,11 @@
 #include "SD.h"
 #include "SPI.h"
 
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+#include <opus.h>
+#include <ogg/ogg.h>
+#endif
+
 // WAV header size
 #define WAV_HEADER_SIZE 44
 #define SAMPLE_BITS 16
@@ -38,6 +43,7 @@ uint32_t getTotalSamplesWritten() { return totalSamplesWritten; }
 
 // ── WAV header (from Seeed Studio guide) ───────────────────────────
 
+#ifdef AUDIO_FORMAT_WAV_ACTIVE
 static void generate_wav_header(uint8_t *wav_header, uint32_t wav_size, uint32_t sample_rate) {
     uint32_t file_size = wav_size + WAV_HEADER_SIZE - 8;
     uint32_t byte_rate = SAMPLE_RATE * SAMPLE_BITS / 8;
@@ -60,6 +66,7 @@ static void generate_wav_header(uint8_t *wav_header, uint32_t wav_size, uint32_t
     
     memcpy(wav_header, set_wav_header, WAV_HEADER_SIZE);
 }
+#endif // AUDIO_FORMAT_WAV_ACTIVE
 
 // ── RMS computation for VAD ────────────────────────────────────────
 
@@ -71,10 +78,18 @@ static float computeRMS(int16_t* samples, int count) {
     return sqrtf(sum / count);
 }
 
+// ── Forward declarations ──────────────────────────────────────────
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+static void opus_init();
+#endif
+
 // ── Public API ─────────────────────────────────────────────────────
 
 void audioInit() {
     // No queue needed — A/B buffers + task notifications handle data flow
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+    opus_init();
+#endif
 }
 
 void setWriterTaskHandle(TaskHandle_t handle) {
@@ -103,6 +118,111 @@ static uint32_t writeCount = 0;    // Samples in write buffer
 static volatile bool bufferReady = false;  // Audio buffer full
 static volatile bool writeDone = true;     // Write task idle
 static uint32_t bufCapacity = 0;   // Max samples per buffer
+
+// ── Opus encoder state (used when AUDIO_FORMAT_OPUS_ACTIVE) ────────
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+static OpusEncoder *opus_encoder = NULL;
+static ogg_stream_state ogg_stream;
+static long ogg_serialno = -1;
+static ogg_packet ogg_opus_head;
+static ogg_packet ogg_opus_tags;
+static int opus_frame_size_samples = 0;  // SAMPLE_RATE * AUDIO_OPUS_FRAME_MS / 1000
+static uint8_t *opus_encoded_buf = NULL;
+static ogg_page ogg_page_buf;
+
+// Build OpusHead identification header (RFC 7845)
+static void generate_opus_head_packet() {
+    uint8_t header[19] = {0};
+    // Magic bytes
+    header[0] = 'O'; header[1] = 'p'; header[2] = 'u'; header[3] = 's';
+    header[4] = 'H'; header[5] = 'e'; header[6] = 'a'; header[7] = 'd';
+    header[8] = 1;            // Version
+    header[9] = 1;            // Channel count (mono)
+    header[10] = 0; header[11] = 15; // Pre-skip: 3840 samples (80ms at 48kHz) little-endian
+    header[12] = (uint8_t)(SAMPLE_RATE);
+    header[13] = (uint8_t)(SAMPLE_RATE >> 8);
+    header[14] = (uint8_t)(SAMPLE_RATE >> 16);
+    header[15] = (uint8_t)(SAMPLE_RATE >> 24);
+    header[16] = 0; header[17] = 0; // Output gain: 0
+    header[18] = 0;            // Channel mapping family: 0
+
+    memset(&ogg_opus_head, 0, sizeof(ogg_opus_head));
+    ogg_opus_head.packet = (unsigned char*)malloc(19);
+    memcpy(ogg_opus_head.packet, header, 19);
+    ogg_opus_head.bytes = 19;
+}
+
+// Build OpusTags comment header (RFC 7845)
+static void generate_opus_tags_packet() {
+    const char *vendor = "LifeLog ESP32";
+    uint32_t vendor_len = strlen(vendor);
+    uint32_t tag_data_len = 4 + vendor_len + 4; // vendor_len + vendor + tag_count(0)
+    uint8_t *tag_buf = (uint8_t*)malloc(tag_data_len);
+
+    tag_buf[0] = (uint8_t)(vendor_len);
+    tag_buf[1] = (uint8_t)(vendor_len >> 8);
+    tag_buf[2] = (uint8_t)(vendor_len >> 16);
+    tag_buf[3] = (uint8_t)(vendor_len >> 24);
+    memcpy(tag_buf + 4, vendor, vendor_len);
+    // Tag count = 0
+    tag_buf[4 + vendor_len] = 0;
+    tag_buf[4 + vendor_len + 1] = 0;
+    tag_buf[4 + vendor_len + 2] = 0;
+    tag_buf[4 + vendor_len + 3] = 0;
+
+    memset(&ogg_opus_tags, 0, sizeof(ogg_opus_tags));
+    ogg_opus_tags.packet = tag_buf;
+    ogg_opus_tags.bytes = tag_data_len;
+}
+
+// Flush one OGG page to SD file
+static void ogg_write_page(File &file) {
+    while (ogg_stream_pageout(&ogg_stream, &ogg_page_buf) != 0) {
+        file.write(ogg_page_buf.header, ogg_page_buf.header_len);
+        file.write(ogg_page_buf.body, ogg_page_buf.body_len);
+    }
+}
+
+// Initialize Opus encoder and OGG stream state
+static void opus_init() {
+    int error;
+    opus_encoder = opus_encoder_create(SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP, &error);
+    if (error != OPUS_OK || !opus_encoder) {
+        LOG_AUDIO(LOG_ERROR, "opus_encoder_create failed: %d", error);
+        return;
+    }
+    opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(AUDIO_OPUS_BITRATE));
+    opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(AUDIO_OPUS_COMPLEXITY));
+    opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+
+    opus_frame_size_samples = SAMPLE_RATE * AUDIO_OPUS_FRAME_MS / 1000; // 320
+
+    // OGG stream with random serial number
+    ogg_serialno = (long)esp_random();
+    ogg_stream_init(&ogg_stream, ogg_serialno);
+
+    // Build header packets
+    generate_opus_head_packet();
+    generate_opus_tags_packet();
+
+    opus_encoded_buf = (uint8_t*)malloc(4000); // max Opus packet
+
+    LOG_AUDIO(LOG_INFO, "Opus encoder ready (frame=%d samples, bitrate=%d)",
+              opus_frame_size_samples, AUDIO_OPUS_BITRATE);
+}
+
+// Cleanup Opus encoder (called at shutdown)
+static void opus_deinit() {
+    if (opus_encoder) {
+        opus_encoder_destroy(opus_encoder);
+        opus_encoder = NULL;
+    }
+    ogg_stream_clear(&ogg_stream);
+    if (ogg_opus_head.packet) { free(ogg_opus_head.packet); ogg_opus_head.packet = NULL; }
+    if (ogg_opus_tags.packet) { free(ogg_opus_tags.packet); ogg_opus_tags.packet = NULL; }
+    if (opus_encoded_buf) { free(opus_encoded_buf); opus_encoded_buf = NULL; }
+}
+#endif // AUDIO_FORMAT_OPUS_ACTIVE
 
 // ── Audio capture task with VAD (records continuously) ─────────────
 
@@ -320,6 +440,95 @@ void writerTask(void *pvParameters) {
         totalSamplesWritten += samplesToWrite;
         uint32_t totalBytes = samplesToWrite * 2;
 
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+        // Opus path: encode in 20ms frames, write OGG container
+        char filename[64];
+        snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+
+        sdBusy = true;
+        File file = SD.open(filename, FILE_WRITE);
+        if (file) {
+            // Reset OGG stream for new file
+            ogg_stream_reset_serialno(&ogg_stream, ogg_serialno);
+
+            // Write OpusHead packet
+            ogg_opus_head.b_o_s = 1;
+            ogg_opus_head.e_o_s = 0;
+            ogg_opus_head.granulepos = 0;
+            ogg_opus_head.packetno = 0;
+            ogg_stream_packetin(&ogg_stream, &ogg_opus_head);
+            ogg_write_page(file);
+
+            // Write OpusTags packet
+            ogg_opus_tags.b_o_s = 0;
+            ogg_opus_tags.e_o_s = 0;
+            ogg_opus_tags.granulepos = 0;
+            ogg_opus_tags.packetno = 1;
+            ogg_stream_packetin(&ogg_stream, &ogg_opus_tags);
+            ogg_write_page(file);
+
+            // Encode audio in 20ms frames
+            int16_t *pcm_ptr = writeBuf;
+            int samples_remaining = samplesToWrite;
+            ogg_int64_t granulepos = 0;
+            ogg_int64_t packetno = 2;
+
+            while (samples_remaining >= opus_frame_size_samples) {
+                int encoded_bytes = opus_encode(opus_encoder, pcm_ptr,
+                                               opus_frame_size_samples,
+                                               opus_encoded_buf, 4000);
+                if (encoded_bytes > 0) {
+                    // granulepos in 48kHz units per RFC 7845
+                    granulepos += (ogg_int64_t)opus_frame_size_samples * 48000 / SAMPLE_RATE;
+                    ogg_packet op = {0};
+                    op.packet = opus_encoded_buf;
+                    op.bytes = encoded_bytes;
+                    op.b_o_s = 0;
+                    op.e_o_s = 0;
+                    op.granulepos = granulepos;
+                    op.packetno = packetno++;
+                    ogg_stream_packetin(&ogg_stream, &op);
+                    ogg_write_page(file);
+                }
+                pcm_ptr += opus_frame_size_samples;
+                samples_remaining -= opus_frame_size_samples;
+            }
+
+            // Mark end of stream
+            ogg_packet eos_op = {0};
+            eos_op.bytes = 0;
+            eos_op.b_o_s = 0;
+            eos_op.e_o_s = 1;
+            eos_op.granulepos = granulepos;
+            eos_op.packetno = packetno;
+            ogg_stream_packetin(&ogg_stream, &eos_op);
+
+            // Flush remaining pages
+            ogg_write_page(file);
+
+            file.flush();
+            delay(150);
+            file.close();
+            delay(150);
+
+            uint32_t fileSize = file.size();
+            LOG_AUDIO(LOG_INFO, "Saved: %s (%d bytes)", filename, fileSize);
+
+            if (WiFi.status() == WL_CONNECTED) {
+                delay(100);
+                LOG_AUDIO(LOG_INFO, "Uploading %s...", filename);
+                if (uploadFile(filename)) {
+                    delay(300);
+                    SD.remove(filename);
+                    LOG_AUDIO(LOG_INFO, "Uploaded and deleted %s", filename);
+                }
+            }
+        } else {
+            LOG_AUDIO(LOG_ERROR, "Failed to open %s", filename);
+        }
+        sdBusy = false;
+#else
+        // WAV path: write raw PCM with WAV header
         char filename[64];
         snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
 
@@ -332,16 +541,16 @@ void writerTask(void *pvParameters) {
 
             file.write((uint8_t*)writeBuf, totalBytes);
             file.flush();
-            delay(150);  // Let SD card complete write
+            delay(150);
             file.close();
-            delay(150);  // Wait after close
+            delay(150);
             LOG_AUDIO(LOG_INFO, "Saved: %s (%d bytes)", filename, totalBytes + WAV_HEADER_SIZE);
 
             if (WiFi.status() == WL_CONNECTED) {
-                delay(100);  // Pause before upload
+                delay(100);
                 LOG_AUDIO(LOG_INFO, "Uploading %s...", filename);
                 if (uploadFile(filename)) {
-                    delay(300);  // Wait after upload
+                    delay(300);
                     SD.remove(filename);
                     LOG_AUDIO(LOG_INFO, "Uploaded and deleted %s", filename);
                 }
@@ -350,6 +559,7 @@ void writerTask(void *pvParameters) {
             LOG_AUDIO(LOG_ERROR, "Failed to open %s", filename);
         }
         sdBusy = false;
+#endif
 
         bufferReady = false;
         writeDone = true;

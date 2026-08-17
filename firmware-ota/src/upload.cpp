@@ -96,7 +96,11 @@ void uploadAllRecordings() {
     int uploaded = 0;
     File f = root.openNextFile();
     while (f) {
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
         if (String(f.name()).endsWith(".opus")) {
+#else
+        if (String(f.name()).endsWith(".wav")) {
+#endif
             char path[64];
             snprintf(path, sizeof(path), "/lifelog/%s", f.name());
             if (uploadFile(path)) {
