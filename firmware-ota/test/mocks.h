@@ -29,6 +29,7 @@ typedef void* SemaphoreHandle_t;
 #define pdFALSE 0
 
 inline void vTaskDelay(TickType_t ticks) {}
+inline void delay(uint32_t ms) {}
 inline BaseType_t xTaskNotifyTake(BaseType_t clear, TickType_t timeout) { return pdTRUE; }
 inline void xTaskNotifyGive(TaskHandle_t handle) {}
 
@@ -140,8 +141,9 @@ inline uint32_t esp_random() { return 12345; }
 
 #define WL_CONNECTED 3
 
+static int mock_wifi_status = 0;  // 0 = disconnected by default
 struct MockWiFi {
-    int status() { return 0; }  // Not connected by default
+    int status() { return mock_wifi_status; }
 };
 static MockWiFi WiFi;
 
@@ -200,6 +202,16 @@ struct SDClass {
     bool begin(int) { return true; }
 };
 static SDClass SD;  // NOLINT — intentional global
+
+// ── Upload mock ────────────────────────────────────────────────────
+
+static bool mock_upload_should_succeed = true;
+static std::vector<std::string> mock_uploaded_files;
+
+inline bool uploadFile(const char* filename) {
+    mock_uploaded_files.push_back(std::string(filename));
+    return mock_upload_should_succeed;
+}
 
 // ── Preferences stub ───────────────────────────────────────────────
 

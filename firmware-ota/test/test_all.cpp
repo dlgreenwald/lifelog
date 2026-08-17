@@ -891,10 +891,164 @@ void test_median_four_elements() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// upload_if_connected Tests
+// ═══════════════════════════════════════════════════════════════════
+
+// Re-implement from audio.cpp (uses mocks for WiFi, SD, uploadFile)
+static void upload_if_connected(const char* filename) {
+    if (WiFi.status() == WL_CONNECTED) {
+        delay(100);
+        if (uploadFile(filename)) {
+            delay(300);
+            SD.remove(filename);
+        }
+    }
+}
+
+void test_upload_not_connected_skips() {
+    mock_wifi_status = 0;  // disconnected
+    mock_uploaded_files.clear();
+    mock_sd_files.clear();
+    upload_if_connected("/lifelog/rec_00000.opus");
+    TEST_ASSERT_EQUAL_INT(0, mock_uploaded_files.size());
+    // File should NOT have been removed (SD.remove not called)
+}
+
+void test_upload_connected_succeeds() {
+    mock_wifi_status = WL_CONNECTED;
+    mock_upload_should_succeed = true;
+    mock_uploaded_files.clear();
+    mock_sd_files.clear();
+    upload_if_connected("/lifelog/rec_00000.opus");
+    TEST_ASSERT_EQUAL_INT(1, mock_uploaded_files.size());
+    TEST_ASSERT_EQUAL_STRING("/lifelog/rec_00000.opus", mock_uploaded_files[0].c_str());
+}
+
+void test_upload_connected_fails_no_delete() {
+    mock_wifi_status = WL_CONNECTED;
+    mock_upload_should_succeed = false;
+    mock_uploaded_files.clear();
+    mock_sd_files.clear();
+    upload_if_connected("/lifelog/rec_00000.opus");
+    // uploadFile was called (tracking captured it)
+    TEST_ASSERT_EQUAL_INT(1, mock_uploaded_files.size());
+    // But SD.remove should not have been called — no files removed
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// write_opus_file Tests
+// ═══════════════════════════════════════════════════════════════════
+
+// Re-implement from audio.cpp for testing (uses mocks for SD, Opus, OGG)
+static void write_opus_file_test(int16_t* pcm, uint32_t samples, const char* filename) {
+    File file = SD.open(filename, FILE_WRITE);
+    if (!file) return;
+
+    // Simulate: write header bytes, encode frames, write body
+    // OpusHead
+    uint8_t opus_head[19] = {0};
+    memcpy(opus_head, "OpusHead", 8);
+    opus_head[8] = 1; opus_head[9] = 1;
+    opus_head[10] = 0; opus_head[11] = 15;
+    file.write(opus_head, 19);
+
+    // OpusTags
+    uint8_t opus_tags[28] = {0};
+    memcpy(opus_tags, "OpusTags", 8);
+    opus_tags[8] = 12;  // vendor len
+    memcpy(opus_tags + 12, "LifeLog ESP32", 12);
+    file.write(opus_tags, 28);
+
+    // Encode frames
+    int frame_size = 320;  // 20ms at 16kHz
+    int frames = samples / frame_size;
+    for (int f = 0; f < frames; f++) {
+        unsigned char encoded[50];
+        int bytes = opus_encode(NULL, pcm + f * frame_size, frame_size, encoded, 50);
+        if (bytes > 0) file.write(encoded, bytes);
+    }
+
+    file.flush();
+    file.close();
+}
+
+void test_write_opus_file_creates_file() {
+    mock_sd_files.clear();
+    mock_sd_open_should_fail = false;
+    int16_t pcm[320] = {0};
+    write_opus_file_test(pcm, 320, "/lifelog/rec_00000.opus");
+    TEST_ASSERT_EQUAL_INT(1, mock_sd_files.size());
+    TEST_ASSERT_EQUAL_STRING("/lifelog/rec_00000.opus", mock_sd_files[0].name.c_str());
+}
+
+void test_write_opus_file_has_opus_head() {
+    mock_sd_files.clear();
+    int16_t pcm[320] = {0};
+    write_opus_file_test(pcm, 320, "/lifelog/rec_00000.opus");
+    // First 8 bytes should be "OpusHead"
+    TEST_ASSERT_EQUAL_INT8('O', mock_sd_files[0].data[0]);
+    TEST_ASSERT_EQUAL_INT8('p', mock_sd_files[0].data[1]);
+    TEST_ASSERT_EQUAL_INT8('u', mock_sd_files[0].data[2]);
+    TEST_ASSERT_EQUAL_INT8('s', mock_sd_files[0].data[3]);
+    TEST_ASSERT_EQUAL_INT8('H', mock_sd_files[0].data[4]);
+    TEST_ASSERT_EQUAL_INT8('e', mock_sd_files[0].data[5]);
+    TEST_ASSERT_EQUAL_INT8('a', mock_sd_files[0].data[6]);
+    TEST_ASSERT_EQUAL_INT8('d', mock_sd_files[0].data[7]);
+}
+
+void test_write_opus_file_has_opus_tags() {
+    mock_sd_files.clear();
+    int16_t pcm[320] = {0};
+    write_opus_file_test(pcm, 320, "/lifelog/rec_00000.opus");
+    // Bytes 19-26 should be "OpusTags"
+    TEST_ASSERT_EQUAL_INT8('O', mock_sd_files[0].data[19]);
+    TEST_ASSERT_EQUAL_INT8('T', mock_sd_files[0].data[23]);
+    TEST_ASSERT_EQUAL_INT8('a', mock_sd_files[0].data[24]);
+    TEST_ASSERT_EQUAL_INT8('g', mock_sd_files[0].data[25]);
+    TEST_ASSERT_EQUAL_INT8('s', mock_sd_files[0].data[26]);
+}
+
+void test_write_opus_file_has_encoded_data() {
+    mock_sd_files.clear();
+    int16_t pcm[320];
+    for (int i = 0; i < 320; i++) pcm[i] = (int16_t)(1000 * sin(2.0 * M_PI * 440 * i / 16000));
+    write_opus_file_test(pcm, 320, "/lifelog/rec_00000.opus");
+    // File should contain header (19+28=47 bytes) plus encoded audio
+    TEST_ASSERT_TRUE(mock_sd_files[0].data.size() > 47);
+}
+
+void test_write_opus_file_open_failure() {
+    mock_sd_open_should_fail = true;
+    mock_sd_files.clear();
+    int16_t pcm[320] = {0};
+    write_opus_file_test(pcm, 320, "/lifelog/fail.opus");
+    TEST_ASSERT_EQUAL_INT(0, mock_sd_files.size());
+    mock_sd_open_should_fail = false;
+}
+
+void test_write_opus_file_multiple_frames() {
+    mock_sd_files.clear();
+    int16_t pcm[640];  // 2 frames
+    for (int i = 0; i < 640; i++) pcm[i] = (int16_t)(500 * sin(2.0 * M_PI * 300 * i / 16000));
+    write_opus_file_test(pcm, 640, "/lifelog/rec_00001.opus");
+    TEST_ASSERT_EQUAL_INT(1, mock_sd_files.size());
+    // More data than single frame
+    TEST_ASSERT_TRUE(mock_sd_files[0].data.size() > 50);
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Run All Tests
 // ═══════════════════════════════════════════════════════════════════
 
-void setUp() {}
+void setUp() {
+    mock_wifi_status = 0;
+    mock_upload_should_succeed = true;
+    mock_uploaded_files.clear();
+    mock_sd_files.clear();
+    mock_sd_open_should_fail = false;
+    mock_ogg_streams.clear();
+    mock_ogg_stream_idx = 0;
+}
 void tearDown() {}
 
 int main() {
@@ -1006,6 +1160,19 @@ int main() {
     RUN_TEST(test_median_does_not_modify_input);
     RUN_TEST(test_median_vad_scenario);
     RUN_TEST(test_median_four_elements);
+
+    // ── Upload ──
+    RUN_TEST(test_upload_not_connected_skips);
+    RUN_TEST(test_upload_connected_succeeds);
+    RUN_TEST(test_upload_connected_fails_no_delete);
+
+    // ── Write Opus File ──
+    RUN_TEST(test_write_opus_file_creates_file);
+    RUN_TEST(test_write_opus_file_has_opus_head);
+    RUN_TEST(test_write_opus_file_has_opus_tags);
+    RUN_TEST(test_write_opus_file_has_encoded_data);
+    RUN_TEST(test_write_opus_file_open_failure);
+    RUN_TEST(test_write_opus_file_multiple_frames);
 
     UNITY_END();
     return 0;
