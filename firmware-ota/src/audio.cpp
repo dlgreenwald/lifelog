@@ -1,7 +1,7 @@
 #include "audio.h"
 #include "config.h"
 #include "upload.h"
-#include <I2S.h>
+#include "driver/i2s.h"
 #include <WiFi.h>
 #include "FS.h"
 #include "SD.h"
@@ -12,24 +12,13 @@
 #define SAMPLE_BITS 16
 #define VOLUME_GAIN 3
 
-// Queue for audio chunks
-#define AUDIO_QUEUE_SIZE 10
-static QueueHandle_t audioQueue = NULL;
-
 // Global state
 volatile bool recording = false;
 volatile bool vadMode = true;
 uint32_t fileIndex = 0;
 uint32_t recordDurationMs = 5000;
 char lastSavedFile[64] = {0};
-
-// Chunk message
-typedef struct {
-    uint8_t* data;
-    uint32_t size;
-    bool isEnd;
-    char filename[64];
-} AudioChunkMsg;
+static TaskHandle_t writerTaskHandle = NULL;
 
 // ── WAV header (from Seeed Studio guide) ───────────────────────────
 
@@ -69,7 +58,11 @@ static float computeRMS(int16_t* samples, int count) {
 // ── Public API ─────────────────────────────────────────────────────
 
 void audioInit() {
-    audioQueue = xQueueCreate(AUDIO_QUEUE_SIZE, sizeof(AudioChunkMsg));
+    // No queue needed — A/B buffers + task notifications handle data flow
+}
+
+void setWriterTaskHandle(TaskHandle_t handle) {
+    writerTaskHandle = handle;
 }
 
 void startRecording(uint32_t durationMs) {
@@ -98,14 +91,44 @@ static uint32_t bufCapacity = 0;   // Max samples per buffer
 // ── Audio capture task with VAD (records continuously) ─────────────
 
 void audioTask(void *pvParameters) {
-    I2S.setAllPins(-1, 42, 41, -1, -1);
-    if (!I2S.begin(PDM_MONO_MODE, SAMPLE_RATE, SAMPLE_BITS)) {
-        LOG_I2S(LOG_ERROR, "Failed to initialize I2S!");
+    // Direct I2S driver — PDM CLK maps to bck_io_num, DIN to data_in_num
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
+        .sample_rate = SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = 1024,  // ESP-IDF max; 4 × 1024 = 4096 samples = 256ms ring buffer
+        .use_apll = false,
+        .tx_desc_auto_clear = false,
+        .fixed_mclk = 0,
+        .mclk_multiple = I2S_MCLK_MULTIPLE_DEFAULT,
+        .bits_per_chan = I2S_BITS_PER_CHAN_DEFAULT,
+    };
+    i2s_pin_config_t pin_config = {
+        .mck_io_num = I2S_PIN_NO_CHANGE,
+        .bck_io_num = I2S_PIN_NO_CHANGE,
+        .ws_io_num = I2S_MIC_CLK,    // PDM CLK = GPIO42 (mapped via fsPin)
+        .data_out_num = I2S_PIN_NO_CHANGE,
+        .data_in_num = I2S_MIC_DIN,  // PDM DIN = GPIO41
+    };
+    esp_err_t err = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+    if (err != ESP_OK) {
+        LOG_I2S(LOG_ERROR, "i2s_driver_install failed: %d", err);
         return;
     }
-    LOG_I2S(LOG_INFO, "PDM Mic ready (CLK=42, DIN=41)");
+    err = i2s_set_pin(I2S_NUM_0, &pin_config);
+    if (err != ESP_OK) {
+        LOG_I2S(LOG_ERROR, "i2s_set_pin failed: %d", err);
+        return;
+    }
+    i2s_set_clk(I2S_NUM_0, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
+    LOG_I2S(LOG_INFO, "PDM Mic ready (CLK=42, DIN=41) — DMA: 4 × 1024 samples");
 
-    // Allocate A/B buffers in PSRAM
+    // Allocate A/B buffers in PSRAM — 5 seconds each
+    // Multiple 200ms DMA reads accumulate before each swap/save
     uint32_t bufBytes = (SAMPLE_RATE * SAMPLE_BITS / 8) * 5;
     bufA = (int16_t*)ps_malloc(bufBytes);
     bufB = (int16_t*)ps_malloc(bufBytes);
@@ -113,7 +136,7 @@ void audioTask(void *pvParameters) {
         LOG_AUDIO(LOG_ERROR, "PSRAM malloc failed");
         return;
     }
-    bufCapacity = bufBytes / 2;
+    bufCapacity = bufBytes / sizeof(int16_t);
     audioBuf = bufA;
     writeBuf = bufB;
     audioCount = 0;
@@ -123,15 +146,18 @@ void audioTask(void *pvParameters) {
 
     // VAD state
     bool voiceActive = false;
-    uint32_t silenceMs = 0;
+    uint32_t silenceStartMs = 0;  // millis() when silence began
     float startThreshold = VAD_THRESHOLD;
     uint32_t startTime = millis();
     uint32_t startupGraceMs = 2000;
 
-    // RMS analysis
-    int analysisCapacity = VAD_ANALYSIS_MS * SAMPLE_RATE / 1000;
-    int16_t* analysisBuffer = (int16_t*)ps_malloc(analysisCapacity * 2);
-    int analysisIndex = 0;
+    // RMS analysis — 200ms DMA-aligned reads (no accumulation needed)
+    int analysisCapacity = SAMPLE_RATE * VAD_ANALYSIS_MS / 1000;  // 3200 samples
+    int16_t* analysisBuffer = (int16_t*)ps_malloc(analysisCapacity * sizeof(int16_t));
+    if (!analysisBuffer) {
+        LOG_AUDIO(LOG_ERROR, "Analysis buffer PSRAM malloc failed");
+        return;
+    }
     float smoothedRMS = 0;
 
     // Median filter
@@ -141,27 +167,23 @@ void audioTask(void *pvParameters) {
     int rmsCount = 0;
 
     while (true) {
-        // ALWAYS read from I2S — never block
-        int samplesToRead = SAMPLE_RATE * VAD_CHUNK_MS / 1000;
-        int16_t readBuffer[480];
+        // DMA fill: CPU sleeps until 3200 samples available in ring buffer
         size_t bytesRead = 0;
-        esp_i2s::i2s_read(esp_i2s::I2S_NUM_0, readBuffer, samplesToRead * 2, &bytesRead, portMAX_DELAY);
+        i2s_read(I2S_NUM_0, analysisBuffer, analysisCapacity * sizeof(int16_t),
+                 &bytesRead, portMAX_DELAY);
         if (bytesRead == 0) continue;
 
         int samplesRead = bytesRead / 2;
 
         // Compute RMS on RAW audio (before gain) for VAD
-        int available = analysisCapacity - analysisIndex;
-        int toCopy = (samplesRead < available) ? samplesRead : available;
-        memcpy(analysisBuffer + analysisIndex, readBuffer, toCopy * 2);
-        analysisIndex += toCopy;
+        smoothedRMS = computeRMS(analysisBuffer, samplesRead);
 
-        // Apply volume gain ONLY to recording buffer
+        // Apply volume gain in-place (recording path uses this buffer)
         for (int i = 0; i < samplesRead; i++) {
-            (*(uint16_t*)(readBuffer + i)) <<= VOLUME_GAIN;
+            analysisBuffer[i] <<= VOLUME_GAIN;
         }
 
-        // Only buffer when recording
+        // Copy gain-applied audio to recording buffer
         if (recording) {
             // Flush when buffer full
             if (audioCount + samplesRead > bufCapacity) {
@@ -173,86 +195,79 @@ void audioTask(void *pvParameters) {
                 audioCount = 0;
                 bufferReady = true;
                 writeDone = false;
+                if (writerTaskHandle) xTaskNotifyGive(writerTaskHandle);
             }
 
-            memcpy(audioBuf + audioCount, readBuffer, bytesRead);
+            memcpy(audioBuf + audioCount, analysisBuffer, bytesRead);
             audioCount += samplesRead;
         }
 
-        if (analysisIndex >= analysisCapacity) {
-            smoothedRMS = computeRMS(analysisBuffer, analysisCapacity);
-            analysisIndex = 0;
+        // Median filter
+        rmsHistory[rmsIndex] = smoothedRMS;
+        rmsIndex = (rmsIndex + 1) % MEDIAN_SAMPLES;
+        if (rmsCount < MEDIAN_SAMPLES) rmsCount++;
 
-            // Median filter
-            rmsHistory[rmsIndex] = smoothedRMS;
-            rmsIndex = (rmsIndex + 1) % MEDIAN_SAMPLES;
-            if (rmsCount < MEDIAN_SAMPLES) rmsCount++;
-
-            float sorted[MEDIAN_SAMPLES];
-            memcpy(sorted, rmsHistory, rmsCount * sizeof(float));
-            for (int i = 0; i < rmsCount - 1; i++) {
-                for (int j = i + 1; j < rmsCount; j++) {
-                    if (sorted[i] > sorted[j]) {
-                        float tmp = sorted[i];
-                        sorted[i] = sorted[j];
-                        sorted[j] = tmp;
-                    }
+        float sorted[MEDIAN_SAMPLES];
+        memcpy(sorted, rmsHistory, rmsCount * sizeof(float));
+        for (int i = 0; i < rmsCount - 1; i++) {
+            for (int j = i + 1; j < rmsCount; j++) {
+                if (sorted[i] > sorted[j]) {
+                    float tmp = sorted[i];
+                    sorted[i] = sorted[j];
+                    sorted[j] = tmp;
                 }
             }
-            float medianRMS = sorted[rmsCount / 2];
+        }
+        float medianRMS = sorted[rmsCount / 2];
 
-            // Log RMS periodically
-            static uint32_t lastRecLog = 0;
-            uint32_t now = millis();
-            if (now - lastRecLog >= 1000) {
-                LOG_VAD(LOG_DEBUG, "RMS=%.0f, median=%.0f", smoothedRMS, medianRMS);
-                lastRecLog = now;
+        // Log RMS periodically
+        static uint32_t lastRecLog = 0;
+        uint32_t now = millis();
+        if (now - lastRecLog >= 1000) {
+            LOG_VAD(LOG_INFO, "RMS=%.0f, median=%.0f", smoothedRMS, medianRMS);
+            lastRecLog = now;
+        }
+
+        // VAD logic — use median for robustness against spikes
+        if (!voiceActive && medianRMS > startThreshold && (now - startTime) > startupGraceMs) {
+            voiceActive = true;
+            silenceStartMs = now;  // reset silence tracker
+            audioCount = 0;
+            recording = true;
+            LOG_VAD(LOG_INFO, "Voice started (median=%.0f, start=%.0f)", medianRMS, startThreshold);
+        } else if (voiceActive) {
+            if (medianRMS > startThreshold) {
+                silenceStartMs = now;  // voice still present — reset silence timer
             }
 
-            // VAD logic — use median for robustness against spikes
-            if (!voiceActive && medianRMS > startThreshold && (millis() - startTime) > startupGraceMs) {
-                voiceActive = true;
-                silenceMs = 0;
-                audioCount = 0;
-                recording = true;
-                LOG_VAD(LOG_INFO, "Voice started (median=%.0f, start=%.0f)", medianRMS, startThreshold);
-            } else if (voiceActive) {
-                if (medianRMS > startThreshold) {
-                    silenceMs = 0;
+            uint32_t silenceMs = now - silenceStartMs;
+
+            // Log RMS silence periodically
+            static uint32_t lastSilenceLog = 0;
+            if (now - lastSilenceLog >= 1000) {
+                LOG_VAD(LOG_INFO, "silence=%d ms / %d", silenceMs, VAD_SILENCE_MS);
+                lastSilenceLog = now;
+            }
+
+            if (silenceMs >= VAD_SILENCE_MS) {
+                voiceActive = false;
+                recording = false;
+                // Flush remaining partial buffer
+                if (audioCount > 0 && writeDone) {
+                    int16_t* tmp = writeBuf;
+                    writeBuf = audioBuf;
+                    writeCount = audioCount;
+                    audioBuf = tmp;
+                    audioCount = 0;
+                    bufferReady = true;
+                    writeDone = false;
+                    if (writerTaskHandle) xTaskNotifyGive(writerTaskHandle);
                 } else {
-                    silenceMs += VAD_CHUNK_MS;
+                    audioCount = 0;
                 }
-
-                // Log RMS silence periodically
-                static uint32_t lastRecLog = 0;
-                uint32_t now = millis();
-                if (now - lastRecLog >= 1000) {
-                    LOG_VAD(LOG_DEBUG, "silence=%d ms / %d", silenceMs, VAD_SILENCE_MS);
-                    lastRecLog = now;
-                }
-
-                if (silenceMs >= VAD_SILENCE_MS) {
-                    voiceActive = false;
-                    recording = false;
-                    // Flush remaining partial buffer
-                    if (audioCount > 0 && writeDone) {
-                        int16_t* tmp = writeBuf;
-                        writeBuf = audioBuf;
-                        writeCount = audioCount;
-                        audioBuf = tmp;
-                        audioCount = 0;
-                        bufferReady = true;
-                        writeDone = false;
-                    } else {
-                        audioCount = 0;
-                    }
-                    LOG_VAD(LOG_INFO, "Voice ended (silence %d ms)", silenceMs);
-                    lastRecLog = 0;
-                    // Reset median filter so next recording starts fresh
-                    memset(rmsHistory, 0, sizeof(rmsHistory));
-                    rmsIndex = 0;
-                    rmsCount = 0;
-                }
+                LOG_VAD(LOG_INFO, "Voice ended (silence %d ms)", silenceMs);
+                lastRecLog = 0;
+                // Keep median filter state — don't reset between recordings
             }
         }
     }
@@ -262,10 +277,8 @@ void audioTask(void *pvParameters) {
 
 void writerTask(void *pvParameters) {
     while (true) {
-        if (!bufferReady) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
+        // Block until audio task signals a buffer is ready
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         // Write the ready buffer to SD
         uint32_t samplesToWrite = writeCount;

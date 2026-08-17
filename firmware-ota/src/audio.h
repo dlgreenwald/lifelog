@@ -19,6 +19,7 @@ extern char lastSavedFile[64];
 
 // Functions
 void audioInit();
+void setWriterTaskHandle(TaskHandle_t handle);
 void audioTask(void *pvParameters);
 void writerTask(void *pvParameters);
 void startRecording(uint32_t durationMs);

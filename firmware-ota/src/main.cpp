@@ -15,6 +15,7 @@
 static Preferences prefs;
 static const char* NS = "ota";
 static TaskHandle_t audioTaskHandle = NULL;
+static TaskHandle_t writerTaskHandle = NULL;
 
 // ── Boot tracking ──────────────────────────────────────────────────
 
@@ -113,14 +114,37 @@ void setup() {
     commandsInit();
 
     xTaskCreatePinnedToCore(audioTask, "audio", 32768, NULL, 5, &audioTaskHandle, 1);
-    xTaskCreatePinnedToCore(writerTask, "writer", 32768, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(writerTask, "writer", 32768, NULL, 2, &writerTaskHandle, 0);
+    setWriterTaskHandle(writerTaskHandle);
     bootConfirm();
 
     LOG_SYSTEM(LOG_INFO, "Ready! VAD active — listening for speech...");
 }
 
+static void logStats() {
+    static uint32_t lastStatsMs = 0;
+    uint32_t now = millis();
+    if (now - lastStatsMs < 10000) return;  // every 10 seconds
+    lastStatsMs = now;
+
+    // Stack high water marks (bytes remaining — lower = closer to overflow)
+    if (audioTaskHandle) {
+        UBaseType_t water = uxTaskGetStackHighWaterMark(audioTaskHandle);
+        LOG_SYSTEM(LOG_INFO, "audio stack free: %lu bytes", (unsigned long)water * 4);
+    }
+    if (writerTaskHandle) {
+        UBaseType_t water = uxTaskGetStackHighWaterMark(writerTaskHandle);
+        LOG_SYSTEM(LOG_INFO, "writer stack free: %lu bytes", (unsigned long)water * 4);
+    }
+
+    // Memory
+    LOG_SYSTEM(LOG_INFO, "heap free: %lu bytes", (unsigned long)ESP.getFreeHeap());
+    LOG_SYSTEM(LOG_INFO, "psram free: %lu bytes", (unsigned long)ESP.getFreePsram());
+}
+
 void loop() {
     ArduinoOTA.handle();
+    logStats();
 
     if (recording) {
         digitalWrite(LED_PIN, HIGH);

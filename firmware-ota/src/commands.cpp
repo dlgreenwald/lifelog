@@ -3,7 +3,7 @@
 #include "audio.h"
 #include "upload.h"
 #include <SD.h>
-#include <I2S.h>
+#include "driver/i2s.h"
 
 void commandsInit() {
     // Commands read from Serial in loop
@@ -37,18 +37,24 @@ void processCommand() {
         }
     } else if (cmd == "mic") {
         LOG_MIC(LOG_INFO, "Starting mic test - reading for 5 seconds...");
-        int16_t buffer[480];
+        int16_t readBuf[480];
         uint32_t startMs = millis();
         uint32_t sumRms = 0;
         uint32_t count = 0;
         uint32_t maxRms = 0;
         while (millis() - startMs < 5000) {
-            int sample = I2S.read();
-            if (sample > 1 || sample < -1) {
-                float rms = abs(sample);
-                sumRms += (uint32_t)rms;
-                count++;
-                if (rms > maxRms) maxRms = (uint32_t)rms;
+            size_t bytesRead = 0;
+            esp_err_t err = i2s_read(I2S_NUM_0, readBuf, sizeof(readBuf), &bytesRead, pdMS_TO_TICKS(100));
+            if (err != ESP_OK || bytesRead == 0) continue;
+            int samples = bytesRead / 2;
+            for (int i = 0; i < samples; i++) {
+                int sample = readBuf[i];
+                if (sample > 1 || sample < -1) {
+                    float rms = abs(sample);
+                    sumRms += (uint32_t)rms;
+                    count++;
+                    if (rms > maxRms) maxRms = (uint32_t)rms;
+                }
             }
         }
         float avgRms = (count > 0) ? (float)sumRms / count : 0;

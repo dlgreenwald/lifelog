@@ -32,8 +32,8 @@
 #define LOG_SYSTEM_LEVEL  LOG_INFO
 #define LOG_SD_LEVEL      LOG_DEBUG
 #define LOG_I2S_LEVEL     LOG_INFO
-#define LOG_AUDIO_LEVEL   LOG_INFO
-#define LOG_VAD_LEVEL     LOG_DEBUG
+#define LOG_AUDIO_LEVEL   LOG_DEBUG
+#define LOG_VAD_LEVEL     LOG_INFO
 #define LOG_UPLOAD_LEVEL  LOG_WARN
 #define LOG_CMD_LEVEL     LOG_DEBUG
 #define LOG_MIC_LEVEL     LOG_DEBUG
@@ -44,27 +44,29 @@
 //        LOG_VAD(LOG_DEBUG, "RMS=%.0f", rms);
 //        LOG_UPLOAD(LOG_ERROR, "Failed: %s", err);
 
+#define LOG_TS Serial.printf("[%lu] ", millis())
+
 #define LOG_BOOT(lvl, fmt, ...) \
-    do { if (LOG_BOOT_LEVEL >= (lvl)) Serial.printf("[BOOT] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_BOOT_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[BOOT] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_WIFI(lvl, fmt, ...) \
-    do { if (LOG_WIFI_LEVEL >= (lvl)) Serial.printf("[WIFI] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_WIFI_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[WIFI] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_OTA(lvl, fmt, ...) \
-    do { if (LOG_OTA_LEVEL >= (lvl)) Serial.printf("[OTA] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_OTA_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[OTA] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_SYSTEM(lvl, fmt, ...) \
-    do { if (LOG_SYSTEM_LEVEL >= (lvl)) Serial.printf("[SYSTEM] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_SYSTEM_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[SYSTEM] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_SD(lvl, fmt, ...) \
-    do { if (LOG_SD_LEVEL >= (lvl)) Serial.printf("[SD] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_SD_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[SD] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_I2S(lvl, fmt, ...) \
-    do { if (LOG_I2S_LEVEL >= (lvl)) Serial.printf("[I2S] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_I2S_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[I2S] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_AUDIO(lvl, fmt, ...) \
-    do { if (LOG_AUDIO_LEVEL >= (lvl)) Serial.printf("[AUDIO] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_AUDIO_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[AUDIO] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_VAD(lvl, fmt, ...) \
-    do { if (LOG_VAD_LEVEL >= (lvl)) Serial.printf("[VAD] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_VAD_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[VAD] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_UPLOAD(lvl, fmt, ...) \
-    do { if (LOG_UPLOAD_LEVEL >= (lvl)) Serial.printf("[UPLOAD] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_UPLOAD_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[UPLOAD] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_CMD(lvl, fmt, ...) \
-    do { if (LOG_CMD_LEVEL >= (lvl)) Serial.printf("[CMD] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_CMD_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[CMD] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_MIC(lvl, fmt, ...) \
-    do { if (LOG_MIC_LEVEL >= (lvl)) Serial.printf("[MIC] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_MIC_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[MIC] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_LS(lvl, fmt, ...) \
     do { if (LOG_LS_LEVEL >= (lvl)) Serial.printf("[LS] " fmt "\n", ##__VA_ARGS__); } while(0)
