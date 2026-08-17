@@ -301,7 +301,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 
 ## Testing & QA
 
-**Total**: 134 tests across 4 components (53 server + 8 diarization + 15 speaker-id + 58 dashboard)
+**Total**: 205 tests across 5 components (53 server + 8 diarization + 15 speaker-id + 58 dashboard + 71 firmware-ota)
 
 ### Python test framework
 - **pytest** with `pytest-asyncio` (`asyncio_mode = "auto"`)
@@ -344,13 +344,21 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 | Speaker ID (Python) | ruff | `cd speaker-id && .venv/bin/ruff check src/ tests/` |
 | Dashboard (TypeScript) | tsc | `cd dashboard && npx tsc --noEmit` |
 
+### Test-after-change rule
+
+Every code change MUST be followed by running the relevant test suite before yielding. If tests fail, fix in the same pass — never deliver with broken tests.
+
+- **Python services**: `cd lifelog/<service> && .venv/bin/python -m pytest tests/ -q`
+- **Dashboard**: `cd lifelog/dashboard && npx vitest run`
+- **Firmware-OTA**: `cd lifelog/firmware-ota && pio test -e test`
+
 ### Pre-commit checklist (code complete)
 
 Before merging any change:
 
 1. **Lint**: `ruff check src/ tests/` passes on all Python services (0 errors)
 2. **Type check**: `npx tsc --noEmit` passes on dashboard (0 errors)
-3. **Tests**: All 134 tests pass across all 4 services
+3. **Tests**: All 205 tests pass across all 5 services
 4. **No regressions**: Existing functionality not broken
 
 ### Ruff configuration
@@ -387,6 +395,7 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | `speaker-id/build.sh` | compile check → ruff lint → pytest (15 tests) |
 | `dashboard/build.sh` | tsc type check → vite build → vitest (58 tests) → bundle size |
 | `firmware/build.sh` | pio compile check → config validation (skips if PlatformIO not installed) |
+| `firmware-ota/build.sh` | pio compile check → native test (71 tests) |
 
 **Run everything:**
 ```bash
