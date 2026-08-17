@@ -14,6 +14,7 @@
 // Public state
 extern volatile bool recording;
 extern volatile bool vadMode;
+extern volatile bool sdBusy;
 extern uint32_t fileIndex;
 extern char lastSavedFile[64];
 
@@ -24,3 +25,11 @@ void audioTask(void *pvParameters);
 void writerTask(void *pvParameters);
 void startRecording(uint32_t durationMs);
 void toggleVAD();
+
+// Buffer health accessors
+uint32_t getWriterStallCount();
+uint32_t getWriterStallMaxMs();
+uint32_t getDmaPartialCount();
+uint32_t getFlushDropCount();
+uint32_t getTotalSamplesCaptured();
+uint32_t getTotalSamplesWritten();

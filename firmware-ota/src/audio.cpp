@@ -15,10 +15,26 @@
 // Global state
 volatile bool recording = false;
 volatile bool vadMode = true;
+volatile bool sdBusy = false;
 uint32_t fileIndex = 0;
 uint32_t recordDurationMs = 5000;
 char lastSavedFile[64] = {0};
 static TaskHandle_t writerTaskHandle = NULL;
+
+// ── Buffer health counters ────────────────────────────────────────
+static uint32_t writerStallCount = 0;   // Times audioTask waited for writer
+static uint32_t writerStallMaxMs = 0;   // Longest stall duration
+static uint32_t dmaPartialCount = 0;    // i2s_read returned < requested
+static uint32_t flushDropCount = 0;     // End-of-recording buffer discarded
+static uint32_t totalSamplesCaptured = 0; // Total I2S samples read
+static uint32_t totalSamplesWritten = 0;  // Total samples written to SD
+
+uint32_t getWriterStallCount() { return writerStallCount; }
+uint32_t getWriterStallMaxMs() { return writerStallMaxMs; }
+uint32_t getDmaPartialCount() { return dmaPartialCount; }
+uint32_t getFlushDropCount() { return flushDropCount; }
+uint32_t getTotalSamplesCaptured() { return totalSamplesCaptured; }
+uint32_t getTotalSamplesWritten() { return totalSamplesWritten; }
 
 // ── WAV header (from Seeed Studio guide) ───────────────────────────
 
@@ -174,6 +190,12 @@ void audioTask(void *pvParameters) {
         if (bytesRead == 0) continue;
 
         int samplesRead = bytesRead / 2;
+        uint32_t expectedBytes = analysisCapacity * sizeof(int16_t);
+        if (bytesRead < expectedBytes) {
+            dmaPartialCount++;
+            LOG_AUDIO(LOG_WARN, "DMA partial read: %d/%d bytes (overflow likely)",
+                      (int)bytesRead, (int)expectedBytes);
+        }
 
         // Compute RMS on RAW audio (before gain) for VAD
         smoothedRMS = computeRMS(analysisBuffer, samplesRead);
@@ -187,7 +209,14 @@ void audioTask(void *pvParameters) {
         if (recording) {
             // Flush when buffer full
             if (audioCount + samplesRead > bufCapacity) {
+                uint32_t waitStart = millis();
                 while (!writeDone) { vTaskDelay(pdMS_TO_TICKS(5)); }
+                uint32_t waitMs = millis() - waitStart;
+                if (waitMs > 0) {
+                    writerStallCount++;
+                    if (waitMs > writerStallMaxMs) writerStallMaxMs = waitMs;
+                    LOG_AUDIO(LOG_WARN, "Writer stall: waited %lu ms", (unsigned long)waitMs);
+                }
                 int16_t* tmp = writeBuf;
                 writeBuf = audioBuf;
                 writeCount = audioCount;
@@ -200,6 +229,7 @@ void audioTask(void *pvParameters) {
 
             memcpy(audioBuf + audioCount, analysisBuffer, bytesRead);
             audioCount += samplesRead;
+            totalSamplesCaptured += samplesRead;
         }
 
         // Median filter
@@ -263,6 +293,11 @@ void audioTask(void *pvParameters) {
                     writeDone = false;
                     if (writerTaskHandle) xTaskNotifyGive(writerTaskHandle);
                 } else {
+                    if (audioCount > 0) {
+                        flushDropCount++;
+                        LOG_AUDIO(LOG_WARN, "Flush drop: %lu samples discarded (writeDone=%d)",
+                                  (unsigned long)audioCount, (int)writeDone);
+                    }
                     audioCount = 0;
                 }
                 LOG_VAD(LOG_INFO, "Voice ended (silence %d ms)", silenceMs);
@@ -282,11 +317,13 @@ void writerTask(void *pvParameters) {
 
         // Write the ready buffer to SD
         uint32_t samplesToWrite = writeCount;
+        totalSamplesWritten += samplesToWrite;
         uint32_t totalBytes = samplesToWrite * 2;
 
         char filename[64];
         snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
 
+        sdBusy = true;
         File file = SD.open(filename, FILE_WRITE);
         if (file) {
             uint8_t wav_header[WAV_HEADER_SIZE];
@@ -312,6 +349,7 @@ void writerTask(void *pvParameters) {
         } else {
             LOG_AUDIO(LOG_ERROR, "Failed to open %s", filename);
         }
+        sdBusy = false;
 
         bufferReady = false;
         writeDone = true;

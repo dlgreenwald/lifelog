@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <SD.h>
 #include "config.h"
+#include "audio.h"
 
 bool uploadFile(const char* filename) {
     if (WiFi.status() != WL_CONNECTED) {
@@ -9,8 +10,10 @@ bool uploadFile(const char* filename) {
         return false;
     }
 
+    sdBusy = true;
     File file = SD.open(filename, FILE_READ);
     if (!file) {
+        sdBusy = false;
         LOG_UPLOAD(LOG_ERROR, "Failed to open %s", filename);
         return false;
     }
@@ -60,6 +63,7 @@ bool uploadFile(const char* filename) {
         }
     }
     file.close();
+    sdBusy = false;
 
     client.print("\r\n--" + boundary + "--\r\n");
 
@@ -85,8 +89,9 @@ bool uploadFile(const char* filename) {
 }
 
 void uploadAllRecordings() {
+    sdBusy = true;
     File root = SD.open("lifelog");
-    if (!root) { LOG_UPLOAD(LOG_ERROR, "Failed to open /lifelog"); return; }
+    if (!root) { LOG_UPLOAD(LOG_ERROR, "Failed to open /lifelog"); sdBusy = false; return; }
 
     int uploaded = 0;
     File f = root.openNextFile();
@@ -103,5 +108,6 @@ void uploadAllRecordings() {
         f = root.openNextFile();
     }
     root.close();
+    sdBusy = false;
     LOG_UPLOAD(LOG_INFO, "Done: %d files uploaded", uploaded);
 }

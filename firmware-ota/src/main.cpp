@@ -5,6 +5,9 @@
 #include <ArduinoOTA.h>
 #include <Preferences.h>
 #include <esp_ota_ops.h>
+#include <esp_freertos_hooks.h>
+#include <freertos/task.h>
+#include <esp_additions/freertos/task_snapshot.h>
 #include "config.h"
 #include "audio.h"
 #include "upload.h"
@@ -16,6 +19,14 @@ static Preferences prefs;
 static const char* NS = "ota";
 static TaskHandle_t audioTaskHandle = NULL;
 static TaskHandle_t writerTaskHandle = NULL;
+
+// ── Idle hook counters (per-core CPU usage) ────────────────────────
+
+static volatile uint32_t idleCount0 = 0;
+static volatile uint32_t idleCount1 = 0;
+
+static bool idleHook0() { idleCount0++; return false; }
+static bool idleHook1() { idleCount1++; return false; }
 
 // ── Boot tracking ──────────────────────────────────────────────────
 
@@ -105,6 +116,9 @@ void setup() {
     delay(1000);
     Serial.println("\n=== LifeLog OTA Demo ===");
 
+    esp_register_freertos_idle_hook_for_cpu(idleHook0, 0);
+    esp_register_freertos_idle_hook_for_cpu(idleHook1, 1);
+
     pinMode(LED_PIN, OUTPUT);
     bootInit();
     setupWiFi();
@@ -124,37 +138,79 @@ void setup() {
 static void logStats() {
     static uint32_t lastStatsMs = 0;
     uint32_t now = millis();
-    if (now - lastStatsMs < 10000) return;  // every 10 seconds
+    uint32_t elapsed = now - lastStatsMs;
+    if (elapsed < 60000) return;  // every 60 seconds
     lastStatsMs = now;
 
-    // Stack high water marks (bytes remaining — lower = closer to overflow)
-    if (audioTaskHandle) {
-        UBaseType_t water = uxTaskGetStackHighWaterMark(audioTaskHandle);
-        LOG_SYSTEM(LOG_INFO, "audio stack free: %lu bytes", (unsigned long)water * 4);
-    }
-    if (writerTaskHandle) {
-        UBaseType_t water = uxTaskGetStackHighWaterMark(writerTaskHandle);
-        LOG_SYSTEM(LOG_INFO, "writer stack free: %lu bytes", (unsigned long)water * 4);
+    // ── Per-core CPU usage via idle hook counts ──
+    uint32_t c0 = idleCount0; idleCount0 = 0;
+    uint32_t c1 = idleCount1; idleCount1 = 0;
+    // Each idle hook invocation ≈ 1 tick. Busy% = (elapsed - idle) / elapsed * 100
+    uint32_t busy0 = (elapsed > c0) ? (elapsed - c0) * 100 / elapsed : 0;
+    uint32_t busy1 = (elapsed > c1) ? (elapsed - c1) * 100 / elapsed : 0;
+    LOG_SYSTEM(LOG_INFO, "cpu0: %lu%% busy, cpu1: %lu%% busy", busy0, busy1);
+
+    // ── Task enumeration via uxTaskGetSnapshotAll ──
+    UBaseType_t taskCount = uxTaskGetNumberOfTasks();
+    TaskSnapshot_t *snapshots = (TaskSnapshot_t *)pvPortMalloc(taskCount * sizeof(TaskSnapshot_t));
+    if (snapshots) {
+        UBaseType_t tcbSize;
+        UBaseType_t actual = uxTaskGetSnapshotAll(snapshots, taskCount, &tcbSize);
+        LOG_SYSTEM(LOG_INFO, "--- %lu tasks ---", (unsigned long)actual);
+
+        for (UBaseType_t i = 0; i < actual; i++) {
+            TaskHandle_t handle = (TaskHandle_t)snapshots[i].pxTCB;
+            const char *name = pcTaskGetName(handle);
+            eTaskState state = eTaskGetState(handle);
+            const char *stateStr;
+            switch (state) {
+                case eRunning:   stateStr = "RUN"; break;
+                case eReady:     stateStr = "READY"; break;
+                case eBlocked:   stateStr = "BLOCKED"; break;
+                case eSuspended: stateStr = "SUSPENDED"; break;
+                case eDeleted:   stateStr = "DELETED"; break;
+                default:         stateStr = "?"; break;
+            }
+            UBaseType_t stackFree = uxTaskGetStackHighWaterMark(handle);
+            LOG_SYSTEM(LOG_INFO, "  %-12s %5luB %s", name, (unsigned long)stackFree * 4, stateStr);
+        }
+        vPortFree(snapshots);
     }
 
-    // Memory
+    // ── Memory ──
     LOG_SYSTEM(LOG_INFO, "heap free: %lu bytes", (unsigned long)ESP.getFreeHeap());
     LOG_SYSTEM(LOG_INFO, "psram free: %lu bytes", (unsigned long)ESP.getFreePsram());
+
+    // ── Buffer health ──
+    LOG_SYSTEM(LOG_INFO, "buf stalls: %lu (max %lu ms)",
+               (unsigned long)getWriterStallCount(),
+               (unsigned long)getWriterStallMaxMs());
+    LOG_SYSTEM(LOG_INFO, "dma partials: %lu, flush drops: %lu",
+               (unsigned long)getDmaPartialCount(),
+               (unsigned long)getFlushDropCount());
+    LOG_SYSTEM(LOG_INFO, "samples captured: %lu, written: %lu",
+               (unsigned long)getTotalSamplesCaptured(),
+               (unsigned long)getTotalSamplesWritten());
 }
 
 void loop() {
     ArduinoOTA.handle();
     logStats();
 
-    if (recording) {
-        digitalWrite(LED_PIN, HIGH);
-        delay(200);
-        digitalWrite(LED_PIN, LOW);
-        delay(200);
+    if (!sdBusy) {
+        if (recording) {
+            digitalWrite(LED_PIN, HIGH);
+            delay(200);
+            digitalWrite(LED_PIN, LOW);
+            delay(200);
+        } else {
+            digitalWrite(LED_PIN, HIGH);
+            delay(1000);
+            digitalWrite(LED_PIN, LOW);
+            delay(1000);
+        }
     } else {
-        digitalWrite(LED_PIN, HIGH);
-        delay(1000);
-        digitalWrite(LED_PIN, LOW);
-        delay(1000);
+        // SD in use — skip LED toggle to avoid GPIO 21 conflict
+        delay(100);
     }
 }

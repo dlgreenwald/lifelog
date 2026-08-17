@@ -29,12 +29,14 @@ void processCommand() {
         LOG_UPLOAD(LOG_INFO, "Starting upload of all recordings...");
         uploadAllRecordings();
     } else if (cmd == "ls") {
+        sdBusy = true;
         File root = SD.open("lifelog");
         if (root) {
             File f = root.openNextFile();
             while (f) { LOG_LS(LOG_DEBUG, "%s %d bytes", f.name(), f.size()); f = root.openNextFile(); }
             root.close();
         }
+        sdBusy = false;
     } else if (cmd == "mic") {
         LOG_MIC(LOG_INFO, "Starting mic test - reading for 5 seconds...");
         int16_t readBuf[480];
