@@ -525,10 +525,10 @@ static void write_opus_file(int16_t* pcm, uint32_t samples, const char* filename
 
     file.flush();
     delay(150);
+    uint32_t fileSize = file.size();
     file.close();
     delay(150);
 
-    uint32_t fileSize = file.size();
     LOG_AUDIO(LOG_INFO, "Saved: %s (%d bytes)", filename, fileSize);
 }
 #endif
