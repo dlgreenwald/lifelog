@@ -190,19 +190,24 @@ static void generate_opus_head_packet() {
 static void generate_opus_tags_packet() {
     const char *vendor = "LifeLog ESP32";
     uint32_t vendor_len = strlen(vendor);
-    uint32_t tag_data_len = 4 + vendor_len + 4; // vendor_len + vendor + tag_count(0)
+    uint32_t tag_data_len = 8 + 4 + vendor_len + 4; // magic + vendor_len + vendor + tag_count(0)
     uint8_t *tag_buf = (uint8_t*)malloc(tag_data_len);
 
-    tag_buf[0] = (uint8_t)(vendor_len);
-    tag_buf[1] = (uint8_t)(vendor_len >> 8);
-    tag_buf[2] = (uint8_t)(vendor_len >> 16);
-    tag_buf[3] = (uint8_t)(vendor_len >> 24);
-    memcpy(tag_buf + 4, vendor, vendor_len);
+    // "OpusTags" magic
+    tag_buf[0] = 'O'; tag_buf[1] = 'p'; tag_buf[2] = 'u'; tag_buf[3] = 's';
+    tag_buf[4] = 'T'; tag_buf[5] = 'a'; tag_buf[6] = 'g'; tag_buf[7] = 's';
+    // Vendor string length (little-endian)
+    tag_buf[8]  = (uint8_t)(vendor_len);
+    tag_buf[9]  = (uint8_t)(vendor_len >> 8);
+    tag_buf[10] = (uint8_t)(vendor_len >> 16);
+    tag_buf[11] = (uint8_t)(vendor_len >> 24);
+    // Vendor string
+    memcpy(tag_buf + 12, vendor, vendor_len);
     // Tag count = 0
-    tag_buf[4 + vendor_len] = 0;
-    tag_buf[4 + vendor_len + 1] = 0;
-    tag_buf[4 + vendor_len + 2] = 0;
-    tag_buf[4 + vendor_len + 3] = 0;
+    tag_buf[12 + vendor_len] = 0;
+    tag_buf[12 + vendor_len + 1] = 0;
+    tag_buf[12 + vendor_len + 2] = 0;
+    tag_buf[12 + vendor_len + 3] = 0;
 
     memset(&ogg_opus_tags, 0, sizeof(ogg_opus_tags));
     ogg_opus_tags.packet = tag_buf;
