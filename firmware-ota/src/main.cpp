@@ -14,7 +14,6 @@
 
 static Preferences prefs;
 static const char* NS = "ota";
-RemoteDebug Debug;
 static TaskHandle_t audioTaskHandle = NULL;
 
 // ── Boot tracking ──────────────────────────────────────────────────
@@ -24,10 +23,10 @@ static void bootInit() {
     bool confirmed = prefs.getUChar("confirmed", 0);
     uint8_t boots = prefs.getUChar("boots", 0);
     if (confirmed) {
-        LOG("[BOOT] Firmware confirmed");
+        LOG_BOOT(LOG_INFO, "Firmware confirmed");
     } else {
         boots++;
-        LOG("[BOOT] Boot %d/%d (unconfirmed)", boots, MAX_BOOT);
+        LOG_BOOT(LOG_WARN, "Boot %d/%d (unconfirmed)", boots, MAX_BOOT);
         prefs.putUChar("boots", boots);
     }
     prefs.end();
@@ -38,7 +37,7 @@ static void bootConfirm() {
     prefs.putUChar("confirmed", 1);
     prefs.putUChar("boots", 0);
     prefs.end();
-    LOG("[BOOT] Firmware confirmed");
+    LOG_BOOT(LOG_INFO, "Firmware confirmed");
 }
 
 // ── WiFi ───────────────────────────────────────────────────────────
@@ -48,9 +47,9 @@ static void setupWiFi() {
     wm.setConfigPortalTimeout(120);
     wm.setConnectTimeout(10);
     if (!wm.autoConnect("LifeLog-Setup")) {
-        LOG("[WIFI] Config portal timed out");
+        LOG_WIFI(LOG_WARN, "Config portal timed out");
     } else {
-        LOG("[WIFI] Connected: %s", WiFi.localIP().toString().c_str());
+        LOG_WIFI(LOG_INFO, "Connected: %s", WiFi.localIP().toString().c_str());
     }
 }
 
@@ -59,26 +58,19 @@ static void setupWiFi() {
 static void setupOTA() {
     ArduinoOTA.setHostname("lifelog");
     ArduinoOTA.onStart([]() {
-        LOG("[OTA] Start");
+        LOG_OTA(LOG_INFO, "Start");
         prefs.begin(NS, false);
         prefs.putUChar("confirmed", 0);
         prefs.putUChar("boots", 0);
         prefs.end();
     });
-    ArduinoOTA.onEnd([]() { LOG("[OTA] Done. Rebooting..."); });
+    ArduinoOTA.onEnd([]() { LOG_OTA(LOG_INFO, "Done. Rebooting..."); });
     ArduinoOTA.onProgress([](unsigned int p, unsigned int t) {
-        LOG("[OTA] %u%%", (p / (t / 100)));
+        LOG_OTA(LOG_DEBUG, "%u%%", (p / (t / 100)));
     });
-    ArduinoOTA.onError([](ota_error_t e) { LOG("[OTA] Error %d", e); });
+    ArduinoOTA.onError([](ota_error_t e) { LOG_OTA(LOG_ERROR, "Error %d", e); });
     ArduinoOTA.begin();
-    LOG("[OTA] ArduinoOTA ready");
-}
-
-// ── Debug ──────────────────────────────────────────────────────────
-
-static void setupDebug() {
-    Debug.begin("lifelog", RemoteDebug::VERBOSE);
-    Debug.setSerialEnabled(true);
+    LOG_OTA(LOG_INFO, "ArduinoOTA ready");
 }
 
 // ── SD Card ────────────────────────────────────────────────────────
@@ -86,22 +78,22 @@ static void setupDebug() {
 static void setupSD() {
     // Initialize SD like the guide: SD.begin(21)
     if (!SD.begin(SD_CS_PIN)) {
-        LOG("[SD] Mount failed");
+        LOG_SD(LOG_ERROR, "Mount failed");
         return;
     }
     
     uint8_t t = SD.cardType();
     if (t == CARD_NONE) {
-        LOG("[SD] No card detected");
+        LOG_SD(LOG_WARN, "No card detected");
         return;
     }
     
     const char* names[] = {"UNKNOWN","MMC","SD","SDHC"};
-    LOG("[SD] Mounted: %s %llu MB", names[t], SD.cardSize()/(1024*1024));
+    LOG_SD(LOG_INFO, "Mounted: %s %llu MB", names[t], SD.cardSize()/(1024*1024));
     
     if (!SD.exists("lifelog")) {
         SD.mkdir("lifelog");
-        LOG("[SD] Created /lifelog");
+        LOG_SD(LOG_INFO, "Created /lifelog");
     }
 }
 
@@ -115,7 +107,6 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     bootInit();
     setupWiFi();
-    setupDebug();
     setupSD();
     audioInit();
     setupOTA();
@@ -125,12 +116,11 @@ void setup() {
     xTaskCreatePinnedToCore(writerTask, "writer", 32768, NULL, 2, NULL, 0);
     bootConfirm();
 
-    LOG("[SYSTEM] Ready! VAD active — listening for speech...");
+    LOG_SYSTEM(LOG_INFO, "Ready! VAD active — listening for speech...");
 }
 
 void loop() {
     ArduinoOTA.handle();
-    Debug.handle();
 
     if (recording) {
         digitalWrite(LED_PIN, HIGH);

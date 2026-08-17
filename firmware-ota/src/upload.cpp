@@ -3,32 +3,20 @@
 #include <SD.h>
 #include "config.h"
 
-// Server configuration
-#define SERVER_HOST    "192.168.68.190"
-#define SERVER_PORT    8443
-#define SERVER_PATH    "/api/v1/upload"
-#define API_KEY        "lifelog-key"
-
-extern RemoteDebug Debug;
-#define LOG(fmt, ...) do { \
-    Serial.printf(fmt "\n", ##__VA_ARGS__); \
-    debugD(fmt, ##__VA_ARGS__); \
-} while(0)
-
 bool uploadFile(const char* filename) {
     if (WiFi.status() != WL_CONNECTED) {
-        LOG("[UPLOAD] No WiFi connection");
+        LOG_UPLOAD(LOG_WARN, "No WiFi connection");
         return false;
     }
 
     File file = SD.open(filename, FILE_READ);
     if (!file) {
-        LOG("[UPLOAD] Failed to open %s", filename);
+        LOG_UPLOAD(LOG_ERROR, "Failed to open %s", filename);
         return false;
     }
 
     uint32_t fileSize = file.size();
-    LOG("[UPLOAD] Uploading %s (%d bytes)...", filename, fileSize);
+    LOG_UPLOAD(LOG_INFO, "Uploading %s (%d bytes)...", filename, fileSize);
 
     String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT + SERVER_PATH;
     String boundary = "----LifeLogBoundary" + String(millis());
@@ -41,7 +29,7 @@ bool uploadFile(const char* filename) {
 
     WiFiClient client;
     if (!client.connect(SERVER_HOST, SERVER_PORT)) {
-        LOG("[UPLOAD] Connection failed");
+        LOG_UPLOAD(LOG_ERROR, "Connection failed");
         file.close();
         return false;
     }
@@ -88,17 +76,17 @@ bool uploadFile(const char* filename) {
     client.stop();
 
     if (response.indexOf("200") >= 0) {
-        LOG("[UPLOAD] Success: %s", filename);
+        LOG_UPLOAD(LOG_INFO, "Success: %s", filename);
         return true;
     } else {
-        LOG("[UPLOAD] Failed: %s", response.substring(0, 100).c_str());
+        LOG_UPLOAD(LOG_ERROR, "Failed: %s", response.substring(0, 100).c_str());
         return false;
     }
 }
 
 void uploadAllRecordings() {
     File root = SD.open("lifelog");
-    if (!root) { LOG("[UPLOAD] Failed to open /lifelog"); return; }
+    if (!root) { LOG_UPLOAD(LOG_ERROR, "Failed to open /lifelog"); return; }
 
     int uploaded = 0;
     File f = root.openNextFile();
@@ -109,11 +97,11 @@ void uploadAllRecordings() {
             if (uploadFile(path)) {
                 uploaded++;
                 SD.remove(path);
-                LOG("[UPLOAD] Deleted %s", path);
+                LOG_UPLOAD(LOG_DEBUG, "Deleted %s", path);
             }
         }
         f = root.openNextFile();
     }
     root.close();
-    LOG("[UPLOAD] Done: %d files uploaded", uploaded);
+    LOG_UPLOAD(LOG_INFO, "Done: %d files uploaded", uploaded);
 }
