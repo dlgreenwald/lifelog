@@ -81,7 +81,41 @@ static float computeRMS(int16_t* samples, int count) {
 // ── Forward declarations ──────────────────────────────────────────
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
 static void opus_init();
+static void write_opus_file(int16_t* pcm, uint32_t samples, const char* filename);
 #endif
+static void upload_if_connected(const char* filename);
+static float compute_median(float* history, int count);
+
+// ── Median filter (used by VAD) ───────────────────────────────────
+
+static float compute_median(float* history, int count) {
+    float sorted[count];
+    memcpy(sorted, history, count * sizeof(float));
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (sorted[i] > sorted[j]) {
+                float tmp = sorted[i];
+                sorted[i] = sorted[j];
+                sorted[j] = tmp;
+            }
+        }
+    }
+    return sorted[count / 2];
+}
+
+// ── Upload helper ──────────────────────────────────────────────────
+
+static void upload_if_connected(const char* filename) {
+    if (WiFi.status() == WL_CONNECTED) {
+        delay(100);
+        LOG_AUDIO(LOG_INFO, "Uploading %s...", filename);
+        if (uploadFile(filename)) {
+            delay(300);
+            SD.remove(filename);
+            LOG_AUDIO(LOG_INFO, "Uploaded and deleted %s", filename);
+        }
+    }
+}
 
 // ── Public API ─────────────────────────────────────────────────────
 
@@ -357,18 +391,7 @@ void audioTask(void *pvParameters) {
         rmsIndex = (rmsIndex + 1) % MEDIAN_SAMPLES;
         if (rmsCount < MEDIAN_SAMPLES) rmsCount++;
 
-        float sorted[MEDIAN_SAMPLES];
-        memcpy(sorted, rmsHistory, rmsCount * sizeof(float));
-        for (int i = 0; i < rmsCount - 1; i++) {
-            for (int j = i + 1; j < rmsCount; j++) {
-                if (sorted[i] > sorted[j]) {
-                    float tmp = sorted[i];
-                    sorted[i] = sorted[j];
-                    sorted[j] = tmp;
-                }
-            }
-        }
-        float medianRMS = sorted[rmsCount / 2];
+        float medianRMS = compute_median(rmsHistory, rmsCount);
 
         // Log RMS periodically
         static uint32_t lastRecLog = 0;
@@ -428,6 +451,83 @@ void audioTask(void *pvParameters) {
     }
 }
 
+// ── Opus file writer ──────────────────────────────────────────────
+
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+static void write_opus_file(int16_t* pcm, uint32_t samples, const char* filename) {
+    File file = SD.open(filename, FILE_WRITE);
+    if (!file) {
+        LOG_AUDIO(LOG_ERROR, "Failed to open %s", filename);
+        return;
+    }
+
+    // Reset OGG stream for new file
+    ogg_stream_reset_serialno(&ogg_stream, ogg_serialno);
+
+    // Write OpusHead packet
+    ogg_opus_head.b_o_s = 1;
+    ogg_opus_head.e_o_s = 0;
+    ogg_opus_head.granulepos = 0;
+    ogg_opus_head.packetno = 0;
+    ogg_stream_packetin(&ogg_stream, &ogg_opus_head);
+    ogg_write_page(file);
+
+    // Write OpusTags packet
+    ogg_opus_tags.b_o_s = 0;
+    ogg_opus_tags.e_o_s = 0;
+    ogg_opus_tags.granulepos = 0;
+    ogg_opus_tags.packetno = 1;
+    ogg_stream_packetin(&ogg_stream, &ogg_opus_tags);
+    ogg_write_page(file);
+
+    // Encode audio in 20ms frames
+    int16_t *pcm_ptr = pcm;
+    int samples_remaining = samples;
+    ogg_int64_t granulepos = 0;
+    ogg_int64_t packetno = 2;
+
+    while (samples_remaining >= opus_frame_size_samples) {
+        int encoded_bytes = opus_encode(opus_encoder, pcm_ptr,
+                                       opus_frame_size_samples,
+                                       opus_encoded_buf, 4000);
+        if (encoded_bytes > 0) {
+            granulepos += (ogg_int64_t)opus_frame_size_samples * 48000 / SAMPLE_RATE;
+            ogg_packet op = {0};
+            op.packet = opus_encoded_buf;
+            op.bytes = encoded_bytes;
+            op.b_o_s = 0;
+            op.e_o_s = 0;
+            op.granulepos = granulepos;
+            op.packetno = packetno++;
+            ogg_stream_packetin(&ogg_stream, &op);
+            ogg_write_page(file);
+        }
+        pcm_ptr += opus_frame_size_samples;
+        samples_remaining -= opus_frame_size_samples;
+    }
+
+    // Mark end of stream
+    ogg_packet eos_op = {0};
+    eos_op.bytes = 0;
+    eos_op.b_o_s = 0;
+    eos_op.e_o_s = 1;
+    eos_op.granulepos = granulepos;
+    eos_op.packetno = packetno;
+    ogg_stream_packetin(&ogg_stream, &eos_op);
+
+    // Flush remaining pages
+    ogg_write_page(file);
+
+    file.flush();
+    delay(150);
+    file.close();
+    delay(150);
+
+    uint32_t fileSize = file.size();
+    LOG_AUDIO(LOG_INFO, "Saved: %s (%d bytes)", filename, fileSize);
+}
+#endif
+
 // ── Write task (reads PSRAM, writes SD, uploads) ──────────────────
 
 void writerTask(void *pvParameters) {
@@ -440,126 +540,32 @@ void writerTask(void *pvParameters) {
         totalSamplesWritten += samplesToWrite;
         uint32_t totalBytes = samplesToWrite * 2;
 
+        char filename[64];
+        sdBusy = true;
+
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
-        // Opus path: encode in 20ms frames, write OGG container
-        char filename[64];
         snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
-
-        sdBusy = true;
-        File file = SD.open(filename, FILE_WRITE);
-        if (file) {
-            // Reset OGG stream for new file
-            ogg_stream_reset_serialno(&ogg_stream, ogg_serialno);
-
-            // Write OpusHead packet
-            ogg_opus_head.b_o_s = 1;
-            ogg_opus_head.e_o_s = 0;
-            ogg_opus_head.granulepos = 0;
-            ogg_opus_head.packetno = 0;
-            ogg_stream_packetin(&ogg_stream, &ogg_opus_head);
-            ogg_write_page(file);
-
-            // Write OpusTags packet
-            ogg_opus_tags.b_o_s = 0;
-            ogg_opus_tags.e_o_s = 0;
-            ogg_opus_tags.granulepos = 0;
-            ogg_opus_tags.packetno = 1;
-            ogg_stream_packetin(&ogg_stream, &ogg_opus_tags);
-            ogg_write_page(file);
-
-            // Encode audio in 20ms frames
-            int16_t *pcm_ptr = writeBuf;
-            int samples_remaining = samplesToWrite;
-            ogg_int64_t granulepos = 0;
-            ogg_int64_t packetno = 2;
-
-            while (samples_remaining >= opus_frame_size_samples) {
-                int encoded_bytes = opus_encode(opus_encoder, pcm_ptr,
-                                               opus_frame_size_samples,
-                                               opus_encoded_buf, 4000);
-                if (encoded_bytes > 0) {
-                    // granulepos in 48kHz units per RFC 7845
-                    granulepos += (ogg_int64_t)opus_frame_size_samples * 48000 / SAMPLE_RATE;
-                    ogg_packet op = {0};
-                    op.packet = opus_encoded_buf;
-                    op.bytes = encoded_bytes;
-                    op.b_o_s = 0;
-                    op.e_o_s = 0;
-                    op.granulepos = granulepos;
-                    op.packetno = packetno++;
-                    ogg_stream_packetin(&ogg_stream, &op);
-                    ogg_write_page(file);
-                }
-                pcm_ptr += opus_frame_size_samples;
-                samples_remaining -= opus_frame_size_samples;
-            }
-
-            // Mark end of stream
-            ogg_packet eos_op = {0};
-            eos_op.bytes = 0;
-            eos_op.b_o_s = 0;
-            eos_op.e_o_s = 1;
-            eos_op.granulepos = granulepos;
-            eos_op.packetno = packetno;
-            ogg_stream_packetin(&ogg_stream, &eos_op);
-
-            // Flush remaining pages
-            ogg_write_page(file);
-
-            file.flush();
-            delay(150);
-            file.close();
-            delay(150);
-
-            uint32_t fileSize = file.size();
-            LOG_AUDIO(LOG_INFO, "Saved: %s (%d bytes)", filename, fileSize);
-
-            if (WiFi.status() == WL_CONNECTED) {
-                delay(100);
-                LOG_AUDIO(LOG_INFO, "Uploading %s...", filename);
-                if (uploadFile(filename)) {
-                    delay(300);
-                    SD.remove(filename);
-                    LOG_AUDIO(LOG_INFO, "Uploaded and deleted %s", filename);
-                }
-            }
-        } else {
-            LOG_AUDIO(LOG_ERROR, "Failed to open %s", filename);
-        }
-        sdBusy = false;
+        write_opus_file(writeBuf, samplesToWrite, filename);
 #else
-        // WAV path: write raw PCM with WAV header
-        char filename[64];
         snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
-
-        sdBusy = true;
         File file = SD.open(filename, FILE_WRITE);
         if (file) {
             uint8_t wav_header[WAV_HEADER_SIZE];
             generate_wav_header(wav_header, totalBytes, SAMPLE_RATE);
             file.write(wav_header, WAV_HEADER_SIZE);
-
             file.write((uint8_t*)writeBuf, totalBytes);
             file.flush();
             delay(150);
             file.close();
             delay(150);
             LOG_AUDIO(LOG_INFO, "Saved: %s (%d bytes)", filename, totalBytes + WAV_HEADER_SIZE);
-
-            if (WiFi.status() == WL_CONNECTED) {
-                delay(100);
-                LOG_AUDIO(LOG_INFO, "Uploading %s...", filename);
-                if (uploadFile(filename)) {
-                    delay(300);
-                    SD.remove(filename);
-                    LOG_AUDIO(LOG_INFO, "Uploaded and deleted %s", filename);
-                }
-            }
         } else {
             LOG_AUDIO(LOG_ERROR, "Failed to open %s", filename);
         }
-        sdBusy = false;
 #endif
+
+        upload_if_connected(filename);
+        sdBusy = false;
 
         bufferReady = false;
         writeDone = true;

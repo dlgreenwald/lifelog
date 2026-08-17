@@ -826,6 +826,71 @@ void test_granulepos_packetno_monotonic() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Median Filter Tests
+// ═══════════════════════════════════════════════════════════════════
+
+static float compute_median(float* history, int count) {
+    float sorted[count];
+    memcpy(sorted, history, count * sizeof(float));
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (sorted[i] > sorted[j]) {
+                float tmp = sorted[i];
+                sorted[i] = sorted[j];
+                sorted[j] = tmp;
+            }
+        }
+    }
+    return sorted[count / 2];
+}
+
+void test_median_odd_count() {
+    float data[5] = {100, 200, 300, 400, 500};
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 300.0f, compute_median(data, 5));
+}
+
+void test_median_single_element() {
+    float data[1] = {42.0f};
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 42.0f, compute_median(data, 1));
+}
+
+void test_median_two_elements() {
+    float data[2] = {100, 200};
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 200.0f, compute_median(data, 2));
+}
+
+void test_median_unsorted() {
+    float data[5] = {500, 100, 300, 200, 400};
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 300.0f, compute_median(data, 5));
+}
+
+void test_median_all_same() {
+    float data[5] = {100, 100, 100, 100, 100};
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, compute_median(data, 5));
+}
+
+void test_median_does_not_modify_input() {
+    float data[5] = {500, 100, 300, 200, 400};
+    compute_median(data, 5);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 500.0f, data[0]);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, data[1]);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 300.0f, data[2]);
+}
+
+void test_median_vad_scenario() {
+    // Simulate VAD history with one spike (outlier robustness)
+    float data[5] = {200, 250, 3000, 220, 280};
+    // Median should ignore the spike
+    TEST_ASSERT_TRUE(compute_median(data, 5) < 500);
+}
+
+void test_median_four_elements() {
+    float data[4] = {10, 20, 30, 40};
+    // Median of even count: index 2 (0-indexed) = 30
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 30.0f, compute_median(data, 4));
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Run All Tests
 // ═══════════════════════════════════════════════════════════════════
 
@@ -931,6 +996,16 @@ int main() {
     // ── Granulepos ──
     RUN_TEST(test_granulepos_long_recording);
     RUN_TEST(test_granulepos_packetno_monotonic);
+
+    // ── Median Filter ──
+    RUN_TEST(test_median_odd_count);
+    RUN_TEST(test_median_single_element);
+    RUN_TEST(test_median_two_elements);
+    RUN_TEST(test_median_unsorted);
+    RUN_TEST(test_median_all_same);
+    RUN_TEST(test_median_does_not_modify_input);
+    RUN_TEST(test_median_vad_scenario);
+    RUN_TEST(test_median_four_elements);
 
     UNITY_END();
     return 0;
