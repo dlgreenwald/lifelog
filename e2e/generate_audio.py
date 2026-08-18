@@ -39,7 +39,7 @@ def _load_piper_voice(voice_name: str, voices_dir: str):
         import subprocess
         subprocess.run(
             [
-                "python3",
+                sys.executable,
                 "-m",
                 "piper.download_voices",
                 voice_name,

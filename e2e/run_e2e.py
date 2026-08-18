@@ -232,7 +232,8 @@ async def run_e2e(yaml_path: str, server_url: str = SERVER_URL):
             print("─" * 40)
             async with pool.acquire() as conn:
                 rec = await conn.fetchrow(
-                    """SELECT id, transcript, speakers, summary, todos, notes
+                    """SELECT id, transcript, speakers, summary, todos, calendar,
+                              notes, conversation_changes
                        FROM recordings
                        WHERE user_id = $1 AND utterance_id = $2""",
                     user_id,
@@ -240,41 +241,125 @@ async def run_e2e(yaml_path: str, server_url: str = SERVER_URL):
                 )
 
             if rec:
-                print(f"  Recording ID: {rec['id']}")
-
-                # Verify transcript
                 import json
-                transcript = rec["transcript"]
-                if isinstance(transcript, str):
-                    transcript = json.loads(transcript)
-                segments = transcript.get("segments", [])
-                print(f"  Transcript segments: {len(segments)}")
-                if segments:
-                    sample = segments[0].get("text", "")[:80]
-                    print(f"  First segment: '{sample}...'")
 
-                # Verify speakers
-                speakers = rec["speakers"]
-                if isinstance(speakers, str):
-                    speakers = json.loads(speakers)
-                print(f"  Named segments: {len(speakers)}")
-                if speakers:
-                    names = set(s.get("name", "Unknown") for s in speakers)
-                    print(f"  Speaker names: {names}")
+                def _parse(field):
+                    val = rec[field]
+                    if isinstance(val, str):
+                        return json.loads(val)
+                    return val
 
-                # Verify summary
-                summary = rec["summary"]
-                print(f"  Summary present: {bool(summary)}")
-                if summary:
-                    print(f"  Summary preview: {summary[:120]}...")
-
-                # Verify todos
-                todos = rec["todos"]
-                if isinstance(todos, str):
-                    todos = json.loads(todos)
-                print(f"  TODOs: {len(todos)}")
-
+                print(f"  Recording ID: {rec['id']}")
                 print()
+
+                # ── Transcript ──
+                print("── Transcript ──")
+                transcript = _parse("transcript")
+                segments = transcript.get("segments", [])
+                print(f"  {len(segments)} segment(s)")
+                for seg in segments:
+                    speaker = seg.get("speaker", seg.get("speaker_name", "Unknown"))
+                    text = seg.get("text", "").strip()
+                    print(f"  [{speaker}] {text}")
+                if not segments:
+                    print("  (none)")
+                print()
+
+                # ── Speakers ──
+                print("── Speakers ──")
+                speakers = _parse("speakers")
+                if speakers:
+                    for s in speakers:
+                        name = s.get("name", "Unknown")
+                        start = s.get("start", "?")
+                        end = s.get("end", "?")
+                        text = s.get("text", "").strip()
+                        print(f"  {name} ({start}s–{end}s): {text}")
+                else:
+                    print("  (none)")
+                print()
+
+                # ── Summary ──
+                print("── Summary ──")
+                summary = rec["summary"]
+                if summary:
+                    print(f"  {summary}")
+                else:
+                    print("  (none)")
+                print()
+
+                # ── TODOs ──
+                print("── TODOs ──")
+                todos = _parse("todos")
+                if todos:
+                    for i, t in enumerate(todos, 1):
+                        task = t.get("task", "?")
+                        owner = t.get("owner", "Unassigned")
+                        due = t.get("due") or "no deadline"
+                        priority = t.get("priority", "none")
+                        print(f"  {i}. {task}")
+                        print(f"     Owner: {owner} | Due: {due} | Priority: {priority}")
+                else:
+                    print("  (none)")
+                print()
+
+                # ── Calendar ──
+                print("── Calendar ──")
+                calendar = _parse("calendar")
+                if calendar:
+                    for i, c in enumerate(calendar, 1):
+                        event = c.get("event", "?")
+                        time_val = c.get("time") or "unspecified"
+                        participants = c.get("participants") or "unspecified"
+                        print(f"  {i}. {event}")
+                        print(f"     Time: {time_val} | Participants: {participants}")
+                else:
+                    print("  (none)")
+                print()
+
+                # ── Notes ──
+                print("── Notes ──")
+                notes = _parse("notes")
+                if notes:
+                    for i, note in enumerate(notes, 1):
+                        print(f"  {i}. {note}")
+                else:
+                    print("  (none)")
+                print()
+
+                # ── Conversation Changes ──
+                print("── Conversation Changes ──")
+                changes = _parse("conversation_changes")
+                if changes:
+                    for i, c in enumerate(changes, 1):
+                        frm = c.get("from_topic", "?")
+                        to = c.get("to_topic", "?")
+                        speaker = c.get("speaker", "?")
+                        print(f"  {i}. [{speaker}] {frm} → {to}")
+                else:
+                    print("  (none)")
+                print()
+
+                # ── Decisions (gap) ──
+                print("── Decisions ──")
+                print("  [NOT STORED] LLM extracts decisions but DB has no decisions column")
+                print()
+
+                # ── Assertions ──
+                errors = []
+                if len(segments) == 0:
+                    errors.append("No transcript segments")
+                if not summary:
+                    errors.append("No summary produced")
+                if len(todos) == 0:
+                    errors.append("No todos extracted")
+
+                if errors:
+                    print("─" * 40)
+                    print(f"RESULT: FAIL ({'; '.join(errors)})")
+                    print("─" * 40)
+                    return 1
+
                 print("─" * 40)
                 print("RESULT: PASS")
                 print("─" * 40)
