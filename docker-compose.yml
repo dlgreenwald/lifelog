@@ -71,6 +71,9 @@ services:
       - ASR_MODEL=large-v3
       - ASR_ENGINE=whisperx
       - ASR_DEVICE=cuda
+    volumes:
+      - whisper-models:/app/whisper_models
+      - hf-cache:/root/.cache/huggingface
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health')"]
       interval: 10s
@@ -113,3 +116,5 @@ services:
 volumes:
   postgres-data:
   audio-data:
+  whisper-models:
+  hf-cache:

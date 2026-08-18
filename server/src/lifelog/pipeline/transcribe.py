@@ -23,6 +23,7 @@ async def transcribe(audio_bytes: bytes) -> dict:
             params={
                 "output": "json",
                 "diarize": "true",
+                "language": "en",
             },
             files={"audio_file": ("audio.opus", io.BytesIO(audio_bytes), "audio/opus")},
         )
