@@ -12,6 +12,8 @@ RUN /app/.venv/bin/pip install --no-cache-dir \
 
 # Add /health endpoint (upstream image doesn't have one)
 COPY health.py /app/health.py
+COPY patch-model-reload.py /tmp/patch-model-reload.py
+RUN /app/.venv/bin/python /tmp/patch-model-reload.py && rm /tmp/patch-model-reload.py
 
 ENV ASR_ENGINE=whisperx \
     ASR_MODEL=large-v3 \
