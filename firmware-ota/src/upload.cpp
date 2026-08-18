@@ -4,7 +4,7 @@
 #include "config.h"
 #include "audio.h"
 
-bool uploadFile(const char* filename) {
+bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool final) {
     if (WiFi.status() != WL_CONNECTED) {
         LOG_UPLOAD(LOG_WARN, "No WiFi connection");
         return false;
@@ -25,7 +25,22 @@ bool uploadFile(const char* filename) {
     String boundary = "----LifeLogBoundary" + String(millis());
     String contentType = "multipart/form-data; boundary=" + boundary;
 
+    // Metadata fields come first
     String body = "";
+    body += "--" + boundary + "\r\n";
+    body += "Content-Disposition: form-data; name=\"utterance_id\"\r\n\r\n";
+    body += String(uttId) + "\r\n";
+
+    body += "--" + boundary + "\r\n";
+    body += "Content-Disposition: form-data; name=\"chunk_index\"\r\n\r\n";
+    body += String(chunkIdx) + "\r\n";
+
+    body += "--" + boundary + "\r\n";
+    body += "Content-Disposition: form-data; name=\"is_final\"\r\n\r\n";
+    body += final ? "true" : "false";
+    body += "\r\n";
+
+    // File field
     body += "--" + boundary + "\r\n";
     body += "Content-Disposition: form-data; name=\"file\"; filename=\"" + String(filename) + "\"\r\n";
     body += "Content-Type: application/octet-stream\r\n\r\n";
@@ -93,6 +108,7 @@ void uploadAllRecordings() {
     File root = SD.open("lifelog");
     if (!root) { LOG_UPLOAD(LOG_ERROR, "Failed to open /lifelog"); sdBusy = false; return; }
 
+    uint32_t orphanId = 0x80000000;  // High value avoids collision with live utterances
     int uploaded = 0;
     File f = root.openNextFile();
     while (f) {
@@ -103,7 +119,7 @@ void uploadAllRecordings() {
 #endif
             char path[64];
             snprintf(path, sizeof(path), "/lifelog/%s", f.name());
-            if (uploadFile(path)) {
+            if (uploadFile(path, orphanId++, 0, true)) {
                 uploaded++;
                 SD.remove(path);
                 LOG_UPLOAD(LOG_DEBUG, "Deleted %s", path);

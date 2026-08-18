@@ -18,6 +18,11 @@ extern volatile bool sdBusy;
 extern uint32_t fileIndex;
 extern char lastSavedFile[64];
 
+// Utterance tracking
+extern volatile uint32_t utteranceId;   // Monotonic counter, incremented on voice start
+extern volatile uint32_t chunkIndex;    // Reset to 0 on voice start, incremented per buffer
+extern volatile bool isFinal;           // Set true when silence ends utterance
+
 // Functions
 void audioInit();
 void setWriterTaskHandle(TaskHandle_t handle);

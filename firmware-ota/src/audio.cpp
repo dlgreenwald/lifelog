@@ -26,6 +26,11 @@ uint32_t recordDurationMs = 5000;
 char lastSavedFile[64] = {0};
 static TaskHandle_t writerTaskHandle = NULL;
 
+// Utterance tracking
+volatile uint32_t utteranceId = 0;
+volatile uint32_t chunkIndex = 0;
+volatile bool isFinal = false;
+
 // ── Buffer health counters ────────────────────────────────────────
 static uint32_t writerStallCount = 0;   // Times audioTask waited for writer
 static uint32_t writerStallMaxMs = 0;   // Longest stall duration
@@ -109,7 +114,7 @@ static void upload_if_connected(const char* filename) {
     if (WiFi.status() == WL_CONNECTED) {
         delay(100);
         LOG_AUDIO(LOG_INFO, "Uploading %s...", filename);
-        if (uploadFile(filename)) {
+        if (uploadFile(filename, utteranceId, chunkIndex, isFinal)) {
             delay(300);
             SD.remove(filename);
             LOG_AUDIO(LOG_INFO, "Uploaded and deleted %s", filename);
@@ -412,6 +417,9 @@ void audioTask(void *pvParameters) {
             silenceStartMs = now;  // reset silence tracker
             audioCount = 0;
             recording = true;
+            utteranceId++;           // Next utterance
+            chunkIndex = 0;          // Reset chunk counter
+            isFinal = false;         // Not final yet
             LOG_VAD(LOG_INFO, "Voice started (median=%.0f, start=%.0f)", medianRMS, startThreshold);
         } else if (voiceActive) {
             if (medianRMS > startThreshold) {
@@ -430,6 +438,7 @@ void audioTask(void *pvParameters) {
             if (silenceMs >= VAD_SILENCE_MS) {
                 voiceActive = false;
                 recording = false;
+                isFinal = true;          // Signal this is the last chunk
                 // Flush remaining partial buffer
                 if (audioCount > 0 && writeDone) {
                     int16_t* tmp = writeBuf;
@@ -570,6 +579,7 @@ void writerTask(void *pvParameters) {
 #endif
 
         upload_if_connected(filename);
+        chunkIndex++;  // Next chunk in this utterance
         sdBusy = false;
 
         bufferReady = false;

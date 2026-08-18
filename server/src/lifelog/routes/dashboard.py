@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -11,12 +13,15 @@ from lifelog.database import (
     get_unknown_speakers,
 )
 
+logger = logging.getLogger("lifelog.dashboard")
+
 router = APIRouter()
 
 
 @router.get("/calendar/{year}/{month}")
 async def get_calendar(year: int, month: int, user: dict = Depends(validate_oidc_token)):
     """Get calendar data for a month (days with recordings)."""
+    logger.debug("Calendar request: user=%d, year=%d, month=%d", user["id"], year, month)
 
     from lifelog.database import pool
 
@@ -41,15 +46,19 @@ async def get_calendar(year: int, month: int, user: dict = Depends(validate_oidc
 @router.get("/recordings/{date}")
 async def get_day_recordings(date: str, user: dict = Depends(validate_oidc_token)):
     """Get all recordings for a specific day (YYYY-MM-DD)."""
+    logger.debug("Day recordings request: user=%d, date=%s", user["id"], date)
     recordings = await get_recordings_by_date(user["id"], date)
+    logger.debug("Found %d recordings for %s", len(recordings), date)
     return {"recordings": recordings}
 
 
 @router.get("/recording/{recording_id}")
 async def get_recording_detail(recording_id: int, user: dict = Depends(validate_oidc_token)):
     """Get full recording details including speakers and segments."""
+    logger.debug("Recording detail request: user=%d, recording=%d", user["id"], recording_id)
     recording = await get_recording(user["id"], recording_id)
     if not recording:
+        logger.warning("Recording %d not found for user %d", recording_id, user["id"])
         raise HTTPException(status_code=404, detail="Recording not found")
     return recording
 
@@ -57,6 +66,7 @@ async def get_recording_detail(recording_id: int, user: dict = Depends(validate_
 @router.get("/audio/{filename}")
 async def get_audio(filename: str, user: dict = Depends(validate_oidc_token)):
     """Stream decrypted audio file."""
+    logger.debug("Audio stream request: user=%d, file=%s", user["id"], filename)
     audio_bytes = audio_crypto.decrypt_audio(
         filename, user["id"], user["encryption_secret"]
     )
@@ -71,6 +81,7 @@ async def get_audio(filename: str, user: dict = Depends(validate_oidc_token)):
 async def get_todos_route(user: dict = Depends(validate_oidc_token)):
     """Get all open TODOs across all recordings."""
     todos = await get_todos(user["id"])
+    logger.debug("Todos request: user=%d, found=%d", user["id"], len(todos))
     return {"todos": todos}
 
 
@@ -78,6 +89,7 @@ async def get_todos_route(user: dict = Depends(validate_oidc_token)):
 async def get_decisions_route(user: dict = Depends(validate_oidc_token), limit: int = 20):
     """Get recent decisions across all recordings."""
     decisions = await get_decisions(user["id"], limit)
+    logger.debug("Decisions request: user=%d, found=%d", user["id"], len(decisions))
     return {"decisions": decisions}
 
 
@@ -85,4 +97,5 @@ async def get_decisions_route(user: dict = Depends(validate_oidc_token), limit: 
 async def get_unknown_speakers_route(user: dict = Depends(validate_oidc_token)):
     """Get all recordings with unknown speakers for labeling."""
     recordings = await get_unknown_speakers(user["id"])
+    logger.debug("Unknown speakers request: user=%d, found=%d", user["id"], len(recordings))
     return {"recordings": recordings}

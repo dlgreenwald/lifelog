@@ -46,7 +46,6 @@ async def test_label_speaker():
         patch("lifelog.routes.speakers.get_recording", new_callable=AsyncMock, return_value=mock_recording),
         patch("lifelog.routes.speakers.update_speaker_name", new_callable=AsyncMock),
         patch("lifelog.routes.speakers.extract_speaker_audio", return_value=b"fake-audio"),
-        patch("lifelog.routes.speakers.ssl.create_default_context"),
         patch("lifelog.routes.speakers.httpx.AsyncClient", return_value=mock_http_client),
         patch("lifelog.routes.speakers.save_voiceprint", new_callable=AsyncMock),
         patch("lifelog.routes.speakers.rerun_identification", new_callable=AsyncMock),

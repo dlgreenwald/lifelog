@@ -9,8 +9,8 @@ from lifelog.config import settings
 pool: asyncpg.Pool = None
 
 
-async def init_db():
-    """Initialize PostgreSQL connection pool and run migrations."""
+async def init_pool():
+    """Initialize PostgreSQL connection pool (migrations run separately via migrate.py)."""
     global pool
     pool = await asyncpg.create_pool(
         host=settings.postgres_host,
@@ -20,10 +20,14 @@ async def init_db():
         password=settings.postgres_password,
         min_size=5,
         max_size=20,
-        ssl="require",
+        ssl=False,
     )
 
-    # Run Alembic migrations to bring schema up to date
+
+async def init_db():
+    """Initialize pool and run migrations (for backwards compat)."""
+    await init_pool()
+
     from alembic.config import Config
 
     from alembic import command
@@ -38,8 +42,6 @@ async def init_db():
     import asyncio
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: command.upgrade(alembic_cfg, "head"))
-
-    print("[DB] Migrations applied successfully")
 
 
 # User operations
@@ -103,7 +105,7 @@ async def save_recording(
             RETURNING id
         """,
             user_id,
-            datetime.now(tz=UTC),
+            datetime.now(UTC).replace(tzinfo=None),
             json.dumps(transcript),
             json.dumps(named_segments),
             result["summary"],
@@ -254,6 +256,50 @@ async def get_decisions(user_id: int, limit: int = 20) -> list[dict]:
             limit,
         )
         return [dict(row) for row in rows]
+
+
+async def save_utterance_chunk(
+    user_id: int,
+    utterance_id: int,
+    chunk_index: int,
+    audio_bytes: bytes,
+    is_final: bool,
+) -> int:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO utterance_chunks
+               (user_id, utterance_id, chunk_index, audio_bytes, is_final)
+               VALUES ($1, $2, $3, $4, $5)
+               RETURNING id""",
+            user_id,
+            utterance_id,
+            chunk_index,
+            audio_bytes,
+            is_final,
+        )
+        return row["id"]
+
+
+async def get_utterance_chunks(user_id: int, utterance_id: int) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT chunk_index, audio_bytes, is_final
+               FROM utterance_chunks
+               WHERE user_id = $1 AND utterance_id = $2
+               ORDER BY chunk_index""",
+            user_id,
+            utterance_id,
+        )
+        return [dict(row) for row in rows]
+
+
+async def delete_utterance_chunks(user_id: int, utterance_id: int):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM utterance_chunks WHERE user_id = $1 AND utterance_id = $2",
+            user_id,
+            utterance_id,
+        )
 
 
 async def update_recording_speakers(recording_id: int, speakers: list):

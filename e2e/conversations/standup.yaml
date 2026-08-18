@@ -1,0 +1,43 @@
+name: "daily-standup"
+description: "Team standup with 3 speakers, ~2 minutes"
+speakers:
+  Alice:
+    voice: en_US-lessac-medium
+  Bob:
+    voice: en_US-ryan-medium
+  Carol:
+    voice: en_US-amy-medium
+
+# Lines are processed in script order. Each line is synthesized with the
+# speaker's voice, then concatenated sequentially into a single conversation WAV.
+# Speaker transitions happen at natural word boundaries within 5-second chunks.
+lines:
+  - speaker: Alice
+    text: "Good morning everyone. Let's start with updates. Bob, what did you work on yesterday?"
+    pause_after: 0.5
+  - speaker: Bob
+    text: "I finished the API integration for the upload endpoint. Had to fix a multipart encoding issue."
+    pause_after: 0.3
+  - speaker: Alice
+    text: "Nice. Any blockers?"
+    pause_after: 0.2
+  - speaker: Bob
+    text: "No blockers. I'll start on the dashboard filters today."
+    pause_after: 0.5
+  - speaker: Alice
+    text: "Great. Carol, your update?"
+    pause_after: 0.3
+  - speaker: Carol
+    text: "I'm working on the speaker identification feature. The cosine similarity matching is done, just need to wire it into the pipeline."
+    pause_after: 0.4
+  - speaker: Alice
+    text: "Sounds good. Let's sync again tomorrow. We should decide on the deployment timeline."
+    pause_after: 0.2
+  - speaker: Carol
+    text: "I suggest we deploy by Friday. The tests are passing."
+    pause_after: 0.3
+  - speaker: Bob
+    text: "Friday works for me."
+    pause_after: 0.2
+  - speaker: Alice
+    text: "Friday it is. I'll set up the staging environment today."

@@ -1,15 +1,20 @@
-import ssl
+import logging
+import time
 
 import httpx
 
 from lifelog.config import settings
 from lifelog.database import get_all_voiceprints
 
+logger = logging.getLogger("lifelog.speaker_id")
+
 
 async def identify_speakers(
     segments: list[dict], audio_bytes: bytes, user_id: int
 ) -> list[dict]:
-    """Send diarized segments to speaker-id-service via HTTPS."""
+    """Send diarized segments to speaker-id-service."""
+    start = time.monotonic()
+
     # Get voiceprints for this user from database
     voiceprints = await get_all_voiceprints(user_id)
 
@@ -23,9 +28,14 @@ async def identify_speakers(
             }
         )
 
-    ssl_context = ssl.create_default_context(cafile=settings.speaker_id_cert)
+    logger.info(
+        "Identifying speakers: %d segments, %d voiceprints for user %d",
+        len(segments),
+        len(voiceprint_data),
+        user_id,
+    )
 
-    async with httpx.AsyncClient(verify=ssl_context, timeout=300) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
         response = await client.post(
             f"{settings.speaker_id_url}/identify",
             json={
@@ -34,4 +44,16 @@ async def identify_speakers(
                 "voiceprints": voiceprint_data,
             },
         )
-        return response.json()["speakers"]
+        response.raise_for_status()
+        result = response.json()["speakers"]
+
+    duration = time.monotonic() - start
+    matched = [s for s in result if s.get("name") and s["name"] != "Unknown"]
+    logger.info(
+        "Speaker identification complete in %.2fs: %d results, %d matched to voiceprints",
+        duration,
+        len(result),
+        len(matched),
+    )
+
+    return result

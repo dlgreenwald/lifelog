@@ -2,17 +2,11 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Wyoming Whisper
-    wyoming_host: str = "localhost"
-    wyoming_port: int = 10700
+    # Whisper ASR (transcription + diarization)
+    whisper_asr_url: str = "http://localhost:9000"
 
-    # Diarization Service (HTTPS)
-    diarization_url: str = "https://localhost:8443"
-    diarization_cert: str = "certs/ca.crt"
-
-    # Speaker ID Service (HTTPS)
-    speaker_id_url: str = "https://localhost:8443"
-    speaker_id_cert: str = "certs/ca.crt"
+    # Speaker ID Service
+    speaker_id_url: str = "http://localhost:8443"
 
     # LLM — OpenAI-compatible endpoint (Ollama, llama.cpp, vLLM, etc.)
     openai_base_url: str = "http://localhost:11434/v1"
@@ -31,6 +25,9 @@ class Settings(BaseSettings):
     postgres_db: str = "lifelog"
     postgres_user: str = "lifelog"
     postgres_password: str = ""
+
+    # Logging
+    log_level: str = "INFO"
 
     # Audio storage
     audio_storage_path: str = "/data/audio"

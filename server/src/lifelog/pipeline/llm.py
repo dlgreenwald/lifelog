@@ -1,8 +1,12 @@
 import json
+import logging
+import time
 
 from openai import OpenAI
 
 from lifelog.config import settings
+
+logger = logging.getLogger("lifelog.llm")
 
 client = OpenAI(
     base_url=settings.openai_base_url,
@@ -49,12 +53,20 @@ TRANSCRIPT:
 
 def summarize(segments: list[dict]) -> dict:
     """Send named transcript to LLM for analysis."""
+    start = time.monotonic()
+
     formatted_lines = []
     for seg in segments:
         timestamp = f"[{seg.get('start', '?'):.1f}s]" if "start" in seg else ""
         formatted_lines.append(f"{timestamp} {seg['name']}: {seg['text']}")
 
     formatted = "\n".join(formatted_lines)
+    logger.info(
+        "Summarizing %d segments (%d chars) with model %s",
+        len(segments),
+        len(formatted),
+        settings.openai_model,
+    )
 
     response = client.chat.completions.create(
         model=settings.openai_model,
@@ -68,4 +80,25 @@ def summarize(segments: list[dict]) -> dict:
         response_format={"type": "json_object"},
     )
 
-    return json.loads(response.choices[0].message.content)
+    result = json.loads(response.choices[0].message.content)
+    duration = time.monotonic() - start
+
+    # Normalize: ensure all expected keys exist (models may omit empty ones)
+    result.setdefault("summary", "")
+    result.setdefault("conversation_changes", [])
+    result.setdefault("decisions", [])
+    result.setdefault("todos", [])
+    result.setdefault("calendar", [])
+    result.setdefault("notes", [])
+
+    todos = result.get("todos", [])
+    decisions = result.get("decisions", [])
+    logger.info(
+        "LLM summary complete in %.2fs: %d todos, %d decisions, %d notes",
+        duration,
+        len(todos),
+        len(decisions),
+        len(result.get("notes", [])),
+    )
+
+    return result

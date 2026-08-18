@@ -8,14 +8,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files first for caching
+# Copy dependency files and install deps via stub
 COPY pyproject.toml .
-
-# Install Python dependencies
+RUN mkdir -p src/speaker_id && touch src/speaker_id/__init__.py
 RUN pip install --no-cache-dir .
 
-# Copy application code
+# Copy real application code (overwrites stub)
 COPY src/ src/
+ENV PYTHONPATH=/app/src
 
 EXPOSE 8443
 

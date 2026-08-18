@@ -1,105 +1,60 @@
-"""Mock integration tests for pipeline clients (Wyoming, diarize, speaker, LLM)."""
+"""Mock integration tests for pipeline clients (whisper-asr, speaker, LLM)."""
 import json
-import struct
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# --- Wyoming transcribe client ---
-
-
-def _make_recv_fn(response_payload: bytes):
-    """Return a side_effect callable that mimics sequential recv calls."""
-    len_prefix = struct.pack("!I", len(response_payload))
-    call_count = [0]
-
-    def recv_fn(n):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return len_prefix
-        return response_payload
-
-    return recv_fn
-
-
-def _make_mock_socket(response_payload: bytes):
-    """Create a mock socket whose recv returns the given Wyoming response."""
-    mock_sock = MagicMock()
-    mock_sock.recv.side_effect = _make_recv_fn(response_payload)
-    # Context manager must return the same mock so recv.side_effect is visible
-    mock_sock.__enter__ = MagicMock(return_value=mock_sock)
-    mock_sock.__exit__ = MagicMock(return_value=False)
-    return mock_sock
-
-
-def test_wyoming_client_transcribe():
-    """WyomingClient sends correct protocol and parses response."""
-    from lifelog.pipeline.transcribe import WyomingClient
-
-    client = WyomingClient("localhost", 10700)
-
-    response_payload = json.dumps({
-        "text": "Hello world",
-        "segments": [{"start": 0.0, "end": 1.5, "text": "Hello world"}],
-    }).encode()
-
-    mock_sock = _make_mock_socket(response_payload)
-
-    with patch("lifelog.pipeline.transcribe.socket.socket", return_value=mock_sock):
-        result = client.transcribe(b"fake-audio", sample_rate=16000)
-
-    assert result["text"] == "Hello world"
-    assert len(result["segments"]) == 1
-    assert result["segments"][0]["text"] == "Hello world"
-
-
-def test_wyoming_client_transcribe_empty_segments():
-    """WyomingClient handles response with no segments."""
-    from lifelog.pipeline.transcribe import WyomingClient
-
-    client = WyomingClient("localhost", 10700)
-
-    response_payload = json.dumps({
-        "text": "",
-        "segments": [],
-    }).encode()
-
-    mock_sock = _make_mock_socket(response_payload)
-
-    with patch("lifelog.pipeline.transcribe.socket.socket", return_value=mock_sock):
-        result = client.transcribe(b"silence")
-
-    assert result["text"] == ""
-    assert result["segments"] == []
-
-
-# --- Diarize client ---
+# --- Whisper ASR transcribe client ---
 
 
 @pytest.mark.asyncio
-async def test_diarize_client():
-    """diarize() posts audio and returns segments from JSON response."""
-    from lifelog.pipeline.diarize_client import diarize
+async def test_transcribe_client():
+    """transcribe() posts audio and returns JSON with segments and speaker labels."""
+    from lifelog.pipeline.transcribe import transcribe
 
     mock_response = MagicMock()
     mock_response.json.return_value = {
+        "text": "Hello world",
         "segments": [
-            {"speaker": "SPEAKER_00", "start": 0.0, "end": 2.5},
-        ]
+            {"start": 0.0, "end": 1.5, "text": "Hello world", "speaker": "SPEAKER_00"},
+        ],
+        "language": "en",
     }
+    mock_response.raise_for_status = MagicMock()
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_response
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("lifelog.pipeline.diarize_client.ssl.create_default_context"),              patch("lifelog.pipeline.diarize_client.httpx.AsyncClient", return_value=mock_client):
-            segments = await diarize(b"fake-audio")
+    with patch("lifelog.pipeline.transcribe.httpx.AsyncClient", return_value=mock_client):
+        result = await transcribe(b"fake-audio")
 
-    assert len(segments) == 1
-    assert segments[0]["speaker"] == "SPEAKER_00"
-    assert segments[0]["start"] == 0.0
-    assert segments[0]["end"] == 2.5
+    assert result["text"] == "Hello world"
+    assert len(result["segments"]) == 1
+    assert result["segments"][0]["speaker"] == "SPEAKER_00"
+    assert result["segments"][0]["text"] == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_client_empty():
+    """transcribe() handles empty response."""
+    from lifelog.pipeline.transcribe import transcribe
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"text": "", "segments": [], "language": "en"}
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("lifelog.pipeline.transcribe.httpx.AsyncClient", return_value=mock_client):
+        result = await transcribe(b"silence")
+
+    assert result["text"] == ""
+    assert result["segments"] == []
 
 
 # --- Speaker client ---
@@ -128,7 +83,6 @@ async def test_identify_speakers_client():
 
     with (
         patch("lifelog.pipeline.speaker_client.get_all_voiceprints", new_callable=AsyncMock) as mock_vp,
-        patch("lifelog.pipeline.speaker_client.ssl.create_default_context"),
         patch("lifelog.pipeline.speaker_client.httpx.AsyncClient", return_value=mock_client),
     ):
         mock_vp.return_value = fake_voiceprints

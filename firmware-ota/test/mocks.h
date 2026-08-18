@@ -205,10 +205,19 @@ static SDClass SD;  // NOLINT — intentional global
 
 // ── Upload mock ────────────────────────────────────────────────────
 
+struct UploadCall {
+    std::string filename;
+    uint32_t utteranceId;
+    uint32_t chunkIndex;
+    bool isFinal;
+};
+static std::vector<UploadCall> mock_upload_calls;
 static bool mock_upload_should_succeed = true;
 static std::vector<std::string> mock_uploaded_files;
 
-inline bool uploadFile(const char* filename) {
+inline bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool final) {
+    UploadCall call = {std::string(filename), uttId, chunkIdx, final};
+    mock_upload_calls.push_back(call);
     mock_uploaded_files.push_back(std::string(filename));
     return mock_upload_should_succeed;
 }

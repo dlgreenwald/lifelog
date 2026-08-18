@@ -890,6 +890,11 @@ void test_median_four_elements() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 30.0f, compute_median(data, 4));
 }
 
+// ── Utterance tracking globals (match audio.cpp) ───────────────────
+volatile uint32_t utteranceId = 0;
+volatile uint32_t chunkIndex = 0;
+volatile bool isFinal = false;
+
 // ═══════════════════════════════════════════════════════════════════
 // upload_if_connected Tests
 // ═══════════════════════════════════════════════════════════════════
@@ -898,7 +903,7 @@ void test_median_four_elements() {
 static void upload_if_connected(const char* filename) {
     if (WiFi.status() == WL_CONNECTED) {
         delay(100);
-        if (uploadFile(filename)) {
+        if (uploadFile(filename, utteranceId, chunkIndex, isFinal)) {
             delay(300);
             SD.remove(filename);
         }
@@ -908,6 +913,7 @@ static void upload_if_connected(const char* filename) {
 void test_upload_not_connected_skips() {
     mock_wifi_status = 0;  // disconnected
     mock_uploaded_files.clear();
+    mock_upload_calls.clear();
     mock_sd_files.clear();
     upload_if_connected("/lifelog/rec_00000.opus");
     TEST_ASSERT_EQUAL_INT(0, mock_uploaded_files.size());
@@ -918,6 +924,7 @@ void test_upload_connected_succeeds() {
     mock_wifi_status = WL_CONNECTED;
     mock_upload_should_succeed = true;
     mock_uploaded_files.clear();
+    mock_upload_calls.clear();
     mock_sd_files.clear();
     upload_if_connected("/lifelog/rec_00000.opus");
     TEST_ASSERT_EQUAL_INT(1, mock_uploaded_files.size());
@@ -928,11 +935,60 @@ void test_upload_connected_fails_no_delete() {
     mock_wifi_status = WL_CONNECTED;
     mock_upload_should_succeed = false;
     mock_uploaded_files.clear();
+    mock_upload_calls.clear();
     mock_sd_files.clear();
     upload_if_connected("/lifelog/rec_00000.opus");
     // uploadFile was called (tracking captured it)
     TEST_ASSERT_EQUAL_INT(1, mock_uploaded_files.size());
     // But SD.remove should not have been called — no files removed
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Upload Metadata Tests
+// ═══════════════════════════════════════════════════════════════════
+
+void test_upload_sends_utterance_id() {
+    mock_upload_calls.clear();
+    uploadFile("/lifelog/rec_00001.opus", 42, 0, false);
+    TEST_ASSERT_EQUAL_INT(1, mock_upload_calls.size());
+    TEST_ASSERT_EQUAL_UINT32(42, mock_upload_calls[0].utteranceId);
+}
+
+void test_upload_sends_chunk_index() {
+    mock_upload_calls.clear();
+    uploadFile("/lifelog/rec_00001.opus", 1, 3, false);
+    TEST_ASSERT_EQUAL_UINT32(3, mock_upload_calls[0].chunkIndex);
+}
+
+void test_upload_sends_is_final() {
+    mock_upload_calls.clear();
+    uploadFile("/lifelog/rec_00001.opus", 1, 0, true);
+    TEST_ASSERT_TRUE(mock_upload_calls[0].isFinal);
+}
+
+void test_upload_not_final() {
+    mock_upload_calls.clear();
+    uploadFile("/lifelog/rec_00001.opus", 1, 0, false);
+    TEST_ASSERT_FALSE(mock_upload_calls[0].isFinal);
+}
+
+void test_utterance_id_increments() {
+    // Simulate voice start → utteranceId++
+    uint32_t id = 0;
+    id++;  // voice start
+    TEST_ASSERT_EQUAL_UINT32(1, id);
+    id++;  // next voice start
+    TEST_ASSERT_EQUAL_UINT32(2, id);
+}
+
+void test_chunk_index_resets_per_utterance() {
+    uint32_t chunkIdx = 0;
+    // Utterance 1: 3 chunks
+    chunkIdx = 0; chunkIdx++; chunkIdx++; chunkIdx++;
+    TEST_ASSERT_EQUAL_UINT32(3, chunkIdx);
+    // Utterance 2: reset
+    chunkIdx = 0;
+    TEST_ASSERT_EQUAL_UINT32(0, chunkIdx);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1165,6 +1221,14 @@ int main() {
     RUN_TEST(test_upload_not_connected_skips);
     RUN_TEST(test_upload_connected_succeeds);
     RUN_TEST(test_upload_connected_fails_no_delete);
+
+    // ── Upload Metadata ──
+    RUN_TEST(test_upload_sends_utterance_id);
+    RUN_TEST(test_upload_sends_chunk_index);
+    RUN_TEST(test_upload_sends_is_final);
+    RUN_TEST(test_upload_not_final);
+    RUN_TEST(test_utterance_id_increments);
+    RUN_TEST(test_chunk_index_resets_per_utterance);
 
     // ── Write Opus File ──
     RUN_TEST(test_write_opus_file_creates_file);

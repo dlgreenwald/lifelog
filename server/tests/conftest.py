@@ -5,8 +5,6 @@ import tempfile
 os.environ.setdefault("POSTGRES_PASSWORD", "test-password")
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("AUDIO_STORAGE_PATH", tempfile.mkdtemp())
-os.environ.setdefault("DIARIZATION_CERT", "/dev/null")
-os.environ.setdefault("SPEAKER_ID_CERT", "/dev/null")
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,12 +25,8 @@ def mock_pool():
 def mock_settings():
     """Return a mock settings object with test values."""
     return MagicMock(
-        wyoming_host="localhost",
-        wyoming_port=10700,
-        diarization_url="https://localhost:8443",
-        diarization_cert="/dev/null",
-        speaker_id_url="https://localhost:8443",
-        speaker_id_cert="/dev/null",
+        whisper_asr_url="http://localhost:9000",
+        speaker_id_url="http://localhost:8443",
         openai_base_url="http://localhost:11434/v1",
         openai_api_key="ollama",
         openai_model="llama3",

@@ -1,48 +1,46 @@
-import json
-import socket
-import struct
+import io
+import logging
+import time
+
+import httpx
 
 from lifelog.config import settings
 
-
-class WyomingClient:
-    """Wyoming protocol client for Whisper STT."""
-
-    def __init__(self, host: str, port: int):
-        self.host = host
-        self.port = port
-
-    def transcribe(self, audio_bytes: bytes, sample_rate: int = 16000) -> dict:
-        """Send audio via Wyoming protocol, receive transcript."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(300)
-            sock.connect((self.host, self.port))
-
-            # Send audio request
-            request = {
-                "type": "transcribe",
-                "format": "opus",
-                "sample_rate": sample_rate,
-            }
-
-            request_bytes = json.dumps(request).encode()
-            sock.send(struct.pack("!I", len(request_bytes)))
-            sock.send(request_bytes)
-            sock.send(audio_bytes)
-
-            # Receive response
-            response_len = struct.unpack("!I", sock.recv(4))[0]
-            response_bytes = sock.recv(response_len)
-            response = json.loads(response_bytes)
-
-            return {
-                "text": response["text"],
-                "segments": response.get("segments", []),
-            }
+logger = logging.getLogger("lifelog.transcribe")
 
 
-wyoming = WyomingClient(settings.wyoming_host, settings.wyoming_port)
+async def transcribe(audio_bytes: bytes) -> dict:
+    """Transcribe audio via whisper-asr-webservice with diarization.
 
+    Returns dict with keys: text, segments (with speaker labels), language.
+    """
+    logger.info("Transcribing %d bytes of audio", len(audio_bytes))
+    start = time.monotonic()
 
-def transcribe(audio_bytes: bytes) -> dict:
-    return wyoming.transcribe(audio_bytes)
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.post(
+            f"{settings.whisper_asr_url}/asr",
+            params={
+                "output": "json",
+                "diarize": "true",
+            },
+            files={"audio_file": ("audio.opus", io.BytesIO(audio_bytes), "audio/opus")},
+        )
+        response.raise_for_status()
+        result = response.json()
+
+    duration = time.monotonic() - start
+    text = result.get("text", "")
+    segments = result.get("segments", [])
+    speakers = {seg.get("speaker") for seg in segments if seg.get("speaker")}
+
+    logger.info(
+        "Transcription complete in %.2fs: %d chars, %d segments, %d speakers (%s)",
+        duration,
+        len(text),
+        len(segments),
+        len(speakers),
+        ", ".join(sorted(speakers)) if speakers else "none",
+    )
+
+    return result

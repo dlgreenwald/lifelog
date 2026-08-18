@@ -22,49 +22,61 @@ def _app_with_mocks(user=None):
 
 
 @pytest.mark.asyncio
-async def test_upload_audio_full_pipeline():
-    """Upload route runs full pipeline: transcribe → diarize → identify → LLM → save."""
+async def test_upload_chunk_stored():
+    """Upload with is_final=false stores chunk and returns chunk_stored."""
     mock_user = {
         "id": 1,
         "api_key": "test-key",
         "name": "Test",
         "encryption_secret": "secret-123",
     }
-
-    fake_transcript = {"text": "Hello world", "segments": [{"start": 0.0, "end": 2.0, "text": "Hello"}]}
-    fake_diarization = [{"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0}]
-    fake_speakers = [{"name": "Alice", "start": 0.0, "end": 2.0}]
-    fake_llm_result = {
-        "summary": "A short chat",
-        "conversation_changes": [],
-        "decisions": [],
-        "todos": [],
-        "calendar": [],
-        "notes": [],
-    }
-
     app = _app_with_mocks(mock_user)
 
-    with (
-        patch("lifelog.routes.upload.transcribe", return_value=fake_transcript),
-        patch("lifelog.routes.upload.diarize", new_callable=AsyncMock, return_value=fake_diarization),
-        patch("lifelog.routes.upload.identify_speakers", new_callable=AsyncMock, return_value=fake_speakers),
-        patch("lifelog.routes.upload.summarize", return_value=fake_llm_result),
-        patch("lifelog.routes.upload.save_recording", new_callable=AsyncMock, return_value=42),
-        patch("lifelog.routes.upload.audio_crypto") as mock_crypto,
-    ):
-        mock_crypto.encrypt_audio.return_value = "encrypted-abc.enc"
-
+    with patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock):
         client = TestClient(app)
         response = client.post(
             "/upload",
-            files={"file": ("test.opus", b"fake-opus-data", "audio/opus")},
+            files={"file": ("chunk.opus", b"chunk-data", "audio/opus")},
+            data={"utterance_id": 5, "chunk_index": 0, "is_final": "false"},
         )
 
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "processed"
-    assert data["recording_id"] == 42
+    assert data["status"] == "chunk_stored"
+    assert data["utterance_id"] == 5
+    assert data["chunk_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_upload_enqueue_on_final():
+    """Upload with is_final=true stores chunk and enqueues for processing."""
+    mock_user = {
+        "id": 1,
+        "api_key": "test-key",
+        "name": "Test",
+        "encryption_secret": "secret-123",
+    }
+    app = _app_with_mocks(mock_user)
+
+    with (
+        patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock),
+        patch("lifelog.routes.upload.pool") as mock_pool,
+    ):
+        mock_conn = AsyncMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        client = TestClient(app)
+        response = client.post(
+            "/upload",
+            files={"file": ("final.opus", b"final-data", "audio/opus")},
+            data={"utterance_id": 10, "chunk_index": 2, "is_final": "true"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "enqueued"
+    assert data["utterance_id"] == 10
 
 
 @pytest.mark.asyncio
@@ -74,6 +86,10 @@ async def test_upload_missing_api_key():
     app.include_router(router)
 
     client = TestClient(app)
-    response = client.post("/upload", files={"file": ("test.opus", b"data", "audio/opus")})
+    response = client.post(
+        "/upload",
+        files={"file": ("test.opus", b"data", "audio/opus")},
+        data={"utterance_id": 1, "chunk_index": 0, "is_final": "true"},
+    )
 
     assert response.status_code == 422
