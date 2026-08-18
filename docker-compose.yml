@@ -71,6 +71,7 @@ services:
       - ASR_MODEL=large-v3
       - ASR_ENGINE=whisperx
       - ASR_DEVICE=cuda
+      - MODEL_IDLE_TIMEOUT=300
       - PYTHONWARNINGS=ignore::SyntaxWarning
     volumes:
       - whisper-models:/app/whisper_models
