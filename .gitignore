@@ -125,6 +125,9 @@ logs/
 *.wav
 *.mp3
 
+# ML model weights (large, not source)
+*.onnx
+
 # Encrypted audio (runtime data)
 *.enc
 
