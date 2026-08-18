@@ -105,6 +105,11 @@ Desktop.ini
 # Docker volumes mounted at runtime
 postgres-data/
 audio-data/
+whisper-asr/models/
+whisper-asr/hf-cache/
+
+# ---------- E2E ----------
+e2e/voices/
 
 # ---------- PlatformIO / Firmware ----------
 .pio/
