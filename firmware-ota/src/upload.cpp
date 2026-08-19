@@ -10,45 +10,45 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
         return false;
     }
 
-    sdBusy = true;
+    // Open file and get size (minimal SD hold)
+    sdTake();
     File file = SD.open(filename, FILE_READ);
     if (!file) {
-        sdBusy = false;
+        sdGive();
         LOG_UPLOAD(LOG_ERROR, "Failed to open %s", filename);
         return false;
     }
-
     uint32_t fileSize = file.size();
+    sdGive();
+
     LOG_UPLOAD(LOG_INFO, "Uploading %s (%d bytes)...", filename, fileSize);
 
-    String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT + SERVER_PATH;
+    // Build HTTP request — no SD access
     String boundary = "----LifeLogBoundary" + String(millis());
     String contentType = "multipart/form-data; boundary=" + boundary;
 
-    // Metadata fields come first
     String body = "";
     body += "--" + boundary + "\r\n";
     body += "Content-Disposition: form-data; name=\"utterance_id\"\r\n\r\n";
     body += String(uttId) + "\r\n";
-
     body += "--" + boundary + "\r\n";
     body += "Content-Disposition: form-data; name=\"chunk_index\"\r\n\r\n";
     body += String(chunkIdx) + "\r\n";
-
     body += "--" + boundary + "\r\n";
     body += "Content-Disposition: form-data; name=\"is_final\"\r\n\r\n";
     body += final ? "true" : "false";
     body += "\r\n";
-
-    // File field
     body += "--" + boundary + "\r\n";
     body += "Content-Disposition: form-data; name=\"file\"; filename=\"" + String(filename) + "\"\r\n";
     body += "Content-Type: application/octet-stream\r\n\r\n";
 
+    // Connect to server — no SD access
     WiFiClient client;
     if (!client.connect(SERVER_HOST, SERVER_PORT)) {
         LOG_UPLOAD(LOG_ERROR, "Connection failed");
+        sdTake();
         file.close();
+        sdGive();
         return false;
     }
 
@@ -65,23 +65,32 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     headers += "Connection: close\r\n";
     headers += "\r\n";
 
+    // Send headers and metadata — no SD access
     client.print(headers);
     client.print(body);
 
-    uint8_t buf[512];
+    // Send file data in chunks — each read guarded independently
+    uint8_t buf[4096];
     uint32_t totalSent = 0;
-    while (file.available()) {
+    while (totalSent < fileSize) {
+        sdTake();
         int bytesRead = file.read(buf, sizeof(buf));
-        if (bytesRead > 0) {
-            client.write(buf, bytesRead);
-            totalSent += bytesRead;
-        }
-    }
-    file.close();
-    sdBusy = false;
+        sdGive();
 
+        if (bytesRead <= 0) break;
+        client.write(buf, bytesRead);
+        totalSent += bytesRead;
+    }
+
+    // Close file — guarded
+    sdTake();
+    file.close();
+    sdGive();
+
+    // Send multipart terminator — no SD access
     client.print("\r\n--" + boundary + "--\r\n");
 
+    // Wait for response — no SD access
     uint32_t startTime = millis();
     while (!client.available() && millis() - startTime < 10000) {
         delay(10);
@@ -104,30 +113,47 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
 }
 
 void uploadAllRecordings() {
-    sdBusy = true;
+    sdTake();
     File root = SD.open("lifelog");
-    if (!root) { LOG_UPLOAD(LOG_ERROR, "Failed to open /lifelog"); sdBusy = false; return; }
+    sdGive();
 
-    uint32_t orphanId = 0x80000000;  // High value avoids collision with live utterances
-    int uploaded = 0;
-    File f = root.openNextFile();
-    while (f) {
+    if (!root) { LOG_UPLOAD(LOG_ERROR, "Failed to open /lifelog"); return; }
+
+    // Collect files — guard each directory read independently
+    char paths[64][64];
+    int count = 0;
+    while (count < 64) {
+        sdTake();
+        File f = root.openNextFile();
+        sdGive();
+
+        if (!f) break;
+
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
         if (String(f.name()).endsWith(".opus")) {
 #else
         if (String(f.name()).endsWith(".wav")) {
 #endif
-            char path[64];
-            snprintf(path, sizeof(path), "/lifelog/%s", f.name());
-            if (uploadFile(path, orphanId++, 0, true)) {
-                uploaded++;
-                SD.remove(path);
-                LOG_UPLOAD(LOG_DEBUG, "Deleted %s", path);
-            }
+            snprintf(paths[count], sizeof(paths[count]), "/lifelog/%s", f.name());
+            count++;
         }
-        f = root.openNextFile();
     }
+
+    sdTake();
     root.close();
-    sdBusy = false;
+    sdGive();
+
+    // Upload and delete — each manages its own sdMutex
+    uint32_t orphanId = 0x80000000;
+    int uploaded = 0;
+    for (int i = 0; i < count; i++) {
+        if (uploadFile(paths[i], orphanId++, 0, true)) {
+            sdTake();
+            SD.remove(paths[i]);
+            sdGive();
+            uploaded++;
+            LOG_UPLOAD(LOG_DEBUG, "Deleted %s", paths[i]);
+        }
+    }
     LOG_UPLOAD(LOG_INFO, "Done: %d files uploaded", uploaded);
 }

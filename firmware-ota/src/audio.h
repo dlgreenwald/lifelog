@@ -14,7 +14,10 @@
 // Public state
 extern volatile bool recording;
 extern volatile bool vadMode;
-extern volatile bool sdBusy;
+// SD card mutex — guards all SD SPI access
+extern SemaphoreHandle_t sdMutex;
+void sdTake();
+void sdGive();
 extern uint32_t fileIndex;
 extern char lastSavedFile[64];
 

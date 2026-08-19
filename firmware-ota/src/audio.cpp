@@ -20,7 +20,7 @@
 // Global state
 volatile bool recording = false;
 volatile bool vadMode = true;
-volatile bool sdBusy = false;
+SemaphoreHandle_t sdMutex = NULL;
 uint32_t fileIndex = 0;
 uint32_t recordDurationMs = 5000;
 char lastSavedFile[64] = {0};
@@ -115,8 +115,9 @@ static void upload_if_connected(const char* filename) {
         delay(100);
         LOG_AUDIO(LOG_INFO, "Uploading %s...", filename);
         if (uploadFile(filename, utteranceId, chunkIndex, isFinal)) {
-            delay(300);
+            sdTake();
             SD.remove(filename);
+            sdGive();
             LOG_AUDIO(LOG_INFO, "Uploaded and deleted %s", filename);
         }
     }
@@ -124,7 +125,16 @@ static void upload_if_connected(const char* filename) {
 
 // ── Public API ─────────────────────────────────────────────────────
 
+void sdTake() {
+    xSemaphoreTakeRecursive(sdMutex, portMAX_DELAY);
+}
+
+void sdGive() {
+    xSemaphoreGiveRecursive(sdMutex);
+}
+
 void audioInit() {
+    sdMutex = xSemaphoreCreateRecursiveMutex();
     // No queue needed — A/B buffers + task notifications handle data flow
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
     opus_init();
@@ -469,16 +479,17 @@ void audioTask(void *pvParameters) {
 
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
 static void write_opus_file(int16_t* pcm, uint32_t samples, const char* filename) {
+    // Phase 1: Open file and write OGG/Opus headers (GPIO 21 held)
+    sdTake();
     File file = SD.open(filename, FILE_WRITE);
     if (!file) {
+        sdGive();
         LOG_AUDIO(LOG_ERROR, "Failed to open %s", filename);
         return;
     }
 
-    // Reset OGG stream for new file
     ogg_stream_reset_serialno(&ogg_stream, ogg_serialno);
 
-    // Write OpusHead packet
     ogg_opus_head.b_o_s = 1;
     ogg_opus_head.e_o_s = 0;
     ogg_opus_head.granulepos = 0;
@@ -486,21 +497,24 @@ static void write_opus_file(int16_t* pcm, uint32_t samples, const char* filename
     ogg_stream_packetin(&ogg_stream, &ogg_opus_head);
     ogg_write_page(file);
 
-    // Write OpusTags packet
     ogg_opus_tags.b_o_s = 0;
     ogg_opus_tags.e_o_s = 0;
     ogg_opus_tags.granulepos = 0;
     ogg_opus_tags.packetno = 1;
     ogg_stream_packetin(&ogg_stream, &ogg_opus_tags);
     ogg_write_page(file);
+    sdGive();
 
-    // Encode audio in 20ms frames
+    // Phase 2: Encode audio frames (CPU only, no GPIO 21) then flush
+    // accumulated OGG pages to SD in batches.
     int16_t *pcm_ptr = pcm;
     int samples_remaining = samples;
     ogg_int64_t granulepos = 0;
     ogg_int64_t packetno = 2;
+    int frame_count = 0;
 
     while (samples_remaining >= opus_frame_size_samples) {
+        // Opus encode — pure CPU, no SPI
         int encoded_bytes = opus_encode(opus_encoder, pcm_ptr,
                                        opus_frame_size_samples,
                                        opus_encoded_buf, 4000);
@@ -514,13 +528,21 @@ static void write_opus_file(int16_t* pcm, uint32_t samples, const char* filename
             op.granulepos = granulepos;
             op.packetno = packetno++;
             ogg_stream_packetin(&ogg_stream, &op);
-            ogg_write_page(file);
         }
         pcm_ptr += opus_frame_size_samples;
         samples_remaining -= opus_frame_size_samples;
+
+        // Flush buffered OGG pages every 10 frames (~200ms of audio)
+        if (++frame_count % 10 == 0) {
+            sdTake();
+            ogg_write_page(file);
+            sdGive();
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
     }
 
-    // Mark end of stream
+    // Phase 3: Write EOS packet, flush, and close (each SD op guarded)
+    sdTake();
     ogg_packet eos_op = {0};
     eos_op.bytes = 0;
     eos_op.b_o_s = 0;
@@ -528,15 +550,17 @@ static void write_opus_file(int16_t* pcm, uint32_t samples, const char* filename
     eos_op.granulepos = granulepos;
     eos_op.packetno = packetno;
     ogg_stream_packetin(&ogg_stream, &eos_op);
-
-    // Flush remaining pages
     ogg_write_page(file);
+    sdGive();
 
+    sdTake();
     file.flush();
-    delay(150);
+    sdGive();
+
+    sdTake();
     uint32_t fileSize = file.size();
     file.close();
-    delay(150);
+    sdGive();
 
     LOG_AUDIO(LOG_INFO, "Saved: %s (%d bytes)", filename, fileSize);
 }
@@ -555,34 +579,51 @@ void writerTask(void *pvParameters) {
         uint32_t totalBytes = samplesToWrite * 2;
 
         char filename[64];
-        sdBusy = true;
-
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
         snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
         write_opus_file(writeBuf, samplesToWrite, filename);
 #else
         snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
+
+        // Open file
+        sdTake();
         File file = SD.open(filename, FILE_WRITE);
+        sdGive();
+
         if (file) {
+            // Write header
             uint8_t wav_header[WAV_HEADER_SIZE];
             generate_wav_header(wav_header, totalBytes, SAMPLE_RATE);
+            sdTake();
             file.write(wav_header, WAV_HEADER_SIZE);
+            sdGive();
+
+            // Write audio data
+            sdTake();
             file.write((uint8_t*)writeBuf, totalBytes);
+            sdGive();
+
+            // Flush and close
+            sdTake();
             file.flush();
-            delay(150);
+            sdGive();
+
+            sdTake();
             file.close();
-            delay(150);
+            sdGive();
+
             LOG_AUDIO(LOG_INFO, "Saved: %s (%d bytes)", filename, totalBytes + WAV_HEADER_SIZE);
         } else {
             LOG_AUDIO(LOG_ERROR, "Failed to open %s", filename);
         }
 #endif
 
-        upload_if_connected(filename);
-        chunkIndex++;  // Next chunk in this utterance
-        sdBusy = false;
-
+        // Signal audio task that buffer is free (before potentially slow upload)
         bufferReady = false;
         writeDone = true;
+
+        // Upload manages its own sdMutex for each SD read/delete
+        upload_if_connected(filename);
+        chunkIndex++;  // Next chunk in this utterance
     }
 }

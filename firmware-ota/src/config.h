@@ -13,9 +13,9 @@
 
 // Server
 #define SERVER_HOST    "192.168.68.190"
-#define SERVER_PORT    8443
+#define SERVER_PORT    8444
 #define SERVER_PATH    "/api/v1/upload"
-#define API_KEY        "lifelog-key"
+#define API_KEY        "07a12a33ae0f36b02e1a54ff158402efafeac9832b013592bd8e5f5061c7eb31"
 
 // ── Compile-time log levels ────────────────────────────────────────
 #define LOG_NONE  0

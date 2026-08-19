@@ -197,7 +197,8 @@ void loop() {
     ArduinoOTA.handle();
     logStats();
 
-    if (!sdBusy) {
+    if (xSemaphoreTakeRecursive(sdMutex, 0) == pdTRUE) {
+        xSemaphoreGiveRecursive(sdMutex);
         if (recording) {
             digitalWrite(LED_PIN, HIGH);
             delay(200);
