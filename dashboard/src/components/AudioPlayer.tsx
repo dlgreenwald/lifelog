@@ -1,18 +1,43 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import type { Speaker } from '../types';
 
 interface AudioPlayerProps {
-  src: string;
+  src?: string;
   segments: Speaker[];
+  sources?: string[];
 }
 
-export default function AudioPlayer({ src, segments }: AudioPlayerProps) {
+export default function AudioPlayer({ src, segments, sources }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [sourceIndex, setSourceIndex] = useState(0);
+
+  // Build the effective list of sources
+  const allSources = sources && sources.length > 0 ? sources : src ? [src] : [];
+
+  useEffect(() => {
+    // Reset when sources change
+    setSourceIndex(0);
+    setCurrentTime(0);
+    setIsPlaying(false);
+  }, [sources?.join(','), src]);
 
   const handleTimeUpdate = () => {
     setCurrentTime(audioRef.current?.currentTime || 0);
+  };
+
+  const handleEnded = () => {
+    // Auto-advance to next source
+    if (sourceIndex < allSources.length - 1) {
+      setSourceIndex(sourceIndex + 1);
+      // Auto-play next on load
+      setTimeout(() => {
+        audioRef.current?.play();
+      }, 100);
+    } else {
+      setIsPlaying(false);
+    }
   };
 
   const togglePlay = () => {
@@ -37,11 +62,23 @@ export default function AudioPlayer({ src, segments }: AudioPlayerProps) {
   const currentSpeaker = getCurrentSpeaker();
   const maxEnd = segments.length > 0 ? Math.max(...segments.map((s) => s.end)) : 1;
 
+  if (allSources.length === 0) return null;
+
   return (
     <div className="audio-player">
-      <audio ref={audioRef} src={src} onTimeUpdate={handleTimeUpdate} />
+      <audio
+        ref={audioRef}
+        src={allSources[sourceIndex]}
+        onTimeUpdate={handleTimeUpdate}
+        onEnded={handleEnded}
+      />
 
       <button onClick={togglePlay}>{isPlaying ? 'Pause' : 'Play'}</button>
+      {allSources.length > 1 && (
+        <span className="source-indicator">
+          Part {sourceIndex + 1} of {allSources.length}
+        </span>
+      )}
 
       <div className="timeline">
         {segments.map((segment, i) => (

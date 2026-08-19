@@ -1,10 +1,9 @@
 import logging
-import time
 
 from fastapi import APIRouter, Depends, Form, UploadFile
 
-from lifelog.auth import validate_api_key
 from lifelog import database
+from lifelog.auth import validate_api_key
 from lifelog.database import save_utterance_chunk
 
 logger = logging.getLogger("lifelog.upload")

@@ -7,15 +7,15 @@ and saves the recording. Survives restarts by picking up where it left off.
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 
+import lifelog.database as db
 from lifelog.config import settings
 from lifelog.crypto import audio_crypto
-import lifelog.database as db
 from lifelog.database import (
     delete_utterance_chunks,
     get_utterance_chunks,
-    get_user_by_api_key,
-    save_recording,
+    is_meaningful_speech,
 )
 from lifelog.pipeline.llm import summarize
 from lifelog.pipeline.speaker_client import identify_speakers
@@ -24,7 +24,7 @@ from lifelog.pipeline.transcribe import transcribe
 logger = logging.getLogger("lifelog.worker")
 
 # Poll interval in seconds
-POLL_INTERVAL = 2.0
+POLL_INTERVAL = 60.0
 
 
 async def claim_utterance(user_id: int, utterance_id: int) -> bool:
@@ -54,7 +54,7 @@ async def complete_utterance(user_id: int, utterance_id: int, recording_id: int)
             utterance_id,
         )
     logger.info(
-        "Utterance %d/%d complete: recording_id=%d",
+        "Utterance %d/%d complete: recording_id=%s",
         user_id,
         utterance_id,
         recording_id,
@@ -132,6 +132,13 @@ async def process_utterance(user_id: int, utterance_id: int):
 
         # Transcribe + diarize
         result = await transcribe(chunk_audio)
+        logger.debug(
+            "Utterance %d/%d chunk %d transcript: %s",
+            user_id,
+            utterance_id,
+            i,
+            result,
+        )
 
         # Extract diarization for speaker matching
         diarization_segments = [
@@ -183,45 +190,79 @@ async def process_utterance(user_id: int, utterance_id: int):
     # Clean up chunks from DB
     await delete_utterance_chunks(user_id, utterance_id)
 
-    # Summarize
-    full_transcript = {"segments": all_transcript_segments}
-    result = summarize(all_named_segments)
+    # ── Session assignment ──────────────────────────────────────────
 
-    # Save recording
-    recording_id = await save_recording(
-        user_id, full_transcript, all_named_segments, result, audio_filenames[0]
+    full_transcript = {"segments": all_transcript_segments}
+
+    # Get the utterance's timestamp from the queue
+    queue_entry = await db.get_utterance_queue_entry(user_id, utterance_id)
+    utterance_time = (
+        queue_entry["created_at"]
+        if queue_entry
+        else datetime.now(UTC).replace(tzinfo=None)
     )
 
-    # Update recording with utterance_id
-    async with db.pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE recordings SET utterance_id = $1 WHERE id = $2",
-            utterance_id,
-            recording_id,
-        )
+    # Determine if this utterance has meaningful speech
+    meaningful = is_meaningful_speech(all_named_segments)
 
-    await complete_utterance(user_id, utterance_id, recording_id)
+    # Get or create session
+    active_session = await db.get_active_session(user_id)
+    session_id: int | None = None
+
+    if active_session:
+        # Check gap from last meaningful utterance in the session
+        last_meaningful_time = await db.get_last_meaningful_utterance_time(
+            active_session["id"]
+        )
+        ref_time = last_meaningful_time or active_session["started_at"]
+        gap_minutes = (
+            utterance_time - ref_time.replace(tzinfo=None)
+        ).total_seconds() / 60
+
+        if gap_minutes <= settings.session_gap_minutes:
+            # Within window — append to existing session
+            session_id = active_session["id"]
+        else:
+            # Gap too large — end current session, create new one
+            await db.end_session(active_session["id"])
+            session_id = await db.create_session(user_id, utterance_time)
+    else:
+        # No active session — create one
+        session_id = await db.create_session(user_id, utterance_time)
+
+    # Store utterance in session
+    audio_filename = audio_filenames[0] if audio_filenames else ""
+    await db.append_session_utterance(
+        session_id,
+        utterance_id,
+        audio_filename,
+        full_transcript,
+        all_named_segments,
+        meaningful,
+    )
+
+    await complete_utterance(user_id, utterance_id, None)
 
     total_duration = time.monotonic() - start
     logger.info(
-        "Utterance %d/%d fully processed in %.2fs: recording_id=%d, %d segments, %d todos",
+        "Utterance %d/%d assigned to session %d in %.2fs: %d segments, meaningful=%s",
         user_id,
         utterance_id,
+        session_id,
         total_duration,
-        recording_id,
         len(all_named_segments),
-        len(result.get("todos", [])),
+        meaningful,
     )
 
 
 async def worker_loop():
     """Main worker loop — polls for pending utterances and processes them."""
-    logger.info("Worker started, polling every %.1fs", POLL_INTERVAL)
+    logger.info("Worker started, polling every %.0fs", POLL_INTERVAL)
 
     while True:
         try:
             pending = await get_pending_utterances()
-            logger.info("Poll: %d pending utterance(s)", len(pending))
+            logger.debug("Poll: %d pending utterance(s)", len(pending))
 
             for utterance in pending:
                 user_id = utterance["user_id"]
@@ -243,3 +284,218 @@ async def worker_loop():
             logger.exception("Worker poll error")
 
         await asyncio.sleep(POLL_INTERVAL)
+
+
+# ── Hourly reprocessing ────────────────────────────────────────────
+
+
+async def _reprocess_session(session: dict):
+    """Run LLM summarization on a session's meaningful utterances and save recording."""
+    session_id = session["id"]
+    user_id = session["user_id"]
+
+    utterances = await db.get_session_meaningful_utterances(session_id)
+    if not utterances:
+        logger.warning("Session %d has no meaningful utterances, skipping", session_id)
+        return
+
+    # Concatenate transcripts with cumulative timestamps
+    cumulative_offset = 0.0
+    all_named_segments = []
+    for utt in utterances:
+        named = utt["named_segments"]
+        if isinstance(named, str):
+            import json
+            named = json.loads(named)
+        # Offset timestamps by cumulative duration from prior utterances
+        for seg in named:
+            seg["start"] = seg.get("start", 0) + cumulative_offset
+            seg["end"] = seg.get("end", 0) + cumulative_offset
+        all_named_segments.extend(named)
+
+        # Calculate duration of this utterance for offset
+        if named:
+            max_end = max(seg.get("end", 0) for seg in named)
+            cumulative_offset = max_end
+
+    # Build combined transcript
+    full_transcript = {"segments": []}
+    for utt in utterances:
+        transcript = utt["transcript"]
+        if isinstance(transcript, str):
+            import json
+            transcript = json.loads(transcript)
+        full_transcript["segments"].extend(transcript.get("segments", []))
+
+    # Get audio filenames for this session
+    audio_files = await db.get_recording_audio_filenames(session_id)
+    first_audio = audio_files[0] if audio_files else ""
+
+    # LLM summarization
+    result = summarize(all_named_segments)
+
+    # Save (or update) recording
+    await db.save_session_recording(
+        user_id, session_id, full_transcript,
+        all_named_segments, result, first_audio,
+    )
+
+    # Mark session as processed
+    await db.mark_session_processed(session_id)
+    logger.info(
+        "Session %d reprocessed: %d segments, %d todos",
+        session_id,
+        len(all_named_segments),
+        len(result.get("todos", [])),
+    )
+
+
+async def hourly_reprocess_loop():
+    """Run every hour: process ended sessions that need LLM summarization."""
+    interval = settings.hourly_reprocess_interval_minutes * 60
+    logger.info(
+        "Hourly reprocess loop started (interval=%ds)",
+        settings.hourly_reprocess_interval_minutes * 60,
+    )
+
+    while True:
+        await asyncio.sleep(interval)
+
+        try:
+            sessions = await db.get_sessions_for_reprocessing()
+            logger.info("Hourly reprocess: %d session(s) to process", len(sessions))
+            for session in sessions:
+                try:
+                    await _reprocess_session(session)
+                except Exception:
+                    logger.exception(
+                        "Error reprocessing session %d", session["id"]
+                    )
+        except Exception:
+            logger.exception("Hourly reprocess loop error")
+
+
+# ── Daily reprocessing ─────────────────────────────────────────────
+
+
+async def _daily_reprocess_user(user_id: int):
+    """Join adjacent sessions from previous day and re-summarize."""
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+    day_start = (now - timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+    )
+    day_end = day_start + timedelta(days=1)
+
+    sessions = await db.get_sessions_by_date_range(user_id, day_start, day_end)
+    if len(sessions) < 2:
+        # Nothing to join; still re-summarize the single session if it exists
+        if sessions:
+            await _reprocess_session(sessions[0])
+        return
+
+    # Sort by started_at
+    sessions.sort(key=lambda s: s["started_at"])
+
+    # Join adjacent sessions where gap < session_gap_minutes
+    merged = [sessions[0]]
+    for s in sessions[1:]:
+        prev = merged[-1]
+        gap = (s["started_at"] - prev["ended_at"]).total_seconds() / 60
+        if gap < settings.session_gap_minutes:
+            # Merge into previous
+            await db.join_sessions([prev["id"], s["id"]], prev["id"])
+            prev["ended_at"] = s["ended_at"]
+        else:
+            merged.append(s)
+
+    # Re-summarize each remaining session with day context
+    earlier_summaries = []
+    for session in merged:
+        # Include preamble of earlier sessions if available
+        if earlier_summaries:
+            preamble = "Earlier today, the following conversations occurred:\n"
+            for i, summary_text in enumerate(earlier_summaries):
+                preamble += f"{i + 1}. {summary_text}\n"
+            preamble += "\nCurrent conversation to analyze:\n"
+            # TODO: could inject preamble into LLM prompt
+            # For now, just re-summarize normally
+
+        utterances = await db.get_session_meaningful_utterances(session["id"])
+        if not utterances:
+            continue
+
+        cumulative_offset = 0.0
+        all_named_segments = []
+        for utt in utterances:
+            named = utt["named_segments"]
+            if isinstance(named, str):
+                import json
+                named = json.loads(named)
+            for seg in named:
+                seg["start"] = seg.get("start", 0) + cumulative_offset
+                seg["end"] = seg.get("end", 0) + cumulative_offset
+            all_named_segments.extend(named)
+            if named:
+                max_end = max(seg.get("end", 0) for seg in named)
+                cumulative_offset = max_end
+
+        result = summarize(all_named_segments)
+
+        audio_files = await db.get_recording_audio_filenames(session["id"])
+        first_audio = audio_files[0] if audio_files else ""
+
+        full_transcript = {"segments": []}
+        for utt in utterances:
+            transcript = utt["transcript"]
+            if isinstance(transcript, str):
+                import json
+                transcript = json.loads(transcript)
+            full_transcript["segments"].extend(transcript.get("segments", []))
+
+        await db.save_session_recording(
+            user_id, session["id"], full_transcript,
+            all_named_segments, result, first_audio,
+        )
+
+        earlier_summaries.append(result.get("summary", ""))
+
+    logger.info(
+        "Daily reprocess for user %d: %d sessions (%d merged)",
+        user_id,
+        len(sessions),
+        len(sessions) - len(merged),
+    )
+
+
+async def daily_reprocess_loop():
+    """Run once daily at configured hour: join adjacent sessions and re-summarize."""
+    from datetime import timedelta
+
+    logger.info("Daily reprocess loop started (hour=%d UTC)", settings.daily_reprocess_hour)
+
+    while True:
+        # Calculate seconds until next daily run
+        now = datetime.now(UTC)
+        target = now.replace(
+            hour=settings.daily_reprocess_hour, minute=0, second=0, microsecond=0
+        )
+        if target <= now:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        logger.info("Daily reprocess: sleeping %.0fs until %s", wait_seconds, target)
+        await asyncio.sleep(wait_seconds)
+
+        try:
+            # Find all users with sessions
+            sessions = await db.get_sessions_for_reprocessing()
+            user_ids = list({s["user_id"] for s in sessions})
+            logger.info("Daily reprocess: %d user(s) to process", len(user_ids))
+            for uid in user_ids:
+                try:
+                    await _daily_reprocess_user(uid)
+                except Exception:
+                    logger.exception("Error in daily reprocess for user %d", uid)
+        except Exception:
+            logger.exception("Daily reprocess loop error")

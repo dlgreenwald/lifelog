@@ -9,6 +9,7 @@ export interface Recording {
   notes: string[] | null;
   conversation_changes: ConversationChange[] | null;
   audio_filename: string | null;
+  audio_filenames?: string[];
 }
 
 export interface Speaker {

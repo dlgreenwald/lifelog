@@ -5,7 +5,32 @@ import asyncpg
 
 from lifelog.config import settings
 
-# Global connection pool
+# ── Pure helpers ───────────────────────────────────────────────────
+
+
+def is_meaningful_speech(named_segments: list) -> bool:
+    """Return True if the utterance has enough speech and isn't garbled.
+
+    Meaningful = total speech duration > meaningful_speech_min_seconds
+    AND fewer than garbled_segment_ratio of segments are short single-word fragments.
+    """
+    if not named_segments:
+        return False
+
+    total_duration = sum(
+        seg.get("end", 0) - seg.get("start", 0) for seg in named_segments
+    )
+    if total_duration < settings.meaningful_speech_min_seconds:
+        return False
+
+    short_count = sum(
+        1 for seg in named_segments if len(seg.get("text", "").split()) < 3
+    )
+    ratio = short_count / len(named_segments)
+    return ratio < settings.garbled_segment_ratio
+
+
+# ── Global connection pool
 pool: asyncpg.Pool = None
 
 
@@ -135,7 +160,10 @@ async def get_recordings_by_date(user_id: int, date: str) -> list[dict]:
 
 
 async def get_recording(user_id: int, recording_id: int) -> dict | None:
-    """Get a specific recording (must belong to user)."""
+    """Get a specific recording (must belong to user).
+
+    If the recording has a session_id, also return audio_filenames from session_utterances.
+    """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -145,7 +173,27 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
             recording_id,
             user_id,
         )
-        return dict(row) if row else None
+        if not row:
+            return None
+        result = dict(row)
+        # Attach audio_filenames from session_utterances if session_id exists
+        if result.get("session_id"):
+            audio_rows = await conn.fetch(
+                """
+                SELECT audio_filename
+                FROM session_utterances
+                WHERE session_id = $1
+                ORDER BY created_at
+                """,
+                result["session_id"],
+            )
+            result["audio_filenames"] = [r["audio_filename"] for r in audio_rows]
+        else:
+            # Legacy: single audio_filename
+            result["audio_filenames"] = (
+                [result["audio_filename"]] if result.get("audio_filename") else []
+            )
+        return result
 
 
 async def get_unknown_speakers(user_id: int) -> list[dict]:
@@ -270,6 +318,8 @@ async def save_utterance_chunk(
             """INSERT INTO utterance_chunks
                (user_id, utterance_id, chunk_index, audio_bytes, is_final)
                VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (user_id, utterance_id, chunk_index)
+               DO UPDATE SET audio_bytes = $4, is_final = $5
                RETURNING id""",
             user_id,
             utterance_id,
@@ -314,3 +364,327 @@ async def update_recording_speakers(recording_id: int, speakers: list):
             json.dumps(speakers),
             recording_id,
         )
+
+
+# ── Session operations ─────────────────────────────────────────────
+
+
+async def get_active_session(user_id: int) -> dict | None:
+    """Fetch most recent session with status='active' for a user."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, user_id, started_at, ended_at, status, created_at
+            FROM sessions
+            WHERE user_id = $1 AND status = 'active'
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            user_id,
+        )
+        return dict(row) if row else None
+
+
+async def create_session(user_id: int, started_at: datetime) -> int:
+    """Insert a new active session; return its id."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO sessions (user_id, started_at, status)
+            VALUES ($1, $2, 'active')
+            RETURNING id
+            """,
+            user_id,
+            started_at.replace(tzinfo=None),
+        )
+        return row["id"]
+
+
+async def end_session(session_id: int):
+    """Mark a session as ended."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE sessions
+            SET ended_at = NOW(), status = 'ended'
+            WHERE id = $1
+            """,
+            session_id,
+        )
+
+
+async def mark_session_processed(session_id: int):
+    """Mark a session as processed (after LLM summarization)."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE sessions
+            SET status = 'processed'
+            WHERE id = $1
+            """,
+            session_id,
+        )
+
+
+async def append_session_utterance(
+    session_id: int,
+    utterance_id: int,
+    audio_filename: str,
+    transcript: dict,
+    named_segments: list,
+    is_meaningful: bool,
+):
+    """Store an utterance within a session."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO session_utterances
+                (session_id, utterance_id, audio_filename, transcript, named_segments, is_meaningful)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            session_id,
+            utterance_id,
+            audio_filename,
+            json.dumps(transcript),
+            json.dumps(named_segments),
+            is_meaningful,
+        )
+
+
+async def get_session_meaningful_utterances(session_id: int) -> list[dict]:
+    """Fetch session_utterances WHERE is_meaningful = TRUE, ordered by created_at."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT utterance_id, audio_filename, transcript, named_segments, created_at
+            FROM session_utterances
+            WHERE session_id = $1 AND is_meaningful = TRUE
+            ORDER BY created_at
+            """,
+            session_id,
+        )
+        return [dict(row) for row in rows]
+
+
+async def get_session_all_utterances(session_id: int) -> list[dict]:
+    """Fetch all session_utterances (including non-meaningful), ordered by created_at."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT utterance_id, audio_filename, transcript, named_segments,
+                   is_meaningful, created_at
+            FROM session_utterances
+            WHERE session_id = $1
+            ORDER BY created_at
+            """,
+            session_id,
+        )
+        return [dict(row) for row in rows]
+
+
+async def get_last_meaningful_utterance_time(session_id: int) -> datetime | None:
+    """Get the created_at of the last meaningful utterance in a session."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT created_at
+            FROM session_utterances
+            WHERE session_id = $1 AND is_meaningful = TRUE
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            session_id,
+        )
+        return row["created_at"] if row else None
+
+
+async def get_utterance_queue_entry(user_id: int, utterance_id: int) -> dict | None:
+    """Fetch utterance queue entry to get its timestamp."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT user_id, utterance_id, status, created_at
+            FROM utterance_queue
+            WHERE user_id = $1 AND utterance_id = $2
+            """,
+            user_id,
+            utterance_id,
+        )
+        return dict(row) if row else None
+
+
+async def save_session_recording(
+    user_id: int,
+    session_id: int,
+    transcript: dict,
+    speakers: list,
+    result: dict,
+    audio_filename: str,
+) -> int:
+    """Create or update a recording linked to a session (UPSERT on session_id)."""
+    async with pool.acquire() as conn:
+        # Check if recording already exists for this session
+        existing = await conn.fetchrow(
+            "SELECT id FROM recordings WHERE session_id = $1",
+            session_id,
+        )
+        if existing:
+            await conn.execute(
+                """
+                UPDATE recordings
+                SET transcript = $1, speakers = $2, summary = $3, todos = $4,
+                    calendar = $5, notes = $6, conversation_changes = $7,
+                    audio_filename = $8, timestamp = NOW()
+                WHERE id = $9
+                """,
+                json.dumps(transcript),
+                json.dumps(speakers),
+                result["summary"],
+                json.dumps(result["todos"]),
+                json.dumps(result["calendar"]),
+                json.dumps(result["notes"]),
+                json.dumps(result.get("conversation_changes", [])),
+                audio_filename,
+                existing["id"],
+            )
+            return existing["id"]
+        else:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO recordings
+                    (user_id, session_id, timestamp, transcript, speakers,
+                     summary, todos, calendar, notes, conversation_changes, audio_filename)
+                VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10)
+                RETURNING id
+                """,
+                user_id,
+                session_id,
+                json.dumps(transcript),
+                json.dumps(speakers),
+                result["summary"],
+                json.dumps(result["todos"]),
+                json.dumps(result["calendar"]),
+                json.dumps(result["notes"]),
+                json.dumps(result.get("conversation_changes", [])),
+                audio_filename,
+            )
+            return row["id"]
+
+
+async def get_sessions_for_reprocessing(user_id: int | None = None) -> list[dict]:
+    """All sessions with status='ended' that have no recording or need update."""
+    async with pool.acquire() as conn:
+        if user_id is not None:
+            rows = await conn.fetch(
+                """
+                SELECT s.id, s.user_id, s.started_at, s.ended_at
+                FROM sessions s
+                WHERE s.status = 'ended'
+                  AND s.user_id = $1
+                  AND (
+                      NOT EXISTS (SELECT 1 FROM recordings r WHERE r.session_id = s.id)
+                      OR EXISTS (
+                          SELECT 1 FROM recordings r
+                          WHERE r.session_id = s.id
+                            AND r.created_at < s.ended_at
+                      )
+                  )
+                ORDER BY s.started_at
+                """,
+                user_id,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT s.id, s.user_id, s.started_at, s.ended_at
+                FROM sessions s
+                WHERE s.status = 'ended'
+                  AND (
+                      NOT EXISTS (SELECT 1 FROM recordings r WHERE r.session_id = s.id)
+                      OR EXISTS (
+                          SELECT 1 FROM recordings r
+                          WHERE r.session_id = s.id
+                            AND r.created_at < s.ended_at
+                      )
+                  )
+                ORDER BY s.started_at
+                """
+            )
+        return [dict(row) for row in rows]
+
+
+async def get_sessions_by_date_range(
+    user_id: int, start: datetime, end: datetime
+) -> list[dict]:
+    """Fetch sessions in a time range."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, user_id, started_at, ended_at, status
+            FROM sessions
+            WHERE user_id = $1
+              AND started_at >= $2
+              AND started_at < $3
+              AND status != 'active'
+            ORDER BY started_at
+            """,
+            user_id,
+            start.replace(tzinfo=None),
+            end.replace(tzinfo=None),
+        )
+        return [dict(row) for row in rows]
+
+
+async def join_sessions(session_ids: list[int], keep_id: int):
+    """Merge multiple sessions into keep_id; delete the rest."""
+    if not session_ids:
+        return
+    # Filter out keep_id from the list to delete
+    delete_ids = [sid for sid in session_ids if sid != keep_id]
+    if not delete_ids:
+        return
+    async with pool.acquire() as conn:
+        # Move session_utterances from deleted sessions to kept session
+        await conn.execute(
+            """
+            UPDATE session_utterances
+            SET session_id = $1
+            WHERE session_id = ANY($2)
+            """,
+            keep_id,
+            delete_ids,
+        )
+        # Update kept session's ended_at to latest of merged sessions
+        await conn.execute(
+            """
+            UPDATE sessions
+            SET ended_at = (
+                SELECT MAX(COALESCE(ended_at, started_at))
+                FROM sessions
+                WHERE id = ANY($1)
+            )
+            WHERE id = $2
+            """,
+            session_ids,
+            keep_id,
+        )
+        # Delete the other sessions
+        await conn.execute(
+            "DELETE FROM sessions WHERE id = ANY($1)",
+            delete_ids,
+        )
+
+
+async def get_recording_audio_filenames(session_id: int) -> list[str]:
+    """Get all audio filenames for a session (for audio concatenation)."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT audio_filename
+            FROM session_utterances
+            WHERE session_id = $1
+            ORDER BY created_at
+            """,
+            session_id,
+        )
+        return [row["audio_filename"] for row in rows]

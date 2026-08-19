@@ -60,7 +60,7 @@ async def test_upload_enqueue_on_final():
 
     with (
         patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock),
-        patch("lifelog.routes.upload.pool") as mock_pool,
+        patch("lifelog.routes.upload.database.pool") as mock_pool,
     ):
         mock_conn = AsyncMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)

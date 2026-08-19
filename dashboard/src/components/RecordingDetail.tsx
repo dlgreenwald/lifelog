@@ -41,7 +41,19 @@ export default function RecordingDetail() {
         </div>
       )}
 
-      {recording.audio_filename && (
+      {recording.audio_filenames && recording.audio_filenames.length > 0 && (
+        <div className="audio-player">
+          <h3>Audio</h3>
+          <AudioPlayer
+            sources={recording.audio_filenames.map(
+              (f) => `/api/v1/dashboard/audio/${f}`
+            )}
+            segments={recording.speakers || []}
+          />
+        </div>
+      )}
+
+      {!recording.audio_filenames?.length && recording.audio_filename && (
         <div className="audio-player">
           <h3>Audio</h3>
           <AudioPlayer

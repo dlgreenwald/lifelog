@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     # Audio storage
     audio_storage_path: str = "/data/audio"
 
+    # Session grouping
+    session_gap_minutes: int = 5
+    meaningful_speech_min_seconds: float = 30.0
+    garbled_segment_ratio: float = 0.4
+    hourly_reprocess_interval_minutes: int = 60
+    daily_reprocess_hour: int = 3
+
     class Config:
         env_file = ".env"
 
