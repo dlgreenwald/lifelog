@@ -1,7 +1,9 @@
 import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -9,30 +11,33 @@ from fastapi.staticfiles import StaticFiles
 from lifelog.config import settings
 from lifelog.database import init_pool
 from lifelog.routes import dashboard, speakers, upload
-from lifelog.worker import worker_loop
+from lifelog.worker import daily_reprocess_loop, hourly_reprocess_loop, worker_loop
 
 logger = logging.getLogger("lifelog")
 _worker_task = None
+_hourly_task = None
+_daily_task = None
+
+
+def _configure_logging() -> None:
+    """Load logging.json and apply per-level overrides from settings."""
+    config_path = Path(__file__).resolve().parent.parent.parent / "logging.json"
+    if config_path.exists():
+        with open(config_path) as f:
+            log_config = json.load(f)
+        LOG_LEVEL = getattr(logging, settings.log_level.upper(), logging.INFO)
+        for logger_cfg in log_config.get("loggers", {}).values():
+            logger_cfg["level"] = LOG_LEVEL
+        logging.config.dictConfig(log_config)
+    else:
+        logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _worker_task
+    global _worker_task, _hourly_task, _daily_task
 
-    # Configure logging after uvicorn starts (alembic reconfigured it)
-    LOG_LEVEL = getattr(logging, settings.log_level.upper(), logging.INFO)
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    ))
-    for name in ["lifelog", "lifelog.transcribe", "lifelog.speaker_id",
-                 "lifelog.llm", "lifelog.upload", "lifelog.worker",
-                 "lifelog.speakers", "lifelog.dashboard"]:
-        log = logging.getLogger(name)
-        log.handlers.clear()
-        log.addHandler(handler)
-        log.setLevel(LOG_LEVEL)
+    _configure_logging()
 
     # Initialize DB pool (migrations already ran in entrypoint)
     await init_pool()
@@ -51,6 +56,18 @@ async def lifespan(app: FastAPI):
         logger.info("Background worker started")
     except Exception:
         logger.exception("Failed to start worker")
+
+    try:
+        _hourly_task = asyncio.create_task(hourly_reprocess_loop())
+        logger.info("Hourly reprocess loop started")
+    except Exception:
+        logger.exception("Failed to start hourly reprocess loop")
+
+    try:
+        _daily_task = asyncio.create_task(daily_reprocess_loop())
+        logger.info("Daily reprocess loop started")
+    except Exception:
+        logger.exception("Failed to start daily reprocess loop")
 
     yield
 
