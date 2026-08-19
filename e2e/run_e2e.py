@@ -188,8 +188,8 @@ async def run_e2e(yaml_path: str, server_url: str = SERVER_URL):
         print("Step 1: Setup")
         print("─" * 40)
         user_id = await setup_user(pool)
-        utterance_id = int(time.time())  # Unique per run, fits int32
-        print(f"  utterance_id: {utterance_id}")
+        device_utterance_id = int(time.time())  # Unique per run, fits int32
+        print(f"  device_utterance_id: {device_utterance_id}")
         print()
 
         # Generate audio
@@ -214,15 +214,19 @@ async def run_e2e(yaml_path: str, server_url: str = SERVER_URL):
             print("─" * 40)
             print("Step 4: Upload Chunks")
             print("─" * 40)
-            responses = upload_chunks(chunks, utterance_id, server_url)
+            responses = upload_chunks(chunks, device_utterance_id, server_url)
             print(f"  Uploaded {len(responses)} chunks")
+
+            # Server assigns its own utterance_id — extract from final response
+            server_utterance_id = responses[-1]["utterance_id"]
+            print(f"  server_utterance_id: {server_utterance_id}")
             print()
 
             # Poll and verify
             print("─" * 40)
             print("Step 5: Verify Pipeline")
             print("─" * 40)
-            status = poll_status(utterance_id, server_url)
+            status = poll_status(server_utterance_id, server_url)
             print(f"  Pipeline completed: {status}")
             print()
 
@@ -237,7 +241,7 @@ async def run_e2e(yaml_path: str, server_url: str = SERVER_URL):
                        FROM recordings
                        WHERE user_id = $1 AND utterance_id = $2""",
                     user_id,
-                    utterance_id,
+                    server_utterance_id,
                 )
 
             if rec:

@@ -9,25 +9,14 @@ from lifelog.config import settings
 
 
 def is_meaningful_speech(named_segments: list) -> bool:
-    """Return True if the utterance has enough speech and isn't garbled.
+    """Return True if the utterance has any transcribed text.
 
-    Meaningful = total speech duration > meaningful_speech_min_seconds
-    AND fewer than garbled_segment_ratio of segments are short single-word fragments.
+    Any segment with non-empty text means the chunk contains speech.
+    Empty segments (silence, noise, untranscribed audio) are not meaningful.
     """
     if not named_segments:
         return False
-
-    total_duration = sum(
-        seg.get("end", 0) - seg.get("start", 0) for seg in named_segments
-    )
-    if total_duration < settings.meaningful_speech_min_seconds:
-        return False
-
-    short_count = sum(
-        1 for seg in named_segments if len(seg.get("text", "").split()) < 3
-    )
-    ratio = short_count / len(named_segments)
-    return ratio < settings.garbled_segment_ratio
+    return any(seg.get("text", "").strip() for seg in named_segments)
 
 
 # ── Global connection pool

@@ -45,13 +45,13 @@ class TestIsMeaningfulSpeech:
         from lifelog.database import is_meaningful_speech
         assert is_meaningful_speech([]) is False
 
-    def test_short_duration_not_meaningful(self):
+    def test_short_duration_still_meaningful(self):
         from lifelog.database import is_meaningful_speech
         segments = [
             {"start": 0, "end": 5, "text": "hello world"},
             {"start": 5, "end": 10, "text": "this is a test"},
         ]
-        assert is_meaningful_speech(segments) is False
+        assert is_meaningful_speech(segments) is True
 
     def test_enough_duration_meaningful(self):
         from lifelog.database import is_meaningful_speech
@@ -63,9 +63,9 @@ class TestIsMeaningfulSpeech:
         ]
         assert is_meaningful_speech(segments) is True
 
-    def test_garbled_segments_not_meaningful(self):
+    def test_garbled_segments_still_meaningful(self):
         from lifelog.database import is_meaningful_speech
-        # 40 seconds but >40% are single-word fragments
+        # Even short/fragmented text counts as meaningful
         segments = [
             {"start": 0, "end": 3, "text": "yes"},
             {"start": 3, "end": 6, "text": "no"},
@@ -76,8 +76,27 @@ class TestIsMeaningfulSpeech:
             {"start": 25, "end": 35, "text": "another longer segment with enough words"},
             {"start": 35, "end": 45, "text": "one more longer segment with enough words here"},
         ]
-        # 5/8 = 62.5% short segments → garbled
+        assert is_meaningful_speech(segments) is True
+
+    def test_empty_text_segments_not_meaningful(self):
+        from lifelog.database import is_meaningful_speech
+        # All segments have empty/whitespace text
+        segments = [
+            {"start": 0, "end": 5, "text": ""},
+            {"start": 5, "end": 10, "text": "   "},
+            {"start": 10, "end": 15, "text": ""},
+        ]
         assert is_meaningful_speech(segments) is False
+
+    def test_mixed_empty_and_text_meaningful(self):
+        from lifelog.database import is_meaningful_speech
+        # Some empty, some with text → meaningful
+        segments = [
+            {"start": 0, "end": 5, "text": ""},
+            {"start": 5, "end": 10, "text": "hello world"},
+            {"start": 10, "end": 15, "text": ""},
+        ]
+        assert is_meaningful_speech(segments) is True
 
     def test_few_short_segments_still_meaningful(self):
         from lifelog.database import is_meaningful_speech
