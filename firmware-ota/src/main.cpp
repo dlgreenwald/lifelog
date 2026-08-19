@@ -5,6 +5,7 @@
 #include <ArduinoOTA.h>
 #include <Preferences.h>
 #include <esp_ota_ops.h>
+#include <esp_task_wdt.h>
 #include <esp_freertos_hooks.h>
 #include <freertos/task.h>
 #include <esp_additions/freertos/task_snapshot.h>
@@ -130,6 +131,13 @@ void setup() {
     xTaskCreatePinnedToCore(audioTask, "audio", 32768, NULL, 5, &audioTaskHandle, 1);
     xTaskCreatePinnedToCore(writerTask, "writer", 32768, NULL, 2, &writerTaskHandle, 0);
     setWriterTaskHandle(writerTaskHandle);
+
+    // Disable task watchdog — network I/O and I2S DMA reads can
+    // legitimately delay task scheduling beyond default 5s timeout.
+    // Stall timeout in audioTask prevents true hangs.
+    esp_task_wdt_delete(NULL);
+    esp_task_wdt_delete(xTaskGetHandle("idle"));
+
     bootConfirm();
 
     LOG_SYSTEM(LOG_INFO, "Ready! VAD active — listening for speech...");

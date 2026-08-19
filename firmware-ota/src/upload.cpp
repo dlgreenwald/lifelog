@@ -10,7 +10,7 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
         return false;
     }
 
-    // Open file and get size (minimal SD hold)
+    // Read entire file into RAM under single sdMutex hold
     sdTake();
     File file = SD.open(filename, FILE_READ);
     if (!file) {
@@ -19,7 +19,22 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
         return false;
     }
     uint32_t fileSize = file.size();
+    uint8_t *fileData = (uint8_t *)malloc(fileSize);
+    if (!fileData) {
+        file.close();
+        sdGive();
+        LOG_UPLOAD(LOG_ERROR, "OOM for %lu bytes", (unsigned long)fileSize);
+        return false;
+    }
+    int totalRead = 0;
+    while (totalRead < (int)fileSize) {
+        int n = file.read(fileData + totalRead, fileSize - totalRead);
+        if (n <= 0) break;
+        totalRead += n;
+    }
+    file.close();
     sdGive();
+    fileSize = (uint32_t)totalRead;
 
     LOG_UPLOAD(LOG_INFO, "Uploading %s (%d bytes)...", filename, fileSize);
 
@@ -46,9 +61,7 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     WiFiClient client;
     if (!client.connect(SERVER_HOST, SERVER_PORT)) {
         LOG_UPLOAD(LOG_ERROR, "Connection failed");
-        sdTake();
-        file.close();
-        sdGive();
+        free(fileData);
         return false;
     }
 
@@ -69,23 +82,14 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     client.print(headers);
     client.print(body);
 
-    // Send file data in chunks — each read guarded independently
-    uint8_t buf[4096];
+    // Send file data from RAM — no sdMutex held
     uint32_t totalSent = 0;
     while (totalSent < fileSize) {
-        sdTake();
-        int bytesRead = file.read(buf, sizeof(buf));
-        sdGive();
-
-        if (bytesRead <= 0) break;
-        client.write(buf, bytesRead);
-        totalSent += bytesRead;
+        uint32_t chunk = min((uint32_t)4096, fileSize - totalSent);
+        client.write(fileData + totalSent, chunk);
+        totalSent += chunk;
     }
-
-    // Close file — guarded
-    sdTake();
-    file.close();
-    sdGive();
+    free(fileData);
 
     // Send multipart terminator — no SD access
     client.print("\r\n--" + boundary + "--\r\n");

@@ -317,9 +317,9 @@ void audioTask(void *pvParameters) {
     i2s_set_clk(I2S_NUM_0, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
     LOG_I2S(LOG_INFO, "PDM Mic ready (CLK=42, DIN=41) — DMA: 4 × 1024 samples");
 
-    // Allocate A/B buffers in PSRAM — 5 seconds each
+    // Allocate A/B buffers in PSRAM — 30 seconds each
     // Multiple 200ms DMA reads accumulate before each swap/save
-    uint32_t bufBytes = (SAMPLE_RATE * SAMPLE_BITS / 8) * 5;
+    uint32_t bufBytes = (SAMPLE_RATE * SAMPLE_BITS / 8) * 30;
     bufA = (int16_t*)ps_malloc(bufBytes);
     bufB = (int16_t*)ps_malloc(bufBytes);
     if (!bufA || !bufB) {
@@ -384,7 +384,15 @@ void audioTask(void *pvParameters) {
             // Flush when buffer full
             if (audioCount + samplesRead > bufCapacity) {
                 uint32_t waitStart = millis();
-                while (!writeDone) { vTaskDelay(pdMS_TO_TICKS(5)); }
+                while (!writeDone) {
+                    if (millis() - waitStart > VAD_STALL_TIMEOUT_MS) {
+                        LOG_AUDIO(LOG_ERROR, "Writer stall timeout: dropping buffer (%lu samples)",
+                                  (unsigned long)audioCount);
+                        audioCount = 0;
+                        break;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                }
                 uint32_t waitMs = millis() - waitStart;
                 if (waitMs > 0) {
                     writerStallCount++;

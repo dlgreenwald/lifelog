@@ -11,6 +11,9 @@
 #define VAD_ANALYSIS_MS 200
 #define VAD_GAIN        3
 
+// Stall protection — max time audioTask waits for writer before dropping buffer
+#define VAD_STALL_TIMEOUT_MS  3000
+
 // Public state
 extern volatile bool recording;
 extern volatile bool vadMode;
