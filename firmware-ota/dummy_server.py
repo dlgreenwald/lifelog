@@ -17,11 +17,6 @@ if SAVE_FILES:
 
 app = FastAPI(title="LifeLog Dummy Server")
 
-API_KEYS = {
-    "test-api-key-1234": {"id": 1, "name": "Test Device"},
-    "lifelog-key": {"id": 2, "name": "LifeLog Device"},
-}
-
 
 @app.get("/")
 async def root():
@@ -36,9 +31,7 @@ async def upload_audio(
     is_final: bool = Form(...),
     x_api_key: str = Header(...),
 ):
-    user = API_KEYS.get(x_api_key)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    user = {"id": 1, "name": "Device"}
 
     audio_bytes = await file.read()
 
@@ -85,6 +78,6 @@ if __name__ == "__main__":
     import uvicorn
 
     mode = "SAVE mode" if SAVE_FILES else "log-only mode"
-    print(f"LifeLog Dummy Server on http://0.0.0.0:8443 ({mode})")
+    print(f"LifeLog Dummy Server on http://0.0.0.0:8444 ({mode})")
     print("Usage: python dummy_server.py [--save]")
-    uvicorn.run(app, host="0.0.0.0", port=8443)
+    uvicorn.run(app, host="0.0.0.0", port=8444)

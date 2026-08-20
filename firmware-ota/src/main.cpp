@@ -128,19 +128,19 @@ void setup() {
     setupOTA();
     commandsInit();
 
-    xTaskCreatePinnedToCore(audioTask, "audio", 32768, NULL, 5, &audioTaskHandle, 1);
-    xTaskCreatePinnedToCore(writerTask, "writer", 32768, NULL, 2, &writerTaskHandle, 0);
+    xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, 5, NULL, 0);
+    xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, 5, &audioTaskHandle, 1);
+    xTaskCreatePinnedToCore(writerTask, "writer", 32768, NULL, 2, &writerTaskHandle, 1);
     setWriterTaskHandle(writerTaskHandle);
 
-    // Disable task watchdog — network I/O and I2S DMA reads can
-    // legitimately delay task scheduling beyond default 5s timeout.
-    // Stall timeout in audioTask prevents true hangs.
+    // Disable task watchdog for idle task only — AFE tasks now use
+    // i2s_read timeouts (100ms) so they yield often enough for the WDT.
     esp_task_wdt_delete(NULL);
     esp_task_wdt_delete(xTaskGetHandle("idle"));
 
     bootConfirm();
 
-    LOG_SYSTEM(LOG_INFO, "Ready! VAD active — listening for speech...");
+    LOG_SYSTEM(LOG_INFO, "Ready! AFE active (VAD + NSNET2) — listening for speech...");
 }
 
 static void logStats() {
@@ -205,21 +205,22 @@ void loop() {
     ArduinoOTA.handle();
     logStats();
 
-    if (xSemaphoreTakeRecursive(sdMutex, 0) == pdTRUE) {
-        xSemaphoreGiveRecursive(sdMutex);
-        if (recording) {
-            digitalWrite(LED_PIN, HIGH);
-            delay(200);
-            digitalWrite(LED_PIN, LOW);
-            delay(200);
-        } else {
-            digitalWrite(LED_PIN, HIGH);
-            delay(1000);
-            digitalWrite(LED_PIN, LOW);
-            delay(1000);
-        }
-    } else {
-        // SD in use — skip LED toggle to avoid GPIO 21 conflict
-        delay(100);
-    }
+    // if (xSemaphoreTakeRecursive(sdMutex, 0) == pdTRUE) {
+    //     xSemaphoreGiveRecursive(sdMutex);
+    //     if (recording) {
+    //         digitalWrite(LED_PIN, HIGH);
+    //         delay(200);
+    //         digitalWrite(LED_PIN, LOW);
+    //         delay(200);
+    //     } else {
+    //         digitalWrite(LED_PIN, HIGH);
+    //         delay(1000);
+    //         digitalWrite(LED_PIN, LOW);
+    //         delay(1000);
+    //     }
+    // } else {
+    //     // SD in use — skip LED toggle to avoid GPIO 21 conflict
+    //     delay(100);
+    // }
+    delay(10);  // yield to RTOS tasks
 }

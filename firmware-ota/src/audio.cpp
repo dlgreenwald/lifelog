@@ -7,6 +7,14 @@
 #include "SD.h"
 #include "SPI.h"
 
+// esp-sr AFE includes
+#include "esp_partition.h"
+#include "esp_afe_sr_iface.h"
+#include "esp_afe_config.h"
+#include "esp_afe_sr_models.h"
+#include "model_path.h"
+#include "afe_stubs.h"
+
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
 #include <opus.h>
 #include <ogg/ogg.h>
@@ -15,7 +23,6 @@
 // WAV header size
 #define WAV_HEADER_SIZE 44
 #define SAMPLE_BITS 16
-#define VOLUME_GAIN 3
 
 // Global state
 volatile bool recording = false;
@@ -25,6 +32,8 @@ uint32_t fileIndex = 0;
 uint32_t recordDurationMs = 5000;
 char lastSavedFile[64] = {0};
 static TaskHandle_t writerTaskHandle = NULL;
+static QueueHandle_t uploadQueue = NULL;
+static TaskHandle_t uploadTaskHandle = NULL;
 
 // Utterance tracking
 volatile uint32_t utteranceId = 0;
@@ -52,7 +61,7 @@ uint32_t getTotalSamplesWritten() { return totalSamplesWritten; }
 static void generate_wav_header(uint8_t *wav_header, uint32_t wav_size, uint32_t sample_rate) {
     uint32_t file_size = wav_size + WAV_HEADER_SIZE - 8;
     uint32_t byte_rate = SAMPLE_RATE * SAMPLE_BITS / 8;
-    
+
     const uint8_t set_wav_header[] = {
         'R', 'I', 'F', 'F', // ChunkID
         file_size, file_size >> 8, file_size >> 16, file_size >> 24, // ChunkSize
@@ -68,57 +77,44 @@ static void generate_wav_header(uint8_t *wav_header, uint32_t wav_size, uint32_t
         'd', 'a', 't', 'a', // Subchunk2ID
         wav_size, wav_size >> 8, wav_size >> 16, wav_size >> 24 // Subchunk2Size
     };
-    
+
     memcpy(wav_header, set_wav_header, WAV_HEADER_SIZE);
 }
 #endif // AUDIO_FORMAT_WAV_ACTIVE
 
-// ── RMS computation for VAD ────────────────────────────────────────
-
-static float computeRMS(int16_t* samples, int count) {
-    float sum = 0;
-    for (int i = 0; i < count; i++) {
-        sum += (float)samples[i] * (float)samples[i];
-    }
-    return sqrtf(sum / count);
-}
-
 // ── Forward declarations ──────────────────────────────────────────
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
 static void opus_init();
-static void write_opus_file(int16_t* pcm, uint32_t samples, const char* filename);
+static void opus_file_start(const char* filename);
+static int opus_file_write(const int16_t* pcm, int samples);
+static void opus_file_end();
 #endif
 static void upload_if_connected(const char* filename);
-static float compute_median(float* history, int count);
+static void uploadWorkerTask(void *pvParameters);
 
-// ── Median filter (used by VAD) ───────────────────────────────────
+// ── Upload request (metadata captured at file-close time) ──────────
 
-static float compute_median(float* history, int count) {
-    float sorted[count];
-    memcpy(sorted, history, count * sizeof(float));
-    for (int i = 0; i < count - 1; i++) {
-        for (int j = i + 1; j < count; j++) {
-            if (sorted[i] > sorted[j]) {
-                float tmp = sorted[i];
-                sorted[i] = sorted[j];
-                sorted[j] = tmp;
-            }
-        }
-    }
-    return sorted[count / 2];
-}
+struct UploadRequest {
+    char filename[64];
+    uint32_t utteranceId;
+    uint32_t chunkIndex;
+    bool isFinal;
+};
 
 // ── Upload helper ──────────────────────────────────────────────────
 
-static void upload_if_connected(const char* filename) {
+static void upload_if_connected(const UploadRequest &req) {
     if (WiFi.status() == WL_CONNECTED) {
         delay(100);
-        LOG_AUDIO(LOG_INFO, "Uploading %s...", filename);
-        if (uploadFile(filename, utteranceId, chunkIndex, isFinal)) {
+        LOG_AUDIO(LOG_INFO, "Uploading %s (utt=%lu chunk=%lu)...",
+                  req.filename, (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex);
+        if (uploadFile(req.filename, req.utteranceId, req.chunkIndex, req.isFinal)) {
             sdTake();
-            SD.remove(filename);
+            SD.remove(req.filename);
             sdGive();
-            LOG_AUDIO(LOG_INFO, "Uploaded and deleted %s", filename);
+            LOG_AUDIO(LOG_INFO, "Uploaded and deleted %s", req.filename);
+        } else {
+            LOG_AUDIO(LOG_WARN, "Upload failed: %s", req.filename);
         }
     }
 }
@@ -133,40 +129,115 @@ void sdGive() {
     xSemaphoreGiveRecursive(sdMutex);
 }
 
-void audioInit() {
-    sdMutex = xSemaphoreCreateRecursiveMutex();
-    // No queue needed — A/B buffers + task notifications handle data flow
-#ifdef AUDIO_FORMAT_OPUS_ACTIVE
-    opus_init();
-#endif
+// ── AFE globals ──────────────────────────────────────────────────
+
+static const esp_afe_sr_iface_t *afe_handle = NULL;
+static esp_afe_sr_data_t *afe_data = NULL;
+
+// ── Legacy I2S PDM init ──────────────────────────────────────────
+
+static void pdmRxInit() {
+    // Direct I2S driver — PDM CLK maps to bck_io_num, DIN to data_in_num
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
+        .sample_rate = SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = 1024,  // ESP-IDF max; 4 × 1024 = 4096 samples = 256ms ring buffer
+        .use_apll = false,
+        .tx_desc_auto_clear = false,
+        .fixed_mclk = 0,
+        .mclk_multiple = I2S_MCLK_MULTIPLE_DEFAULT,
+        .bits_per_chan = I2S_BITS_PER_CHAN_DEFAULT,
+    };
+    i2s_pin_config_t pin_config = {
+        .mck_io_num = I2S_PIN_NO_CHANGE,
+        .bck_io_num = I2S_PIN_NO_CHANGE,
+        .ws_io_num = I2S_MIC_CLK,    // PDM CLK = GPIO42
+        .data_out_num = I2S_PIN_NO_CHANGE,
+        .data_in_num = I2S_MIC_DIN,  // PDM DIN = GPIO41
+    };
+    esp_err_t err = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+    if (err != ESP_OK) {
+        LOG_I2S(LOG_ERROR, "i2s_driver_install failed: %d", err);
+        return;
+    }
+    err = i2s_set_pin(I2S_NUM_0, &pin_config);
+    if (err != ESP_OK) {
+        LOG_I2S(LOG_ERROR, "i2s_set_pin failed: %d", err);
+        return;
+    }
+    i2s_set_clk(I2S_NUM_0, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
+    LOG_I2S(LOG_INFO, "PDM Mic ready (CLK=42, DIN=41) — DMA: 4 × 1024 samples");
 }
 
-void setWriterTaskHandle(TaskHandle_t handle) {
-    writerTaskHandle = handle;
+// ── AFE init — load models, configure AFE_TYPE_VC ──────────────────
+
+static void afeInit() {
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "model");
+    if (!part) {
+        LOG_AFE(LOG_ERROR, "No 'model' partition found — AFE disabled");
+        return;
+    }
+    uint8_t buf[4] = {0};
+    esp_err_t err = esp_partition_read(part, 0, buf, sizeof(buf));
+    if (err != ESP_OK || (buf[0] == 0xFF && buf[1] == 0xFF && buf[2] == 0xFF && buf[3] == 0xFF)) {
+        LOG_AFE(LOG_ERROR, "Model partition empty — AFE disabled");
+        return;
+    }
+
+    srmodel_list_t *models = esp_srmodel_init("model");
+    if (!models) {
+        LOG_AFE(LOG_ERROR, "esp_srmodel_init failed");
+        return;
+    }
+    // Use official defaults — let afe_config_init set everything
+    afe_config_t *afe_config = afe_config_init("M", models, AFE_TYPE_VC, AFE_MODE_LOW_COST);
+    if (!afe_config) {
+        LOG_AFE(LOG_ERROR, "afe_config_init failed");
+        return;
+    }
+    // Switch to WebRTC VAD (simpler, more reliable than VADNet)
+    // Setting vad_model_name to NULL triggers WebRTC fallback
+    if (afe_config->vad_model_name) {
+        free(afe_config->vad_model_name);
+        afe_config->vad_model_name = NULL;
+    }
+
+    afe_handle = esp_afe_handle_from_config(afe_config);
+    if (!afe_handle) {
+        LOG_AFE(LOG_ERROR, "esp_afe_handle_from_config failed");
+        afe_config_free(afe_config);
+        return;
+    }
+    afe_data = afe_handle->create_from_config(afe_config);
+    afe_config_free(afe_config);
+    if (!afe_data) {
+        LOG_AFE(LOG_ERROR, "AFE create_from_config failed");
+        return;
+    }
+
+    LOG_AFE(LOG_INFO, "AFE ready (official defaults)");
+    afe_handle->print_pipeline(afe_data);
 }
 
-void startRecording(uint32_t durationMs) {
-    if (recording) return;
-    recordDurationMs = durationMs;
-    recording = true;
-}
+// ── Ring Buffer State ───────────────────────────────────────────────
+// Producer: afeFetchTask (processAfeResult) — writes ring_head
+// Consumer: writerTask — reads ring_tail
+// Each slot holds one AFE chunk (~32ms at 16kHz)
 
-void toggleVAD() {
-    vadMode = !vadMode;
-    LOG_VAD(LOG_INFO, "Mode: %s", vadMode ? "VAD (auto)" : "Fixed duration");
-}
+#define RING_SLOTS        8
+#define RING_CHUNK_SAMPLES 512   // matches AFE feed chunksize
 
-// ── A/B Buffer State ───────────────────────────────────────────────
-
-static int16_t* bufA = NULL;
-static int16_t* bufB = NULL;
-static int16_t* audioBuf = NULL;   // Buffer audio task writes to
-static int16_t* writeBuf = NULL;   // Buffer write task reads from
-static uint32_t audioCount = 0;    // Samples in audio buffer
-static uint32_t writeCount = 0;    // Samples in write buffer
-static volatile bool bufferReady = false;  // Audio buffer full
-static volatile bool writeDone = true;     // Write task idle
-static uint32_t bufCapacity = 0;   // Max samples per buffer
+static int16_t* ring_buf[RING_SLOTS] = {0};  // ring slot buffers in PSRAM
+static volatile uint32_t ring_head = 0;       // next slot to write
+static volatile uint32_t ring_tail = 0;       // next slot to read
+static volatile bool ring_used[RING_SLOTS] = {false};  // which slots have data
+static SemaphoreHandle_t ring_mutex = NULL;
 
 // ── Opus encoder state (used when AUDIO_FORMAT_OPUS_ACTIVE) ────────
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
@@ -178,6 +249,12 @@ static ogg_packet ogg_opus_tags;
 static int opus_frame_size_samples = 0;  // SAMPLE_RATE * AUDIO_OPUS_FRAME_MS / 1000
 static uint8_t *opus_encoded_buf = NULL;
 static ogg_page ogg_page_buf;
+
+// ── Incremental Opus file state ────────────────────────────────────
+static File opus_file;                // currently open .opus file
+static ogg_int64_t opus_granulepos;   // running granule position across frames
+static ogg_int64_t opus_packetno;     // running packet number
+static uint32_t opus_encoded_bytes;   // encoded bytes since last flush
 
 // Build OpusHead identification header (RFC 7845)
 static void generate_opus_head_packet() {
@@ -278,360 +355,406 @@ static void opus_deinit() {
 }
 #endif // AUDIO_FORMAT_OPUS_ACTIVE
 
-// ── Audio capture task with VAD (records continuously) ─────────────
+// ── audioInit: I2S + AFE + Opus + A/B buffers ─────────────────────
 
-void audioTask(void *pvParameters) {
-    // Direct I2S driver — PDM CLK maps to bck_io_num, DIN to data_in_num
-    i2s_config_t i2s_config = {
-        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
-        .sample_rate = SAMPLE_RATE,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 4,
-        .dma_buf_len = 1024,  // ESP-IDF max; 4 × 1024 = 4096 samples = 256ms ring buffer
-        .use_apll = false,
-        .tx_desc_auto_clear = false,
-        .fixed_mclk = 0,
-        .mclk_multiple = I2S_MCLK_MULTIPLE_DEFAULT,
-        .bits_per_chan = I2S_BITS_PER_CHAN_DEFAULT,
-    };
-    i2s_pin_config_t pin_config = {
-        .mck_io_num = I2S_PIN_NO_CHANGE,
-        .bck_io_num = I2S_PIN_NO_CHANGE,
-        .ws_io_num = I2S_MIC_CLK,    // PDM CLK = GPIO42 (mapped via fsPin)
-        .data_out_num = I2S_PIN_NO_CHANGE,
-        .data_in_num = I2S_MIC_DIN,  // PDM DIN = GPIO41
-    };
-    esp_err_t err = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
-    if (err != ESP_OK) {
-        LOG_I2S(LOG_ERROR, "i2s_driver_install failed: %d", err);
+void audioInit() {
+    sdMutex = xSemaphoreCreateRecursiveMutex();
+
+    // Initialize PDM microphone via legacy I2S driver
+    pdmRxInit();
+
+    // Initialize AFE (VAD + NSNET2 + AGC)
+    afeInit();
+
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+    opus_init();
+#endif
+
+    // Allocate ring buffer slots in PSRAM
+    ring_mutex = xSemaphoreCreateMutex();
+    uint32_t slotBytes = RING_CHUNK_SAMPLES * sizeof(int16_t);
+    for (int i = 0; i < RING_SLOTS; i++) {
+        ring_buf[i] = (int16_t*)ps_malloc(slotBytes);
+        if (!ring_buf[i]) {
+            LOG_AUDIO(LOG_ERROR, "Ring slot %d malloc failed", i);
+            return;
+        }
+        ring_used[i] = false;
+    }
+    ring_head = 0;
+    ring_tail = 0;
+    LOG_AUDIO(LOG_INFO, "Ring buffer ready (%d slots × %d samples = %dms)",
+              RING_SLOTS, RING_CHUNK_SAMPLES,
+              (RING_SLOTS * RING_CHUNK_SAMPLES * 1000) / SAMPLE_RATE);
+
+    // Upload task — offloads blocking HTTP uploads from writerTask
+    uploadQueue = xQueueCreate(4, sizeof(UploadRequest));
+    xTaskCreatePinnedToCore(uploadWorkerTask, "uploader", 8192, NULL, 1, &uploadTaskHandle, 1);
+    LOG_AUDIO(LOG_INFO, "Upload task started (queue depth=4)");
+}
+
+void setWriterTaskHandle(TaskHandle_t handle) {
+    writerTaskHandle = handle;
+}
+
+void startRecording(uint32_t durationMs) {
+    if (recording) return;
+    recordDurationMs = durationMs;
+    recording = true;
+}
+
+void toggleVAD() {
+    vadMode = !vadMode;
+    LOG_VAD(LOG_INFO, "Mode: %s", vadMode ? "VAD (auto)" : "Fixed duration");
+}
+
+// ── AFE feed task — reads I2S, feeds AFE (Core 0) ─────────────────
+
+void afeFeedTask(void *pvParameters) {
+    if (!afe_handle || !afe_data) {
+        LOG_AFE(LOG_ERROR, "Feed task: AFE not initialized, deleting");
+        vTaskDelete(NULL);
         return;
     }
-    err = i2s_set_pin(I2S_NUM_0, &pin_config);
-    if (err != ESP_OK) {
-        LOG_I2S(LOG_ERROR, "i2s_set_pin failed: %d", err);
-        return;
-    }
-    i2s_set_clk(I2S_NUM_0, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
-    LOG_I2S(LOG_INFO, "PDM Mic ready (CLK=42, DIN=41) — DMA: 4 × 1024 samples");
-
-    // Allocate A/B buffers in PSRAM — 30 seconds each
-    // Multiple 200ms DMA reads accumulate before each swap/save
-    uint32_t bufBytes = (SAMPLE_RATE * SAMPLE_BITS / 8) * 30;
-    bufA = (int16_t*)ps_malloc(bufBytes);
-    bufB = (int16_t*)ps_malloc(bufBytes);
-    if (!bufA || !bufB) {
-        LOG_AUDIO(LOG_ERROR, "PSRAM malloc failed");
-        return;
-    }
-    bufCapacity = bufBytes / sizeof(int16_t);
-    audioBuf = bufA;
-    writeBuf = bufB;
-    audioCount = 0;
-    writeCount = 0;
-    writeDone = true;
-    LOG_AUDIO(LOG_INFO, "A/B buffers ready (%d samples each)", bufCapacity);
-
-    // VAD state
-    bool voiceActive = false;
-    uint32_t silenceStartMs = 0;  // millis() when silence began
-    float startThreshold = VAD_THRESHOLD;
-    uint32_t startTime = millis();
-    uint32_t startupGraceMs = 2000;
-
-    // RMS analysis — 200ms DMA-aligned reads (no accumulation needed)
-    int analysisCapacity = SAMPLE_RATE * VAD_ANALYSIS_MS / 1000;  // 3200 samples
-    int16_t* analysisBuffer = (int16_t*)ps_malloc(analysisCapacity * sizeof(int16_t));
-    if (!analysisBuffer) {
-        LOG_AUDIO(LOG_ERROR, "Analysis buffer PSRAM malloc failed");
-        return;
-    }
-    float smoothedRMS = 0;
-
-    // Median filter
-    #define MEDIAN_SAMPLES 5
-    float rmsHistory[MEDIAN_SAMPLES] = {0};
-    int rmsIndex = 0;
-    int rmsCount = 0;
+    int chunksize = afe_handle->get_feed_chunksize(afe_data);
+    int nch = afe_handle->get_feed_channel_num(afe_data);
+    int16_t *buf = (int16_t *)heap_caps_malloc(
+        chunksize * nch * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    assert(buf);
+    LOG_AFE(LOG_INFO, "Feed task started (chunksize=%d, nch=%d)", chunksize, nch);
 
     while (true) {
-        // DMA fill: CPU sleeps until 3200 samples available in ring buffer
         size_t bytesRead = 0;
-        i2s_read(I2S_NUM_0, analysisBuffer, analysisCapacity * sizeof(int16_t),
-                 &bytesRead, portMAX_DELAY);
-        if (bytesRead == 0) continue;
-
-        int samplesRead = bytesRead / 2;
-        uint32_t expectedBytes = analysisCapacity * sizeof(int16_t);
-        if (bytesRead < expectedBytes) {
-            dmaPartialCount++;
-            LOG_AUDIO(LOG_WARN, "DMA partial read: %d/%d bytes (overflow likely)",
-                      (int)bytesRead, (int)expectedBytes);
-        }
-
-        // Compute RMS on RAW audio (before gain) for VAD
-        smoothedRMS = computeRMS(analysisBuffer, samplesRead);
-
-        // Apply volume gain in-place (recording path uses this buffer)
-        for (int i = 0; i < samplesRead; i++) {
-            analysisBuffer[i] <<= VOLUME_GAIN;
-        }
-
-        // Copy gain-applied audio to recording buffer
-        if (recording) {
-            // Flush when buffer full
-            if (audioCount + samplesRead > bufCapacity) {
-                uint32_t waitStart = millis();
-                while (!writeDone) {
-                    if (millis() - waitStart > VAD_STALL_TIMEOUT_MS) {
-                        LOG_AUDIO(LOG_ERROR, "Writer stall timeout: dropping buffer (%lu samples)",
-                                  (unsigned long)audioCount);
-                        audioCount = 0;
-                        break;
-                    }
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                }
-                uint32_t waitMs = millis() - waitStart;
-                if (waitMs > 0) {
-                    writerStallCount++;
-                    if (waitMs > writerStallMaxMs) writerStallMaxMs = waitMs;
-                    LOG_AUDIO(LOG_WARN, "Writer stall: waited %lu ms", (unsigned long)waitMs);
-                }
-                int16_t* tmp = writeBuf;
-                writeBuf = audioBuf;
-                writeCount = audioCount;
-                audioBuf = tmp;
-                audioCount = 0;
-                bufferReady = true;
-                writeDone = false;
-                if (writerTaskHandle) xTaskNotifyGive(writerTaskHandle);
+        i2s_read(I2S_NUM_0, buf, chunksize * nch * sizeof(int16_t), &bytesRead, pdMS_TO_TICKS(100));
+        if (bytesRead > 0) {
+            int samplesRead = bytesRead / sizeof(int16_t);
+            if (samplesRead < chunksize * nch) {
+                dmaPartialCount++;
             }
-
-            memcpy(audioBuf + audioCount, analysisBuffer, bytesRead);
-            audioCount += samplesRead;
-            totalSamplesCaptured += samplesRead;
+            // Feed raw audio to AFE — VADNet is trained on un-amplified levels
+            afe_handle->feed(afe_data, buf);
         }
 
-        // Median filter
-        rmsHistory[rmsIndex] = smoothedRMS;
-        rmsIndex = (rmsIndex + 1) % MEDIAN_SAMPLES;
-        if (rmsCount < MEDIAN_SAMPLES) rmsCount++;
-
-        float medianRMS = compute_median(rmsHistory, rmsCount);
-
-        // Log RMS periodically
-        static uint32_t lastRecLog = 0;
-        uint32_t now = millis();
-        if (now - lastRecLog >= 1000) {
-            LOG_VAD(LOG_INFO, "RMS=%.0f, median=%.0f", smoothedRMS, medianRMS);
-            lastRecLog = now;
-        }
-
-        // VAD logic — use median for robustness against spikes
-        if (!voiceActive && medianRMS > startThreshold && (now - startTime) > startupGraceMs) {
-            voiceActive = true;
-            silenceStartMs = now;  // reset silence tracker
-            audioCount = 0;
-            recording = true;
-            utteranceId++;           // Next utterance
-            chunkIndex = 0;          // Reset chunk counter
-            isFinal = false;         // Not final yet
-            LOG_VAD(LOG_INFO, "Voice started (median=%.0f, start=%.0f)", medianRMS, startThreshold);
-        } else if (voiceActive) {
-            if (medianRMS > startThreshold) {
-                silenceStartMs = now;  // voice still present — reset silence timer
-            }
-
-            uint32_t silenceMs = now - silenceStartMs;
-
-            // Log RMS silence periodically
-            static uint32_t lastSilenceLog = 0;
-            if (now - lastSilenceLog >= 1000) {
-                LOG_VAD(LOG_INFO, "silence=%d ms / %d", silenceMs, VAD_SILENCE_MS);
-                lastSilenceLog = now;
-            }
-
-            if (silenceMs >= VAD_SILENCE_MS) {
-                voiceActive = false;
-                recording = false;
-                isFinal = true;          // Signal this is the last chunk
-                // Flush remaining partial buffer
-                if (audioCount > 0 && writeDone) {
-                    int16_t* tmp = writeBuf;
-                    writeBuf = audioBuf;
-                    writeCount = audioCount;
-                    audioBuf = tmp;
-                    audioCount = 0;
-                    bufferReady = true;
-                    writeDone = false;
-                    if (writerTaskHandle) xTaskNotifyGive(writerTaskHandle);
-                } else {
-                    if (audioCount > 0) {
-                        flushDropCount++;
-                        LOG_AUDIO(LOG_WARN, "Flush drop: %lu samples discarded (writeDone=%d)",
-                                  (unsigned long)audioCount, (int)writeDone);
-                    }
-                    audioCount = 0;
-                }
-                LOG_VAD(LOG_INFO, "Voice ended (silence %d ms)", silenceMs);
-                lastRecLog = 0;
-                // Keep median filter state — don't reset between recordings
-            }
-        }
     }
 }
 
-// ── Opus file writer ──────────────────────────────────────────────
+// ── AFE fetch task — fetches processed audio + VAD (Core 1) ───────
 
-#ifdef AUDIO_FORMAT_OPUS_ACTIVE
-static void write_opus_file(int16_t* pcm, uint32_t samples, const char* filename) {
-    // Phase 1: Open file and write OGG/Opus headers (GPIO 21 held)
+static void flushBuffer() {
+    // Signal writer task to drain whatever is in the ring buffer.
+    // The writer checks ring_tail < ring_head to know there's data.
+    if (writerTaskHandle) {
+        xTaskNotifyGive(writerTaskHandle);
+    }
+}
+
+static void processAfeResult(afe_fetch_result_t *result) {
+    static bool wasVoice = false;
+    bool isVoice = (result->vad_state == VAD_SPEECH);
+
+    if (isVoice && !wasVoice) {
+        LOG_VAD(LOG_INFO, "Voice started (utterance %lu) vol=%.1f dBFS cache=%d",
+                (unsigned long)utteranceId + 1, result->data_volume, result->vad_cache_size);
+    } else if (!isVoice && wasVoice) {
+        LOG_VAD(LOG_INFO, "Voice ended — signaling writer to drain ring");
+    }
+
+    if (isVoice) {
+        if (!wasVoice) {
+            recording = true;
+            utteranceId++;
+            chunkIndex = 0;
+            isFinal = false;
+        }
+
+        // Write to ring buffer slot at ring_head
+        xSemaphoreTake(ring_mutex, portMAX_DELAY);
+        uint32_t next_head = (ring_head + 1) % RING_SLOTS;
+        if (ring_used[next_head]) {
+            // Ring full — drop oldest slot and advance tail
+            LOG_AUDIO(LOG_WARN, "Ring overflow: dropping slot %lu", (unsigned long)ring_tail);
+            ring_used[ring_tail] = false;
+            ring_tail = next_head;
+            flushDropCount++;
+        }
+
+        // Handle VAD cache (pre-trigger audio — avoids truncating first word)
+        uint32_t slotOffset = 0;
+        if (result->vad_cache_size > 0 && !wasVoice) {
+            int cacheSamples = result->vad_cache_size / sizeof(int16_t);
+            if (cacheSamples <= RING_CHUNK_SAMPLES) {
+                memcpy(ring_buf[ring_head], result->vad_cache, result->vad_cache_size);
+                slotOffset = cacheSamples;
+            }
+        }
+
+        // Copy AFE-processed audio (NS-cleaned) into ring slot
+        int samples = result->data_size / sizeof(int16_t);
+        uint32_t available = RING_CHUNK_SAMPLES - slotOffset;
+        uint32_t toCopy = (samples <= available) ? samples : available;
+        memcpy(ring_buf[ring_head] + slotOffset, result->data, toCopy * sizeof(int16_t));
+
+        ring_used[ring_head] = true;
+        ring_head = next_head;
+        xSemaphoreGive(ring_mutex);
+
+        totalSamplesCaptured += toCopy;
+
+        // Wake writer to drain ring before it overflows
+        if (writerTaskHandle) xTaskNotifyGive(writerTaskHandle);
+    } else if (wasVoice) {
+        recording = false;
+        isFinal = true;
+        flushBuffer();
+    }
+    wasVoice = isVoice;
+}
+
+void afeFetchTask(void *pvParameters) {
+    if (!afe_handle || !afe_data) {
+        LOG_AFE(LOG_ERROR, "Fetch task: AFE not initialized, deleting");
+        vTaskDelete(NULL);
+        return;
+    }
+    LOG_AFE(LOG_INFO, "Fetch task started");
+
+    while (true) {
+        afe_fetch_result_t *result = afe_handle->fetch(afe_data);
+        if (!result || result->ret_value == ESP_FAIL) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        processAfeResult(result);
+    }
+}
+
+// ── Incremental Opus file API ──────────────────────────────────────
+// Call start when voice begins, write per ring drain, end on silence.
+
+static void opus_file_start(const char* filename) {
     sdTake();
-    File file = SD.open(filename, FILE_WRITE);
-    if (!file) {
-        sdGive();
-        LOG_AUDIO(LOG_ERROR, "Failed to open %s", filename);
+    opus_file = SD.open(filename, FILE_WRITE);
+    sdGive();
+    if (!opus_file) {
+        LOG_AUDIO(LOG_ERROR, "opus_file_start: failed to open %s", filename);
         return;
     }
 
     ogg_stream_reset_serialno(&ogg_stream, ogg_serialno);
 
+    // OpusHead packet
     ogg_opus_head.b_o_s = 1;
     ogg_opus_head.e_o_s = 0;
     ogg_opus_head.granulepos = 0;
     ogg_opus_head.packetno = 0;
     ogg_stream_packetin(&ogg_stream, &ogg_opus_head);
-    ogg_write_page(file);
+    sdTake();
+    ogg_write_page(opus_file);
+    sdGive();
 
+    // OpusTags packet
     ogg_opus_tags.b_o_s = 0;
     ogg_opus_tags.e_o_s = 0;
     ogg_opus_tags.granulepos = 0;
     ogg_opus_tags.packetno = 1;
     ogg_stream_packetin(&ogg_stream, &ogg_opus_tags);
-    ogg_write_page(file);
+    sdTake();
+    ogg_write_page(opus_file);
     sdGive();
 
-    // Phase 2: Encode audio frames (CPU only, no GPIO 21) then flush
-    // accumulated OGG pages to SD in batches.
-    int16_t *pcm_ptr = pcm;
-    int samples_remaining = samples;
-    ogg_int64_t granulepos = 0;
-    ogg_int64_t packetno = 2;
-    int frame_count = 0;
+    opus_granulepos = 0;
+    opus_packetno = 2;
+    opus_encoded_bytes = 0;
 
-    while (samples_remaining >= opus_frame_size_samples) {
-        // Opus encode — pure CPU, no SPI
-        int encoded_bytes = opus_encode(opus_encoder, pcm_ptr,
-                                       opus_frame_size_samples,
-                                       opus_encoded_buf, 4000);
+    LOG_AUDIO(LOG_INFO, "opus_file_start: %s", filename);
+}
+
+// Returns number of unconsumed samples (remainder < opus_frame_size_samples).
+static int opus_file_write(const int16_t* pcm, int samples) {
+    const int16_t *ptr = pcm;
+    int remaining = samples;
+
+    while (remaining >= opus_frame_size_samples) {
+        int encoded_bytes = opus_encode(opus_encoder, ptr,
+                                        opus_frame_size_samples,
+                                        opus_encoded_buf, 4000);
         if (encoded_bytes > 0) {
-            granulepos += (ogg_int64_t)opus_frame_size_samples * 48000 / SAMPLE_RATE;
+            opus_granulepos += (ogg_int64_t)opus_frame_size_samples * 48000 / SAMPLE_RATE;
             ogg_packet op = {0};
             op.packet = opus_encoded_buf;
             op.bytes = encoded_bytes;
             op.b_o_s = 0;
             op.e_o_s = 0;
-            op.granulepos = granulepos;
-            op.packetno = packetno++;
+            op.granulepos = opus_granulepos;
+            op.packetno = opus_packetno++;
             ogg_stream_packetin(&ogg_stream, &op);
         }
-        pcm_ptr += opus_frame_size_samples;
-        samples_remaining -= opus_frame_size_samples;
-
-        // Flush buffered OGG pages every 10 frames (~200ms of audio)
-        if (++frame_count % 10 == 0) {
-            sdTake();
-            ogg_write_page(file);
-            sdGive();
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
+        ptr += opus_frame_size_samples;
+        remaining -= opus_frame_size_samples;
+        opus_encoded_bytes += (encoded_bytes > 0) ? encoded_bytes : 0;
     }
 
-    // Phase 3: Write EOS packet, flush, and close (each SD op guarded)
+    // Flush accumulated pages every ~4KB encoded output (~1.3s at 24kbps)
+    if (opus_encoded_bytes >= 4096) {
+        sdTake();
+        ogg_write_page(opus_file);
+        sdGive();
+        opus_encoded_bytes = 0;
+        vTaskDelay(pdMS_TO_TICKS(1));  // yield to other tasks
+    }
+
+    return remaining;  // unconsumed samples
+}
+
+static void opus_file_end() {
+    if (!opus_file) return;
+
     sdTake();
+
+    // Flush any remaining encoded audio pages
+    ogg_write_page(opus_file);
+
+    // Write EOS packet — e_o_s flag on the page signals end-of-stream.
+    // libogg drops zero-byte packets, so use a 1-byte body.
+    uint8_t eos_data = 0;
     ogg_packet eos_op = {0};
-    eos_op.bytes = 0;
+    eos_op.packet = &eos_data;
+    eos_op.bytes = 1;
     eos_op.b_o_s = 0;
     eos_op.e_o_s = 1;
-    eos_op.granulepos = granulepos;
-    eos_op.packetno = packetno;
+    eos_op.granulepos = opus_granulepos;
+    eos_op.packetno = opus_packetno;
     ogg_stream_packetin(&ogg_stream, &eos_op);
-    ogg_write_page(file);
-    sdGive();
 
-    sdTake();
-    file.flush();
-    sdGive();
+    // Flush forces the EOS page out even if not enough packets for a normal page
+    if (ogg_stream_flush(&ogg_stream, &ogg_page_buf) != 0) {
+        opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
+        opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
+    }
 
-    sdTake();
-    uint32_t fileSize = file.size();
-    file.close();
-    sdGive();
+    opus_file.flush();
+    uint32_t fileSize = opus_file.size();
+    opus_file.close();
+    sdGive();  // MUST be after file.close()
 
-    LOG_AUDIO(LOG_INFO, "Saved: %s (%d bytes)", filename, fileSize);
+    LOG_AUDIO(LOG_INFO, "opus_file_end: %lu bytes, granule=%lld",
+              (unsigned long)fileSize, (long long)opus_granulepos);
 }
-#endif
+
+// ── Upload worker task — non-blocking upload from queue ────────────
+
+static void uploadWorkerTask(void *pvParameters) {
+    UploadRequest req;
+    while (true) {
+        if (xQueueReceive(uploadQueue, &req, portMAX_DELAY) == pdTRUE) {
+            upload_if_connected(req);
+        }
+    }
+}
 
 // ── Write task (reads PSRAM, writes SD, uploads) ──────────────────
 
 void writerTask(void *pvParameters) {
+    // Frame-level streaming: no large accumulation buffer.
+    // Frame buffer holds remainder < opus_frame_size_samples between drains.
+    int16_t frame_buf[512];
+    int frame_rem = 0;
+    bool prev_recording = false;
+
+    // Local PCM buffer for draining ring — RING_SLOTS * RING_CHUNK_SAMPLES
+    // = 4096 samples = 8KB. Temporary: copied from ring, fed to encoder, discarded.
+    int16_t pcm_buf[RING_SLOTS * RING_CHUNK_SAMPLES];
+
     while (true) {
-        // Block until audio task signals a buffer is ready
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-        // Write the ready buffer to SD
-        uint32_t samplesToWrite = writeCount;
-        totalSamplesWritten += samplesToWrite;
-        uint32_t totalBytes = samplesToWrite * 2;
-
-        char filename[64];
+        // Detect recording transitions
+        if (!prev_recording && recording) {
+            // Voice started — open new Opus file
+            char filename[64];
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
-        snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
-        write_opus_file(writeBuf, samplesToWrite, filename);
+            snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+            opus_file_start(filename);
+            strcpy(lastSavedFile, filename);
 #else
-        snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
-
-        // Open file
-        sdTake();
-        File file = SD.open(filename, FILE_WRITE);
-        sdGive();
-
-        if (file) {
-            // Write header
-            uint8_t wav_header[WAV_HEADER_SIZE];
-            generate_wav_header(wav_header, totalBytes, SAMPLE_RATE);
-            sdTake();
-            file.write(wav_header, WAV_HEADER_SIZE);
-            sdGive();
-
-            // Write audio data
-            sdTake();
-            file.write((uint8_t*)writeBuf, totalBytes);
-            sdGive();
-
-            // Flush and close
-            sdTake();
-            file.flush();
-            sdGive();
-
-            sdTake();
-            file.close();
-            sdGive();
-
-            LOG_AUDIO(LOG_INFO, "Saved: %s (%d bytes)", filename, totalBytes + WAV_HEADER_SIZE);
-        } else {
-            LOG_AUDIO(LOG_ERROR, "Failed to open %s", filename);
-        }
+            snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
 #endif
+            prev_recording = true;
+        } else if (prev_recording && !recording) {
+            // Voice ended — finalize file, then queue upload with metadata snapshot
+            LOG_AUDIO(LOG_INFO, "writer: voice ended, finalizing");
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+            opus_file_end();
+#endif
+            prev_recording = false;
+            UploadRequest req;
+            strncpy(req.filename, lastSavedFile, sizeof(req.filename) - 1);
+            req.filename[sizeof(req.filename) - 1] = '\0';
+            req.utteranceId = utteranceId;
+            req.chunkIndex = chunkIndex;
+            req.isFinal = isFinal;
+            chunkIndex++;
+            if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
+                LOG_AUDIO(LOG_WARN, "Upload queue full, skipping %s", req.filename);
+            }
+            continue;
+        }
 
-        // Signal audio task that buffer is free (before potentially slow upload)
-        bufferReady = false;
-        writeDone = true;
+        // Drain ring buffer into local PCM buffer
+        xSemaphoreTake(ring_mutex, portMAX_DELAY);
+        int slots_drained = 0;
+        int pcm_count = 0;
+        // Carry over remainder from previous drain
+        if (frame_rem > 0) {
+            memcpy(pcm_buf, frame_buf, frame_rem * sizeof(int16_t));
+            pcm_count = frame_rem;
+        }
+        while (ring_used[ring_tail] && ring_tail != ring_head) {
+            if (pcm_count + RING_CHUNK_SAMPLES > (int)(sizeof(pcm_buf) / sizeof(pcm_buf[0]))) {
+                LOG_AUDIO(LOG_WARN, "writer: pcm_buf overflow");
+                break;
+            }
+            memcpy(pcm_buf + pcm_count, ring_buf[ring_tail],
+                   RING_CHUNK_SAMPLES * sizeof(int16_t));
+            pcm_count += RING_CHUNK_SAMPLES;
+            slots_drained++;
+            ring_used[ring_tail] = false;
+            ring_tail = (ring_tail + 1) % RING_SLOTS;
+        }
+        // Snapshot ring state while still under lock
+        int used = 0;
+        for (int i = 0; i < RING_SLOTS; i++) {
+            if (ring_used[i]) used++;
+        }
+        xSemaphoreGive(ring_mutex);
 
-        // Upload manages its own sdMutex for each SD read/delete
-        upload_if_connected(filename);
-        chunkIndex++;  // Next chunk in this utterance
+        if (pcm_count == 0) {
+            // Ring empty — block until AFE notification or 50ms timeout.
+            // pdFALSE preserves notification count so multiple notifications
+            // arriving during encoding don't collapse to one.
+            ulTaskNotifyTake(pdFALSE, pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        int unconsumed = 0;
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+        // No new ring data and only leftover — nothing to encode yet
+        if (pcm_count == frame_rem && frame_rem > 0) {
+            continue;
+        }
+
+        totalSamplesWritten += pcm_count - frame_rem;
+
+        // Encode frames, returns unconsumed count
+        unconsumed = opus_file_write(pcm_buf, pcm_count);
+        if (unconsumed > 0) {
+            // Save remainder for next iteration (must be < opus_frame_size_samples)
+            memmove(frame_buf, pcm_buf + (pcm_count - unconsumed),
+                    unconsumed * sizeof(int16_t));
+        }
+        frame_rem = unconsumed;
+#else
+        // WAV fallback: write file on voice end (handled below)
+        totalSamplesWritten += pcm_count;
+#endif
+        // Loop back immediately — don't sleep, drain again if more data arrived
     }
 }

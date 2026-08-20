@@ -25,14 +25,6 @@
 // These match the source exactly. Tests verify correctness of the
 // algorithm, not a copy — the source uses the same math.
 
-static float computeRMS(int16_t* samples, int count) {
-    float sum = 0;
-    for (int i = 0; i < count; i++) {
-        sum += (float)samples[i] * (float)samples[i];
-    }
-    return sqrtf(sum / count);
-}
-
 static void generate_wav_header(uint8_t *wav_header, uint32_t wav_size, uint32_t sample_rate) {
     uint32_t file_size = wav_size + WAV_HEADER_SIZE - 8;
     uint32_t byte_rate = sample_rate * SAMPLE_BITS / 8;
@@ -97,68 +89,6 @@ static OpusPacket generate_opus_tags() {
     // Tag count = 0 (already zero from calloc)
     OpusPacket p = { buf, (int)tag_data_len };
     return p;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// RMS Tests — VAD core computation
-// ═══════════════════════════════════════════════════════════════════
-
-void test_rms_silence() {
-    int16_t samples[10] = {0};
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, computeRMS(samples, 10));
-}
-
-void test_rms_constant() {
-    int16_t samples[10];
-    for (int i = 0; i < 10; i++) samples[i] = 1000;
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1000.0f, computeRMS(samples, 10));
-}
-
-void test_rms_negative_constant() {
-    int16_t samples[10];
-    for (int i = 0; i < 10; i++) samples[i] = -500;
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 500.0f, computeRMS(samples, 10));
-}
-
-void test_rms_varied() {
-    int16_t samples[4] = {100, -100, 200, -200};
-    // sqrt((10000+10000+40000+40000)/4) = sqrt(25000) = 158.11
-    TEST_ASSERT_FLOAT_WITHIN(1.0f, 158.11f, computeRMS(samples, 4));
-}
-
-void test_rms_single_sample() {
-    int16_t samples[1] = {3000};
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 3000.0f, computeRMS(samples, 1));
-}
-
-void test_rms_symmetric() {
-    // RMS of symmetric signal = amplitude
-    int16_t samples[2] = {1000, -1000};
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1000.0f, computeRMS(samples, 2));
-}
-
-void test_rms_speech_level() {
-    // Typical speech RMS is 200-2000; VAD_THRESHOLD is 1600
-    int16_t samples[320];  // 20ms at 16kHz
-    for (int i = 0; i < 320; i++) {
-        // Simulate speech-like signal
-        samples[i] = (int16_t)(800 * sin(2.0 * M_PI * 200 * i / 16000));
-    }
-    float rms = computeRMS(samples, 320);
-    // RMS of sine wave = amplitude / sqrt(2) ≈ 800/1.414 ≈ 566
-    TEST_ASSERT_TRUE(rms > 500 && rms < 650);
-}
-
-void test_rms_vad_boundary() {
-    // Test that RMS correctly distinguishes above/below VAD_THRESHOLD (1600)
-    int16_t below[320];
-    int16_t above[320];
-    for (int i = 0; i < 320; i++) {
-        below[i] = (int16_t)(500 * sin(2.0 * M_PI * 200 * i / 16000));  // ~353 RMS
-        above[i] = (int16_t)(4000 * sin(2.0 * M_PI * 200 * i / 16000)); // ~2828 RMS
-    }
-    TEST_ASSERT_TRUE(computeRMS(below, 320) < 1600);
-    TEST_ASSERT_TRUE(computeRMS(above, 320) > 1600);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -769,35 +699,6 @@ void test_accessors_nonzero() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// VAD Threshold Tests
-// ═══════════════════════════════════════════════════════════════════
-
-void test_vad_threshold_value() {
-    // VAD_THRESHOLD is 1600 — speech should be above, silence below
-    int16_t speech[320];
-    int16_t silence[320];
-    for (int i = 0; i < 320; i++) {
-        speech[i] = (int16_t)(5000 * sin(2.0 * M_PI * 300 * i / 16000));
-        silence[i] = 0;
-    }
-    TEST_ASSERT_TRUE(computeRMS(speech, 320) > 1600);
-    TEST_ASSERT_TRUE(computeRMS(silence, 320) < 1600);
-}
-
-void test_vad_silence_detection() {
-    int16_t silence[320] = {0};
-    TEST_ASSERT_TRUE(computeRMS(silence, 320) < 1600);
-}
-
-void test_vad_voice_detection() {
-    int16_t voice[320];
-    for (int i = 0; i < 320; i++) {
-        voice[i] = (int16_t)(6000 * sin(2.0 * M_PI * 300 * i / 16000));
-    }
-    TEST_ASSERT_TRUE(computeRMS(voice, 320) > 1600);
-}
-
-// ═══════════════════════════════════════════════════════════════════
 // Granulepos Overflow Tests
 // ═══════════════════════════════════════════════════════════════════
 
@@ -823,71 +724,6 @@ void test_granulepos_packetno_monotonic() {
         packetno = i + 2;  // Head=0, Tags=1, audio starts at 2
         TEST_ASSERT_TRUE(packetno > prev);
     }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Median Filter Tests
-// ═══════════════════════════════════════════════════════════════════
-
-static float compute_median(float* history, int count) {
-    float sorted[count];
-    memcpy(sorted, history, count * sizeof(float));
-    for (int i = 0; i < count - 1; i++) {
-        for (int j = i + 1; j < count; j++) {
-            if (sorted[i] > sorted[j]) {
-                float tmp = sorted[i];
-                sorted[i] = sorted[j];
-                sorted[j] = tmp;
-            }
-        }
-    }
-    return sorted[count / 2];
-}
-
-void test_median_odd_count() {
-    float data[5] = {100, 200, 300, 400, 500};
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 300.0f, compute_median(data, 5));
-}
-
-void test_median_single_element() {
-    float data[1] = {42.0f};
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 42.0f, compute_median(data, 1));
-}
-
-void test_median_two_elements() {
-    float data[2] = {100, 200};
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 200.0f, compute_median(data, 2));
-}
-
-void test_median_unsorted() {
-    float data[5] = {500, 100, 300, 200, 400};
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 300.0f, compute_median(data, 5));
-}
-
-void test_median_all_same() {
-    float data[5] = {100, 100, 100, 100, 100};
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, compute_median(data, 5));
-}
-
-void test_median_does_not_modify_input() {
-    float data[5] = {500, 100, 300, 200, 400};
-    compute_median(data, 5);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 500.0f, data[0]);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, data[1]);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 300.0f, data[2]);
-}
-
-void test_median_vad_scenario() {
-    // Simulate VAD history with one spike (outlier robustness)
-    float data[5] = {200, 250, 3000, 220, 280};
-    // Median should ignore the spike
-    TEST_ASSERT_TRUE(compute_median(data, 5) < 500);
-}
-
-void test_median_four_elements() {
-    float data[4] = {10, 20, 30, 40};
-    // Median of even count: index 2 (0-indexed) = 30
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 30.0f, compute_median(data, 4));
 }
 
 // ── Utterance tracking globals (match audio.cpp) ───────────────────
@@ -1110,16 +946,6 @@ void tearDown() {}
 int main() {
     UNITY_BEGIN();
 
-    // ── RMS ──
-    RUN_TEST(test_rms_silence);
-    RUN_TEST(test_rms_constant);
-    RUN_TEST(test_rms_negative_constant);
-    RUN_TEST(test_rms_varied);
-    RUN_TEST(test_rms_single_sample);
-    RUN_TEST(test_rms_symmetric);
-    RUN_TEST(test_rms_speech_level);
-    RUN_TEST(test_rms_vad_boundary);
-
     // ── WAV Header ──
     RUN_TEST(test_wav_header_riff_magic);
     RUN_TEST(test_wav_header_wave_format);
@@ -1198,24 +1024,9 @@ int main() {
     RUN_TEST(test_accessors_initial_zero);
     RUN_TEST(test_accessors_nonzero);
 
-    // ── VAD ──
-    RUN_TEST(test_vad_threshold_value);
-    RUN_TEST(test_vad_silence_detection);
-    RUN_TEST(test_vad_voice_detection);
-
     // ── Granulepos ──
     RUN_TEST(test_granulepos_long_recording);
     RUN_TEST(test_granulepos_packetno_monotonic);
-
-    // ── Median Filter ──
-    RUN_TEST(test_median_odd_count);
-    RUN_TEST(test_median_single_element);
-    RUN_TEST(test_median_two_elements);
-    RUN_TEST(test_median_unsorted);
-    RUN_TEST(test_median_all_same);
-    RUN_TEST(test_median_does_not_modify_input);
-    RUN_TEST(test_median_vad_scenario);
-    RUN_TEST(test_median_four_elements);
 
     // ── Upload ──
     RUN_TEST(test_upload_not_connected_skips);

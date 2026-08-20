@@ -4,14 +4,7 @@
 // Audio settings
 #define SAMPLE_RATE     16000
 
-// VAD settings
-#define VAD_THRESHOLD   1600
-#define VAD_SILENCE_MS  1500
-#define VAD_CHUNK_MS    30
-#define VAD_ANALYSIS_MS 200
-#define VAD_GAIN        3
-
-// Stall protection — max time audioTask waits for writer before dropping buffer
+// Stall protection — max time A/B buffer swap waits for writer before dropping
 #define VAD_STALL_TIMEOUT_MS  3000
 
 // Public state
@@ -32,7 +25,8 @@ extern volatile bool isFinal;           // Set true when silence ends utterance
 // Functions
 void audioInit();
 void setWriterTaskHandle(TaskHandle_t handle);
-void audioTask(void *pvParameters);
+void afeFeedTask(void *pvParameters);
+void afeFetchTask(void *pvParameters);
 void writerTask(void *pvParameters);
 void startRecording(uint32_t durationMs);
 void toggleVAD();

@@ -34,6 +34,7 @@
 #define LOG_I2S_LEVEL     LOG_INFO
 #define LOG_AUDIO_LEVEL   LOG_DEBUG
 #define LOG_VAD_LEVEL     LOG_INFO
+#define LOG_AFE_LEVEL     LOG_INFO
 #define LOG_UPLOAD_LEVEL  LOG_WARN
 #define LOG_CMD_LEVEL     LOG_DEBUG
 #define LOG_MIC_LEVEL     LOG_DEBUG
@@ -74,6 +75,8 @@
     do { if (LOG_AUDIO_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[AUDIO] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_VAD(lvl, fmt, ...) \
     do { if (LOG_VAD_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[VAD] " fmt "\n", ##__VA_ARGS__); } } while(0)
+#define LOG_AFE(lvl, fmt, ...) \
+    do { if (LOG_AFE_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[AFE] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_UPLOAD(lvl, fmt, ...) \
     do { if (LOG_UPLOAD_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[UPLOAD] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_CMD(lvl, fmt, ...) \
