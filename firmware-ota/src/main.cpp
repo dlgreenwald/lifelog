@@ -130,7 +130,7 @@ void setup() {
 
     xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, 5, NULL, 0);
     xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, 5, &audioTaskHandle, 1);
-    xTaskCreatePinnedToCore(writerTask, "writer", 32768, NULL, 2, &writerTaskHandle, 1);
+    xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, 5, &writerTaskHandle, 1);
     setWriterTaskHandle(writerTaskHandle);
 
     // Disable task watchdog for idle task only — AFE tasks now use

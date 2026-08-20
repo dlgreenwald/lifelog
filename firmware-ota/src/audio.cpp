@@ -210,7 +210,7 @@ static void afeInit() {
 
     // Enable AGC — default is off, audio too faint without it
     afe_config->agc_init = true;
-    afe_config->agc_compression_gain_db = 20;  // compression gain (default 9)
+    afe_config->agc_compression_gain_db = 9;   // compression gain (default)
     afe_config->agc_target_level_dbfs = 3;     // target -3 dBFS envelope
     afe_config->afe_linear_gain = 3.0;         // output multiplier (default 1.0)
 
@@ -236,7 +236,7 @@ static void afeInit() {
 // Consumer: writerTask — reads ring_tail
 // Each slot holds one AFE chunk (~32ms at 16kHz)
 
-#define RING_SLOTS        8
+#define RING_SLOTS       16
 #define RING_CHUNK_SAMPLES 512   // matches AFE feed chunksize
 
 static int16_t* ring_buf[RING_SLOTS] = {0};  // ring slot buffers in PSRAM
@@ -261,6 +261,8 @@ static File opus_file;                // currently open .opus file
 static ogg_int64_t opus_granulepos;   // running granule position across frames
 static ogg_int64_t opus_packetno;     // running packet number
 static uint32_t opus_encoded_bytes;   // encoded bytes since last flush
+static bool file_preopened = false;   // next file already open?
+static char preopened_name[64] = {0}; // name of pre-opened file
 
 // Build OpusHead identification header (RFC 7845)
 static void generate_opus_head_packet() {
@@ -394,7 +396,7 @@ void audioInit() {
               (RING_SLOTS * RING_CHUNK_SAMPLES * 1000) / SAMPLE_RATE);
 
     // Upload task — offloads blocking HTTP uploads from writerTask
-    uploadQueue = xQueueCreate(4, sizeof(UploadRequest));
+    uploadQueue = xQueueCreate(8, sizeof(UploadRequest));
     xTaskCreatePinnedToCore(uploadWorkerTask, "uploader", 8192, NULL, 1, &uploadTaskHandle, 1);
     LOG_AUDIO(LOG_INFO, "Upload task started (queue depth=4)");
 }
@@ -538,13 +540,16 @@ void afeFetchTask(void *pvParameters) {
 // Call start when voice begins, write per ring drain, end on silence.
 
 static void opus_file_start(const char* filename) {
-    sdTake();
-    opus_file = SD.open(filename, FILE_WRITE);
-    sdGive();
-    if (!opus_file) {
-        LOG_AUDIO(LOG_ERROR, "opus_file_start: failed to open %s", filename);
-        return;
+    if (!file_preopened) {
+        sdTake();
+        opus_file = SD.open(filename, FILE_WRITE);
+        sdGive();
+        if (!opus_file) {
+            LOG_AUDIO(LOG_ERROR, "opus_file_start: failed to open %s", filename);
+            return;
+        }
     }
+    file_preopened = false;
 
     ogg_stream_reset_serialno(&ogg_stream, ogg_serialno);
 
@@ -645,6 +650,24 @@ static void opus_file_end() {
 
     LOG_AUDIO(LOG_INFO, "opus_file_end: %lu bytes, granule=%lld",
               (unsigned long)fileSize, (long long)opus_granulepos);
+
+    // Pre-open next file while SD is idle — avoids ~150ms FAT32 create
+    // in opus_file_start when voice begins.
+    char next[64];
+    snprintf(next, sizeof(next), "/lifelog/rec_%05lu.opus", fileIndex);
+    sdTake();
+    File nextFile = SD.open(next, FILE_WRITE);
+    sdGive();
+    if (nextFile) {
+        opus_file = nextFile;
+        file_preopened = true;
+        strcpy(preopened_name, next);
+        fileIndex++;
+        LOG_AUDIO(LOG_INFO, "pre-opened: %s", next);
+    } else {
+        file_preopened = false;
+        LOG_AUDIO(LOG_WARN, "pre-open failed: %s", next);
+    }
 }
 
 // ── Upload worker task — non-blocking upload from queue ────────────
@@ -677,7 +700,11 @@ void writerTask(void *pvParameters) {
             // Voice started — open new Opus file
             char filename[64];
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
-            snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+            if (file_preopened) {
+                strcpy(filename, preopened_name);
+            } else {
+                snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+            }
             opus_file_start(filename);
             strcpy(lastSavedFile, filename);
 #else

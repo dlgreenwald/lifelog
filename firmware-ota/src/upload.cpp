@@ -10,7 +10,7 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
         return false;
     }
 
-    // Read entire file into RAM under single sdMutex hold
+    // Open file and get size — brief sdMutex hold
     sdTake();
     File file = SD.open(filename, FILE_READ);
     if (!file) {
@@ -19,24 +19,9 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
         return false;
     }
     uint32_t fileSize = file.size();
-    uint8_t *fileData = (uint8_t *)malloc(fileSize);
-    if (!fileData) {
-        file.close();
-        sdGive();
-        LOG_UPLOAD(LOG_ERROR, "OOM for %lu bytes", (unsigned long)fileSize);
-        return false;
-    }
-    int totalRead = 0;
-    while (totalRead < (int)fileSize) {
-        int n = file.read(fileData + totalRead, fileSize - totalRead);
-        if (n <= 0) break;
-        totalRead += n;
-    }
-    file.close();
     sdGive();
-    fileSize = (uint32_t)totalRead;
 
-    LOG_UPLOAD(LOG_INFO, "Uploading %s (%d bytes)...", filename, fileSize);
+    LOG_UPLOAD(LOG_INFO, "Uploading %s (%lu bytes)...", filename, (unsigned long)fileSize);
 
     // Build HTTP request — no SD access
     String boundary = "----LifeLogBoundary" + String(millis());
@@ -61,7 +46,9 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     WiFiClient client;
     if (!client.connect(SERVER_HOST, SERVER_PORT)) {
         LOG_UPLOAD(LOG_ERROR, "Connection failed");
-        free(fileData);
+        sdTake();
+        file.close();
+        sdGive();
         return false;
     }
 
@@ -82,14 +69,25 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     client.print(headers);
     client.print(body);
 
-    // Send file data from RAM — no sdMutex held
+    // Stream file in 4K chunks — sdMutex held only during each read(),
+    // released while WiFi sends so writerTask can drain the ring buffer.
+    // Yield after each chunk so I2S DMA can use the shared FSPI bus.
+    uint8_t readBuf[4096];
     uint32_t totalSent = 0;
     while (totalSent < fileSize) {
-        uint32_t chunk = min((uint32_t)4096, fileSize - totalSent);
-        client.write(fileData + totalSent, chunk);
-        totalSent += chunk;
+        sdTake();
+        int n = file.read(readBuf, sizeof(readBuf));
+        sdGive();
+        if (n <= 0) break;
+        client.write(readBuf, n);
+        totalSent += n;
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
-    free(fileData);
+
+    // Close file — brief sdMutex hold
+    sdTake();
+    file.close();
+    sdGive();
 
     // Send multipart terminator — no SD access
     client.print("\r\n--" + boundary + "--\r\n");
