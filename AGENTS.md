@@ -2,23 +2,23 @@
 
 ## Project Overview
 
-LifeLog is a voice-activated life journal. A wearable recorder (XIAO ESP32-S3 + INMP441 mic) captures audio, compresses it with Opus, and uploads via HTTPS. A FastAPI orchestrator runs a pipeline: transcribe (Whisper via Wyoming protocol), diarize (pyannote.audio), identify speakers (ECAPA-TDNN), summarize (local LLM via OpenAI-compatible API), and store results in PostgreSQL. A React dashboard provides calendar browsing, recording playback with speaker segments, TODO/decision views, and speaker labeling with retroactive re-identification.
+LifeLog is a voice-activated life journal. A wearable recorder (XIAO ESP32-S3 + PDM mic) captures audio, compresses it with Opus, and uploads via HTTPS. A FastAPI orchestrator runs a pipeline: transcribe + diarize (whisperx via whisper-asr), identify speakers (ECAPA-TDNN), summarize (local LLM via OpenAI-compatible API), and store results in PostgreSQL. A React dashboard provides calendar browsing, recording playback with speaker segments, TODO/decision views, and speaker labeling with retroactive re-identification.
 
 ## Architecture & Data Flow
 
 ```mermaid
 graph LR
     ESP32[Wearable<br/>ESP32-S3] -->|HTTPS + X-API-Key| ORCH[Orchestrator<br/>FastAPI :8443]
-    ORCH -->|TCP:10700| WHISPER[Wyoming Whisper<br/>GPU]
-    ORCH -->|HTTPS| DIAR[Diarization<br/>pyannote GPU]
-    ORCH -->|HTTPS| SPK[Speaker ID<br/>ECAPA-TDNN GPU]
+    ORCH -->|HTTPS| WHISPER[whisper-asr<br/>whisperx GPU :9000]
+    ORCH -->|HTTPS| SPK[Speaker ID<br/>ECAPA-TDNN GPU :8443]
     ORCH -->|OpenAI-compat API| LLM[Local LLM]
     ORCH -->|SSL| PG[(PostgreSQL)]
     DASH[Dashboard<br/>React :3000] -->|OIDC Bearer| ORCH
 ```
 
 **Key architectural decisions:**
-- **Parallel pipeline**: Transcription and diarization run concurrently; speaker identification waits for diarization
+- **Integrated ASR + diarization**: whisper-asr runs whisperx which handles both transcription and speaker diarization in one service (no separate diarization microservice)
+- **Background worker**: `worker.py` polls for pending utterances and runs the full pipeline asynchronously
 - **Stateless GPU services**: Voiceprints are passed in HTTP request bodies, not fetched from DB
 - **Per-user encryption**: Audio encrypted with Fernet keys derived via PBKDF2 from user-specific secrets
 - **Independent auth**: Device uploads use `X-API-Key`; dashboard uses OIDC JWT. Both map to the same user row
@@ -28,30 +28,32 @@ graph LR
 
 ```
 lifelog/
-├── firmware/src/          ESP32-S3 FreeRTOS firmware (C++/Arduino)
-├── firmware-ota/          OTA-capable firmware with WiFi config + remote logging (WIP)
 ├── server/src/lifelog/    FastAPI orchestrator (Python)
 │   ├── routes/            upload.py, dashboard.py, speakers.py
-│   ├── pipeline/          transcribe.py, diarize_client.py, speaker_client.py, llm.py
+│   ├── pipeline/          transcribe.py, speaker_client.py, llm.py
+│   ├── worker.py          Background pipeline orchestrator (polls queue)
+│   ├── models.py          Pydantic request/response models
 │   ├── database.py        PostgreSQL (asyncpg, only DB-connected service)
 │   ├── auth.py            API key + OIDC validation
 │   └── crypto.py          Per-user Fernet audio encryption
-├── diarization/src/       pyannote.audio microservice (Python)
+├── whisper-asr/           whisperx ASR + diarization service (GPU)
 ├── speaker-id/src/        ECAPA-TDNN microservice (Python)
 ├── dashboard/src/         React SPA (TypeScript)
 │   ├── components/        Calendar, RecordingDetail, AudioPlayer, TodoList, etc.
 │   ├── api/client.ts      API client with fetch
 │   └── test/              Vitest + testing-library tests
+├── firmware-ota/          ESP32-S3 OTA firmware (C++/Arduino)
+├── e2e/                   End-to-end test suite (Piper TTS → upload → verify)
 ├── scripts/               generate-certs.sh (TLS cert generation)
-├── docker-compose.yml     Orchestrates all 6 services
-└── ARCHITECTURE.md        Full architecture doc with mermaid diagrams
+├── docker-compose.yml     Orchestrates all services
+└── AGENTS.md              This file
 ```
 
 ## Development Commands
 
 ### Server orchestrator
 ```bash
-cd lifelog/server
+cd server
 uv venv .venv
 uv pip install -e ".[dev]"
 .venv/bin/python -m pytest tests/ -v          # Run all tests
@@ -60,18 +62,19 @@ uvicorn lifelog.main:app --reload --host 0.0.0.0 --port 8443 \
   --ssl-keyfile=certs/server.key --ssl-certfile=certs/server.crt
 ```
 
-### Diarization service
+### Whisper ASR
 ```bash
-cd lifelog/diarization
-uv venv .venv && uv pip install -e ".[dev]"
-.venv/bin/python -m pytest tests/ -v
-uvicorn diarization.main:app --reload --host 0.0.0.0 --port 8443 \
-  --ssl-keyfile=certs/server.key --ssl-certfile=certs/server.crt
+cd whisper-asr
+docker build -t whisper-asr .
+# Run with GPU (requires nvidia-docker):
+docker run --gpus all -p 9000:9000 whisper-asr
+# Or via docker-compose (includes GPU reservation):
+docker-compose up whisper-asr
 ```
 
 ### Speaker ID service
 ```bash
-cd lifelog/speaker-id
+cd speaker-id
 uv venv .venv && uv pip install -e ".[dev]"
 .venv/bin/python -m pytest tests/ -v
 uvicorn speaker_id.main:app --reload --host 0.0.0.0 --port 8443 \
@@ -80,7 +83,7 @@ uvicorn speaker_id.main:app --reload --host 0.0.0.0 --port 8443 \
 
 ### Dashboard
 ```bash
-cd lifelog/dashboard
+cd dashboard
 npm install
 npm run dev          # Vite dev server on :5173, proxies /api to server:8443
 npm test             # Vitest run
@@ -88,73 +91,25 @@ npm run test:watch   # Vitest watch mode
 npm run build        # Production build
 ```
 
-### Firmware
+### Firmware-OTA
 ```bash
-cd lifelog/firmware
-
-# Build only (compile check)
-pio run
-
-# Build and flash to ESP32-S3 (auto-detects serial port)
-pio run -t upload
-
-# Open serial monitor (115200 baud, auto-detects port)
-pio device monitor
-
-# Monitor with specific baud rate
-pio device monitor -b 115200
-
-# List available serial ports
-pio device list
-
-# Flash + monitor in one step
-pio run -t upload && pio device monitor
+cd firmware-ota
+pio run                              # Build only
+pio run -t upload                    # Upload via OTA (requires WiFi)
+pio test -e test                     # Run native tests (68 tests)
+pio device monitor                   # Serial monitor (115200 baud)
 ```
 
-**Serial port connection:**
-- The XIAO ESP32-S3 uses a USB-C port for both power and serial communication
-- Connect via USB-C cable (data-capable, not charge-only)
-- PlatformIO auto-detects the port; if it fails, specify manually: `pio device monitor -p /dev/ttyUSB0`
-- On Linux, your user must be in the `dialout` group: `sudo usermod -aG dialout $USER` (log out/in after)
-- On macOS, the port is typically `/dev/cu.usbmodem*` or `/dev/cu.SLAB_USBtoUART*`
-- On Windows, it's `COM3`, `COM4`, etc. — check Device Manager
-- Baud rate must match `monitor_speed` in `platformio.ini` (115200)
-- If upload fails, hold the BOOT button on the XIAO while pressing upload to enter download mode
-
-### Firmware-OTA (WIP — incremental rebuild of firmware)
-```bash
-cd lifelog/firmware-ota
-
-# Build only
-pio run
-
-# Upload via USB (device must be in download mode: hold BOOT + tap RESET)
-pio run -t upload --upload-port /dev/ttyACM1
-
-# Upload via WiFi (after initial USB upload + WiFi configured)
-pio run -t upload --upload-port 192.168.68.150
-```
-
-**WiFi config:** WiFiManager creates a captive portal AP (`LifeLog-Setup`) on first boot or connection failure. Connect and configure home WiFi at `http://192.168.4.1`.
-
-**Remote logging:** RemoteDebug runs a telnet server on port 23. Connect with `telnet 192.168.x.x` to see live logs and send commands.
-
-**Telnet commands:**
-- `rec` — start 5-second recording to SD card
-- `ls` — list files in `/lifelog/`
-
-**⚠️ CRITICAL: XIAO ESP32-S3 Sense hardware gotchas:**
-- The Sense's built-in microphone is **PDM**, not standard I2S. Use `I2S_MODE_PDM` with `setPinsPdmRx(42, 41)` — only 2 pins (CLK=42, DIN=41), no WS pin
-- The Sense's built-in SD card slot CS pin is **GPIO 21**, NOT GPIO 3. `SD.begin(21)` with default SPI bus
-- I2S DMA and FSPI (SD card) **share internal bus resources** on ESP32-S3 — writing to SD while I2S is actively streaming causes `Card Failed! cmd: 0x0d` errors. Solution: buffer audio in RAM first, write to SD after recording stops
-- Arduino ESP32 core 2.x does NOT include `ESP_I2S.h` (added in 3.x). Use `driver/i2s.h` with `I2S_MODE_PDM` flag instead
-- OTA partition table MUST replace `huge_app.csv` — use custom `partitions_ota.csv` with dual 3MB app slots
-- After changing partition table, full flash erase may be needed: `esptool.py --chip esp32s3 --port /dev/ttyACM1 erase_flash`
-- Device entering deep sleep = battery ADC reads floating voltage. Disable critical shutdown until battery hardware is added
+**⚠️ XIAO ESP32-S3 Sense hardware gotchas:**
+- Built-in mic is **PDM** (not I2S): `I2S_MODE_PDM` with CLK=42, DIN=41
+- SD card CS pin is **GPIO 21** (not GPIO 3)
+- I2S DMA and FSPI (SD) share internal bus — buffer audio in RAM, write after recording stops
+- Arduino ESP32 core 2.x: use `driver/i2s.h`, not `ESP_I2S.h`
+- SD SPI clock: 25MHz (`SD.begin(SD_CS_PIN, SPI, 25000000)`)
+- Model partition: mmap'd binary, NOT SPIFFS. See `firmware-ota/AGENTS.md` for rebuild instructions
 
 ### Infrastructure
 ```bash
-cd lifelog
 ./scripts/generate-certs.sh   # Generate TLS certs for all services
 docker-compose up -d           # Start all services
 docker-compose ps              # Check status
@@ -164,19 +119,24 @@ docker-compose logs -f server  # Tail orchestrator logs
 ### All tests at once
 ```bash
 # Python services (each in its own venv)
-cd lifelog/server && .venv/bin/python -m pytest tests/ -q        # 53 tests
-cd lifelog/diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
-cd lifelog/speaker-id && .venv/bin/python -m pytest tests/ -q    # 15 tests
+cd server && .venv/bin/python -m pytest tests/ -q        # 77 tests
+cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
+cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 15 tests
 
 # Dashboard
-cd lifelog/dashboard && npx vitest run                            # 58 tests
+cd dashboard && npx vitest run                            # 58 tests
+
+# Firmware-OTA
+cd firmware-ota && pio test -e test                       # 68 tests
 ```
 
 ## Code Conventions & Common Patterns
 
-### Python services (server, diarization, speaker-id)
+### Python services (server, speaker-id)
 
 **Async pattern**: All DB and HTTP operations use `async/await`. FastAPI routes are `async def`. Database access uses `asyncpg` with `async with pool.acquire() as conn:`.
+
+**Background worker**: `worker.py` runs a polling loop (`POLL_INTERVAL = 60s`) that claims pending utterances from the queue, runs the full pipeline (transcribe → identify → summarize), and saves the recording. Uses `claim_utterance()` with atomic DB update to prevent duplicate processing.
 
 **Config**: `pydantic-settings` `BaseSettings` with `.env` file support. Settings are a module-level singleton:
 ```python
@@ -236,13 +196,17 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 
 | File | Purpose |
 |------|---------|
-| `server/src/lifelog/routes/upload.py` | Upload endpoint + `merge_speakers()` — the core pipeline orchestration |
-| `server/src/lifelog/database.py` | All PostgreSQL queries (14 functions, only DB-connected code) |
+| `server/src/lifelog/routes/upload.py` | Chunked upload endpoint — receives audio chunks, creates utterance queue entries |
+| `server/src/lifelog/worker.py` | Background pipeline orchestrator — polls queue, runs transcribe→identify→summarize |
+| `server/src/lifelog/database.py` | All PostgreSQL queries (only DB-connected service) |
+| `server/src/lifelog/models.py` | Pydantic request/response models (UserCreate, RecordingResponse, etc.) |
 | `server/src/lifelog/auth.py` | API key + OIDC validation with `Depends()` |
 | `server/src/lifelog/crypto.py` | Per-user Fernet encryption (PBKDF2 key derivation) |
-| `server/src/lifelog/routes/speakers.py` | Speaker labeling + `rerun_identification()` retroactive re-ID |
+| `server/src/lifelog/routes/speakers.py` | Speaker labeling + retroactive re-ID |
+| `server/src/lifelog/pipeline/transcribe.py` | Whisper transcription client |
+| `server/src/lifelog/pipeline/speaker_client.py` | Speaker identification client |
 | `server/src/lifelog/pipeline/llm.py` | LLM prompt template + `summarize()` |
-| `diarization/src/diarization/pipeline.py` | pyannote.audio wrapper + `opus_to_wav()` |
+| `whisper-asr/Dockerfile` | whisperx ASR + diarization service (replaces separate diarization) |
 | `speaker-id/src/speaker_id/routes.py` | `cosine_similarity()`, `match_voiceprint()`, `/identify` + `/enroll` |
 | `speaker-id/src/speaker_id/embeddings.py` | ECAPA-TDNN `SpeakerEncoder` class |
 | `dashboard/src/api/client.ts` | API client (all `fetchApi` calls) |
@@ -251,11 +215,13 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `dashboard/src/components/SpeakerLabel.tsx` | Speaker labeling UI |
 | `docker-compose.yml` | Service orchestration, port mappings, GPU reservations |
 | `scripts/generate-certs.sh` | TLS cert generation for all services |
-| `ARCHITECTURE.md` | Full architecture doc with endpoint details |
-| `server/alembic/` | Alembic migrations (immutable once committed) |
-| `firmware-ota/src/main.cpp` | OTA firmware: WiFiManager, ArduinoOTA, RemoteDebug, PDM mic, SD card recording |
-| `firmware-ota/partitions/partitions_ota.csv` | Dual OTA partition table (3MB app slots) |
+| `server/entrypoint.sh` | Docker entrypoint — runs alembic migrations before starting server |
+| `e2e/run_e2e.py` | End-to-end test suite — generates audio, uploads, verifies pipeline |
+| `firmware-ota/src/main.cpp` | OTA firmware: WiFiManager, ArduinoOTA, PDM mic, SD card recording |
+| `firmware-ota/src/audio.cpp` | Core audio engine: I2S, AFE, ring buffer, Opus/OGG, writer task |
+| `firmware-ota/partitions/partitions_ota.csv` | Dual OTA partition table (3MB app slots + 1.9MB model) |
 | `firmware-ota/platformio.ini` | OTA firmware build config |
+| `firmware-ota/AGENTS.md` | Detailed firmware guide (architecture, build, model partition, tests) |
 
 ## Database Migrations
 
@@ -272,6 +238,9 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 
 **Current migrations:**
 - `001_initial_schema.py` — Creates users, recordings, voiceprints tables with indexes
+- `002_utterance_chunks.py` — Adds utterance chunks table for chunked uploads
+- `003_utterance_queue.py` — Adds utterance queue for background worker processing
+- `004_session_grouping.py` — Adds session grouping and reprocessing support
 
 **Running migrations:**
 - Automatically on server startup (via `init_db()` in `main.py` lifespan)
@@ -283,10 +252,9 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 | Component | Runtime | Package Manager | Build Tool |
 |-----------|---------|----------------|------------|
 | Server | Python 3.11+ | `uv` (preferred) / pip | hatchling |
-| Diarization | Python 3.11+ | `uv` / pip | hatchling |
 | Speaker ID | Python 3.11+ | `uv` / pip | hatchling |
+| Whisper ASR | Python 3.11+ | pip | whisperx + pyannote |
 | Dashboard | Node.js 20+ | npm | Vite 5 |
-| Firmware | PlatformIO | pio lib | Arduino framework (2.x) |
 | Firmware-OTA | PlatformIO | pio lib | Arduino framework (2.x) |
 | Docker | Docker Compose v3.8 | — | Multi-stage builds |
 
@@ -294,37 +262,37 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - Python services use `uv` for venv creation and dependency management
 - No Python lockfiles exist — builds use floating `>=` constraints
 - Dashboard has `package-lock.json` for reproducible npm installs
-- Firmware targets `seeed_xiao_esp32s3` board with `huge_app.csv` partition scheme (original) or `partitions_ota.csv` (OTA version)
+- Firmware targets `seeed_xiao_esp32s3` board with `partitions_ota.csv` (dual 3MB app slots + 1.9MB model)
 - Docker images use `python:3.11-slim` base; dashboard uses `node:20-alpine` → `nginx:alpine`
 - GPU services require NVIDIA runtime with CUDA
 - SSL certs are generated at compose level (command overrides), not baked into Dockerfiles
 
 ## Testing & QA
 
-**Total**: 222 tests across 5 components (53 server + 8 diarization + 15 speaker-id + 58 dashboard + 88 firmware-ota)
+**Total**: ~148 tests across 5 components (77 server + 8 diarization + 15 speaker-id + 58 dashboard + 68 firmware-ota)
 
 ### Python test framework
 - **pytest** with `pytest-asyncio` (`asyncio_mode = "auto"`)
 - **Coverage**: `pytest-cov` — server at 93%, diarization at 93%, speaker-id at 95%
-- Tests run per-component in isolated venvs: `cd lifelog/server && .venv/bin/python -m pytest tests/ -q`
+- Tests run per-component in isolated venvs: `cd server && .venv/bin/python -m pytest tests/ -q`
 
 ### Dashboard test framework
 - **Vitest** with `jsdom` environment, `@testing-library/react`, `@testing-library/user-event`
 - Config: `vitest.config.ts` with `globals: true`, setup file at `src/test/setup.ts`
-- Run: `cd lifelog/dashboard && npx vitest run`
+- Run: `cd dashboard && npx vitest run`
 
 ### What's tested
 | Area | Coverage | Approach |
 |------|----------|----------|
-| Database CRUD | 15 functions | Mock asyncpg pool with `MockPoolConnection` |
+| Database CRUD | ~20 functions | Mock asyncpg pool with `MockPoolConnection` |
 | Auth (API key + OIDC) | 2 functions | Real RSA key generation for OIDC tests |
 | Crypto (encrypt/decrypt) | 4 methods | Full roundtrip with temp dirs |
-| Pipeline clients | 4 functions | Mock socket/httpx/LLM |
-| Route endpoints | 10 routes | FastAPI `TestClient` + `dependency_overrides` |
-| `merge_speakers()` | 1 function | 7 pure function unit tests |
+| Pipeline clients | 3 functions | Mock httpx/LLM |
+| Route endpoints | 10+ routes | FastAPI `TestClient` + `dependency_overrides` |
 | Dashboard components | 7 components | `vi.mock` API client, `render` + `screen` queries |
 | API client | 8 methods | `vi.stubGlobal('fetch')` with mock responses |
 | ML pipeline | 3 functions | `sys.modules` mocking for pyannote/torch/speechbrain |
+| Firmware-OTA | 68 tests | Native Unity tests with full ESP32/FreeRTOS mock layer |
 
 ### Key testing patterns
 - **FastAPI routes**: Always use `app.dependency_overrides[validate_oidc_token]` (not `patch`) — FastAPI captures dependency references at import time
@@ -332,6 +300,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - **Heavy ML imports**: Mock entire modules via `sys.modules` in `conftest.py` before any app imports
 - **React components**: Wrap in `<MemoryRouter>` when component uses `<Link>` or `useParams()`
 - **Audio elements**: jsdom doesn't implement `HTMLMediaElement.play()` — tests only verify button text toggles, not actual playback
+- **Firmware tests**: ⚠️ Tests re-implement functions from source (don't `#include` actual `.cpp`). They verify algorithm correctness, not code integration. See `firmware-ota/AGENTS.md` for details.
 
 ## Code Quality
 
@@ -340,17 +309,17 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 | Service | Tool | Command |
 |---------|------|---------|
 | Server (Python) | ruff | `cd server && .venv/bin/ruff check src/ tests/` |
-| Diarization (Python) | ruff | `cd diarization && .venv/bin/ruff check src/ tests/` |
 | Speaker ID (Python) | ruff | `cd speaker-id && .venv/bin/ruff check src/ tests/` |
 | Dashboard (TypeScript) | tsc | `cd dashboard && npx tsc --noEmit` |
+| Firmware-OTA (C++) | — | PlatformIO compiler warnings |
 
 ### Test-after-change rule
 
 Every code change MUST be followed by running the relevant test suite before yielding. If tests fail, fix in the same pass — never deliver with broken tests.
 
-- **Python services**: `cd lifelog/<service> && .venv/bin/python -m pytest tests/ -q`
-- **Dashboard**: `cd lifelog/dashboard && npx vitest run`
-- **Firmware-OTA**: `cd lifelog/firmware-ota && pio test -e test`
+- **Python services**: `cd <service> && .venv/bin/python -m pytest tests/ -q`
+- **Dashboard**: `cd dashboard && npx vitest run`
+- **Firmware-OTA**: `cd firmware-ota && pio test -e test`
 
 ### Pre-commit checklist (code complete)
 
@@ -358,7 +327,7 @@ Before merging any change:
 
 1. **Lint**: `ruff check src/ tests/` passes on all Python services (0 errors)
 2. **Type check**: `npx tsc --noEmit` passes on dashboard (0 errors)
-3. **Tests**: All 222 tests pass across all 5 services
+3. **Tests**: All ~148 tests pass across all 5 services
 4. **No regressions**: Existing functionality not broken
 
 ### Ruff configuration
@@ -390,12 +359,11 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | Script | Steps |
 |--------|-------|
 | `build.sh` | Runs all component builds, reports pass/fail |
-| `server/build.sh` | compile check → ruff lint → pytest (53 tests) |
+| `server/build.sh` | compile check → ruff lint → pytest (77 tests) |
 | `diarization/build.sh` | compile check → ruff lint → pytest (8 tests) |
 | `speaker-id/build.sh` | compile check → ruff lint → pytest (15 tests) |
 | `dashboard/build.sh` | tsc type check → vite build → vitest (58 tests) → bundle size |
-| `firmware/build.sh` | pio compile check → config validation (skips if PlatformIO not installed) |
-| `firmware-ota/build.sh` | pio compile check → native test (88 tests) |
+| `firmware-ota/build.sh` | pio compile check → native test (68 tests) |
 
 **Run everything:**
 ```bash
