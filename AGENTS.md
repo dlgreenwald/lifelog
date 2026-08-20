@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## ⚠️ Documentation Sync Rule
+
+**When making changes to any aspect documented in this file (architecture, services, APIs, test counts, build commands, file lists, etc.), you MUST update this AGENTS.md to reflect the change.** Stale docs cause agents to make wrong assumptions. Treat this file as code — if it's wrong, fix it in the same change.
+
 ## Project Overview
 
 LifeLog is a voice-activated life journal. A wearable recorder (XIAO ESP32-S3 + PDM mic) captures audio, compresses it with Opus, and uploads via HTTPS. A FastAPI orchestrator runs a pipeline: transcribe + diarize (whisperx via whisper-asr), identify speakers (ECAPA-TDNN), summarize (local LLM via OpenAI-compatible API), and store results in PostgreSQL. A React dashboard provides calendar browsing, recording playback with speaker segments, TODO/decision views, and speaker labeling with retroactive re-identification.

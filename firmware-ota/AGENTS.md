@@ -1,5 +1,9 @@
 # Firmware-OTA Agent Guide
 
+## ⚠️ Documentation Sync Rule
+
+**When making changes to any aspect documented in this file (architecture, task model, pin assignments, audio settings, build commands, model partition, test counts, etc.), you MUST update this AGENTS.md to reflect the change.** Stale docs cause agents to make wrong assumptions. Treat this file as code — if it's wrong, fix it in the same change.
+
 ## Project Overview
 
 ESP32-S3 firmware for the LifeLog wearable audio recorder. Captures audio via PDM mic, processes it through esp-sr AFE (noise suppression + VAD), encodes to Opus/OGG, stores on SD card, and uploads to the LifeLog server over WiFi.
