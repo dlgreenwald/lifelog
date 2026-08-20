@@ -208,6 +208,12 @@ static void afeInit() {
         afe_config->vad_model_name = NULL;
     }
 
+    // Enable AGC — default is off, audio too faint without it
+    afe_config->agc_init = true;
+    afe_config->agc_compression_gain_db = 20;  // compression gain (default 9)
+    afe_config->agc_target_level_dbfs = 3;     // target -3 dBFS envelope
+    afe_config->afe_linear_gain = 3.0;         // output multiplier (default 1.0)
+
     afe_handle = esp_afe_handle_from_config(afe_config);
     if (!afe_handle) {
         LOG_AFE(LOG_ERROR, "esp_afe_handle_from_config failed");
