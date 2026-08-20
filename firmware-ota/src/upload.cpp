@@ -21,7 +21,17 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     uint32_t fileSize = file.size();
     sdGive();
 
-    LOG_UPLOAD(LOG_INFO, "Uploading %s (%lu bytes)...", filename, (unsigned long)fileSize);
+    // Discard clips shorter than ~5s — at 24kbps speech ~4KB, headers alone ~200B
+    // Don't delete here — caller (upload_if_connected) handles deletion on return true.
+    if (fileSize < 4096) {
+        LOG_UPLOAD(LOG_INFO, "Discarded short clip: %s (%luB)", filename,
+                   (unsigned long)fileSize);
+        return true;
+    }
+
+    uint32_t uploadStart = millis();
+    LOG_UPLOAD(LOG_INFO, "Upload start: %s %luKB",
+               filename, (unsigned long)(fileSize / 1024));
 
     // Build HTTP request — no SD access
     String boundary = "----LifeLogBoundary" + String(millis());
@@ -105,11 +115,17 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     }
     client.stop();
 
+    uint32_t elapsed = millis() - uploadStart;
     if (response.indexOf("200") >= 0) {
-        LOG_UPLOAD(LOG_INFO, "Success: %s", filename);
+        uint32_t rate = (elapsed > 0) ? (fileSize * 1000) / elapsed : 0;
+        LOG_UPLOAD(LOG_INFO, "Upload done: %s %lums %luB/s q=%lu", filename,
+                   (unsigned long)elapsed, (unsigned long)rate,
+                   (unsigned long)getUploadQueueDepth());
         return true;
     } else {
-        LOG_UPLOAD(LOG_ERROR, "Failed: %s", response.substring(0, 100).c_str());
+        LOG_UPLOAD(LOG_ERROR, "Upload failed: %s %lums q=%lu %s", filename,
+                   (unsigned long)elapsed, (unsigned long)getUploadQueueDepth(),
+                   response.substring(0, 80).c_str());
         return false;
     }
 }

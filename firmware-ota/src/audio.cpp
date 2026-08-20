@@ -129,6 +129,10 @@ void sdGive() {
     xSemaphoreGiveRecursive(sdMutex);
 }
 
+uint32_t getUploadQueueDepth() {
+    return uploadQueue ? uxQueueMessagesWaiting(uploadQueue) : 0;
+}
+
 // ── AFE globals ──────────────────────────────────────────────────
 
 static const esp_afe_sr_iface_t *afe_handle = NULL;
@@ -726,7 +730,8 @@ void writerTask(void *pvParameters) {
             req.isFinal = isFinal;
             chunkIndex++;
             if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
-                LOG_AUDIO(LOG_WARN, "Upload queue full, skipping %s", req.filename);
+                LOG_AUDIO(LOG_WARN, "Upload queue full (%lu/%d), skipping %s",
+                          (unsigned long)uxQueueMessagesWaiting(uploadQueue), 8, req.filename);
             }
             continue;
         }

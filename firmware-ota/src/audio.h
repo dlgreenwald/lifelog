@@ -22,6 +22,9 @@ extern volatile uint32_t utteranceId;   // Monotonic counter, incremented on voi
 extern volatile uint32_t chunkIndex;    // Reset to 0 on voice start, incremented per buffer
 extern volatile bool isFinal;           // Set true when silence ends utterance
 
+// Upload queue depth
+uint32_t getUploadQueueDepth();
+
 // Functions
 void audioInit();
 void setWriterTaskHandle(TaskHandle_t handle);

@@ -90,7 +90,7 @@ static void setupOTA() {
 
 static void setupSD() {
     // Initialize SD like the guide: SD.begin(21)
-    if (!SD.begin(SD_CS_PIN)) {
+    if (!SD.begin(SD_CS_PIN, SPI, 25000000)) {
         LOG_SD(LOG_ERROR, "Mount failed");
         return;
     }
@@ -102,7 +102,7 @@ static void setupSD() {
     }
     
     const char* names[] = {"UNKNOWN","MMC","SD","SDHC"};
-    LOG_SD(LOG_INFO, "Mounted: %s %llu MB", names[t], SD.cardSize()/(1024*1024));
+    LOG_SD(LOG_INFO, "Mounted: %s %llu MB @ 25MHz", names[t], SD.cardSize()/(1024*1024));
     
     if (!SD.exists("lifelog")) {
         SD.mkdir("lifelog");
