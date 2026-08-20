@@ -226,6 +226,7 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `firmware-ota/partitions/partitions_ota.csv` | Dual OTA partition table (3MB app slots + 1.9MB model) |
 | `firmware-ota/platformio.ini` | OTA firmware build config |
 | `firmware-ota/AGENTS.md` | Detailed firmware guide (architecture, build, model partition, tests) |
+| `firmware-ota/ARCHITECTURE.md` | Firmware architecture deep-dive with PlantUML diagrams (tasks, cores, data flow, synchronization) |
 
 ## Database Migrations
 
