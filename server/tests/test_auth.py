@@ -1,6 +1,7 @@
-"""Unit tests for auth module (API key + OIDC validation)."""
+"""Unit tests for auth module (API key + OIDC JWKS validation)."""
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jwt as pyjwt
 import pytest
 from fastapi import HTTPException
 
@@ -31,50 +32,58 @@ async def test_validate_api_key_invalid():
         assert exc_info.value.status_code == 401
 
 
+def _make_jwk_mock(private_key):
+    """Create a mock PyJWKClient that returns a signing key from the given RSA key."""
+    from jwt import PyJWK
+
+    # Build a JWKS-like dict from the public key
+    public_pem = private_key.public_key().public_bytes(
+        encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.PEM,
+        format=__import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo,
+    )
+    # PyJWK can construct from a jwk dict — use the PEM for the mock
+    signing_key = MagicMock()
+    signing_key.key = public_pem.decode()
+
+    mock_jwk_client = MagicMock()
+    mock_jwk_client.get_signing_key_from_jwt.return_value = signing_key
+    return mock_jwk_client
+
+
 @pytest.mark.asyncio
 async def test_validate_oidc_token_valid():
-    """Valid OIDC token returns user dict.
-
-    We sign with RS256 to match the decode algorithm, using a generated
-    RSA key pair so the test is self-contained.
-    """
+    """Valid OIDC token verified via JWKS returns user dict."""
     import jwt as pyjwt
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
 
     from lifelog.auth import validate_oidc_token
 
-    # Generate a real RSA key pair for the test
+    # Generate RSA key pair
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = private_key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     )
-    public_key = private_key.public_key()
-    public_pem = public_key.public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
 
-    secret = public_pem.decode()  # jwt.decode uses the public key for RS256
     token_payload = {"sub": "user-123", "aud": "test-client", "iss": "https://auth.test.com"}
     token = pyjwt.encode(token_payload, private_pem, algorithm="RS256")
 
     fake_user = {"id": 1, "oidc_sub": "user-123", "name": "Test"}
-
     mock_token = MagicMock()
     mock_token.credentials = token
 
-    with patch("lifelog.auth.settings") as mock_settings:
-        mock_settings.oidc_client_secret = secret
-        mock_settings.oidc_client_id = "test-client"
-        mock_settings.oidc_issuer_url = "https://auth.test.com"
+    mock_jwk_client = _make_jwk_mock(private_key)
 
-        with patch("lifelog.database.get_user_by_oidc_sub", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = fake_user
-            result = await validate_oidc_token(token=mock_token)
-            assert result == fake_user
+    with patch("lifelog.auth._get_jwk_client", return_value=mock_jwk_client):
+        with patch("lifelog.auth.settings") as mock_settings:
+            mock_settings.oidc_client_id = "test-client"
+            mock_settings.oidc_issuer_url = "https://auth.test.com"
+            with patch("lifelog.database.get_user_by_oidc_sub", new_callable=AsyncMock) as mock_get:
+                mock_get.return_value = fake_user
+                result = await validate_oidc_token(token=mock_token)
+                assert result == fake_user
 
 
 @pytest.mark.asyncio
@@ -85,19 +94,22 @@ async def test_validate_oidc_token_invalid():
     mock_token = MagicMock()
     mock_token.credentials = "not-a-valid-jwt"
 
-    with patch("lifelog.auth.settings") as mock_settings:
-        mock_settings.oidc_client_secret = "secret"
-        mock_settings.oidc_client_id = "client"
-        mock_settings.oidc_issuer_url = "https://auth.test.com"
+    mock_jwk_client = MagicMock()
+    mock_jwk_client.get_signing_key_from_jwt.side_effect = pyjwt.InvalidTokenError()
 
-        with pytest.raises(HTTPException) as exc_info:
-            await validate_oidc_token(token=mock_token)
-    assert exc_info.value.status_code == 401
+    with patch("lifelog.auth._get_jwk_client", return_value=mock_jwk_client):
+        with patch("lifelog.auth.settings") as mock_settings:
+            mock_settings.oidc_client_id = "client"
+            mock_settings.oidc_issuer_url = "https://auth.test.com"
+
+            with pytest.raises(HTTPException) as exc_info:
+                await validate_oidc_token(token=mock_token)
+        assert exc_info.value.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_validate_oidc_token_user_not_found():
-    """Valid token but user not in DB raises 401."""
+    """Valid token but user not in DB — auto-creates new user."""
     import jwt as pyjwt
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
@@ -110,10 +122,6 @@ async def test_validate_oidc_token_user_not_found():
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     )
-    public_pem = private_key.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
 
     token_payload = {"sub": "unknown-user", "aud": "test-client", "iss": "https://auth.test.com"}
     token = pyjwt.encode(token_payload, private_pem, algorithm="RS256")
@@ -121,13 +129,17 @@ async def test_validate_oidc_token_user_not_found():
     mock_token = MagicMock()
     mock_token.credentials = token
 
-    with patch("lifelog.auth.settings") as mock_settings:
-        mock_settings.oidc_client_secret = public_pem.decode()
-        mock_settings.oidc_client_id = "test-client"
-        mock_settings.oidc_issuer_url = "https://auth.test.com"
+    mock_jwk_client = _make_jwk_mock(private_key)
+    new_user = {"id": 99, "oidc_sub": "unknown-user", "name": "User"}
 
-        with patch("lifelog.database.get_user_by_oidc_sub", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = None
-            with pytest.raises(HTTPException) as exc_info:
-                await validate_oidc_token(token=mock_token)
-    assert exc_info.value.status_code == 401
+    with patch("lifelog.auth._get_jwk_client", return_value=mock_jwk_client):
+        with patch("lifelog.auth.settings") as mock_settings:
+            mock_settings.oidc_client_id = "test-client"
+            mock_settings.oidc_issuer_url = "https://auth.test.com"
+            with patch("lifelog.database.get_user_by_oidc_sub", new_callable=AsyncMock) as mock_get:
+                mock_get.return_value = None
+                with patch("lifelog.database.create_user", new_callable=AsyncMock) as mock_create:
+                    mock_create.return_value = new_user
+                    result = await validate_oidc_token(token=mock_token)
+                    assert result == new_user
+                    mock_create.assert_awaited_once()

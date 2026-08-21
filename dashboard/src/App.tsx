@@ -1,14 +1,26 @@
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
+import { AuthProvider, useAuth } from './auth/AuthContext';
+import ProtectedRoute from './auth/ProtectedRoute';
+import LandingPage from './pages/LandingPage';
+import CallbackPage from './pages/CallbackPage';
 import Calendar from './components/Calendar';
 import RecordingDetail from './components/RecordingDetail';
 import TodoList from './components/TodoList';
 import DecisionsList from './components/DecisionsList';
 import SpeakerLabel from './components/SpeakerLabel';
+import { setAuthProvider } from './api/client';
+import { useEffect } from 'react';
 
-export default function App() {
+function AppRoutes() {
+  const { user, getAccessToken, userManager } = useAuth();
+
+  useEffect(() => {
+    setAuthProvider(getAccessToken, userManager);
+  }, [getAccessToken, userManager]);
+
   return (
-    <BrowserRouter>
-      <div className="app">
+    <div className="app">
+      {user && (
         <header>
           <h1>LifeLog</h1>
           <nav>
@@ -18,16 +30,28 @@ export default function App() {
             <Link to="/speakers">Speakers</Link>
           </nav>
         </header>
-        <main>
-          <Routes>
-            <Route path="/" element={<Calendar />} />
-            <Route path="/recording/:id" element={<RecordingDetail />} />
-            <Route path="/todos" element={<TodoList />} />
-            <Route path="/decisions" element={<DecisionsList />} />
-            <Route path="/speakers" element={<SpeakerLabel />} />
-          </Routes>
-        </main>
-      </div>
+      )}
+      <main>
+        <Routes>
+          <Route path="/login" element={user ? <Navigate to="/" replace /> : <LandingPage />} />
+          <Route path="/callback" element={<CallbackPage />} />
+          <Route path="/" element={<ProtectedRoute><Calendar /></ProtectedRoute>} />
+          <Route path="/recording/:id" element={<ProtectedRoute><RecordingDetail /></ProtectedRoute>} />
+          <Route path="/todos" element={<ProtectedRoute><TodoList /></ProtectedRoute>} />
+          <Route path="/decisions" element={<ProtectedRoute><DecisionsList /></ProtectedRoute>} />
+          <Route path="/speakers" element={<ProtectedRoute><SpeakerLabel /></ProtectedRoute>} />
+        </Routes>
+      </main>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
     </BrowserRouter>
   );
 }

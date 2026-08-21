@@ -32,7 +32,6 @@ def mock_settings():
         openai_model="llama3",
         oidc_issuer_url="https://auth.test.com",
         oidc_client_id="test-client",
-        oidc_client_secret="test-secret",
         audio_storage_path=tempfile.mkdtemp(),
     )
 

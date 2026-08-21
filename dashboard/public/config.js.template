@@ -1,0 +1,4 @@
+window.__OIDC_CONFIG__ = {
+  authority: '${OIDC_ISSUER_URL}',
+  clientId: '${OIDC_CLIENT_ID}',
+};

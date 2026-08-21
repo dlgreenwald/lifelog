@@ -16,7 +16,6 @@ class Settings(BaseSettings):
     # OIDC Configuration
     oidc_issuer_url: str = ""
     oidc_client_id: str = ""
-    oidc_client_secret: str = ""
     oidc_redirect_uri: str = ""
 
     # PostgreSQL Database

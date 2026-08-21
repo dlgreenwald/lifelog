@@ -134,6 +134,8 @@ async def save_recording(
 
 async def get_recordings_by_date(user_id: int, date: str) -> list[dict]:
     """Get all recordings for a user on a specific date (YYYY-MM-DD)."""
+    from datetime import date as _date
+    date_obj = _date.fromisoformat(date)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -143,7 +145,7 @@ async def get_recordings_by_date(user_id: int, date: str) -> list[dict]:
             ORDER BY timestamp DESC
         """,
             user_id,
-            date,
+            date_obj,
         )
         return [dict(row) for row in rows]
 

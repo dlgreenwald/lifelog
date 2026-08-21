@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head><title>Signing in...</title></head>
+<body>
+<script src="/config.js"></script>
+<script>
+  var cfg = window.__OIDC_CONFIG__ || {};
+  var mgr = new Oidc.UserManager({
+    authority: cfg.authority,
+    client_id: cfg.clientId,
+    redirect_uri: window.location.origin + '/callback',
+    silent_redirect_uri: window.location.href,
+    response_type: 'code',
+    scope: 'openid profile',
+  });
+  mgr.signinSilentCallback();
+</script>
+</body>
+</html>

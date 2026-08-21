@@ -34,7 +34,6 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:-qwen2.5:7b}
       - OIDC_ISSUER_URL=${OIDC_ISSUER_URL}
       - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
-      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}
       - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI}
       - AUDIO_STORAGE_PATH=/data/audio
       - POSTGRES_HOST=postgres
@@ -112,6 +111,9 @@ services:
     build: ./dashboard
     ports:
       - "3000:80"
+    environment:
+      - OIDC_ISSUER_URL=${OIDC_ISSUER_URL}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
     depends_on:
       - server
 

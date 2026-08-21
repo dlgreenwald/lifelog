@@ -10,12 +10,18 @@ RUN npm run build
 
 FROM nginx:alpine
 
+# Install envsubst for runtime config injection
+RUN apk add --no-cache gettext
+
 # Copy built files
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Copy nginx config
+# Copy nginx config + startup script
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 EXPOSE 80
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
