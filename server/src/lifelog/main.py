@@ -20,17 +20,12 @@ _daily_task = None
 
 
 def _configure_logging() -> None:
-    """Load logging.json and apply per-level overrides from settings."""
+    """Load logging.json config."""
     config_path = Path(__file__).resolve().parent.parent.parent / "logging.json"
     if config_path.exists():
         with open(config_path) as f:
             log_config = json.load(f)
-        LOG_LEVEL = getattr(logging, settings.log_level.upper(), logging.INFO)
-        for logger_cfg in log_config.get("loggers", {}).values():
-            logger_cfg["level"] = LOG_LEVEL
         logging.config.dictConfig(log_config)
-    else:
-        logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 
 
 @asynccontextmanager

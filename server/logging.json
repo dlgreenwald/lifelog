@@ -20,6 +20,16 @@
             "level": "INFO",
             "propagate": false
         },
+        "httpcore": {
+            "handlers": ["default"],
+            "level": 15,
+            "propagate": false
+        },
+        "httpx": {
+            "handlers": ["default"],
+            "level": 15,
+            "propagate": false
+        },
         "uvicorn": {
             "handlers": ["default"],
             "level": "INFO",

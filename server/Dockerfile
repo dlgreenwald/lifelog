@@ -18,6 +18,7 @@ COPY src/ src/
 COPY alembic.ini .
 COPY alembic/ alembic/
 COPY migrate.py .
+COPY logging.json .
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 ENV PYTHONPATH=/app/src

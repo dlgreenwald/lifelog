@@ -132,12 +132,16 @@ async def process_utterance(user_id: int, utterance_id: int):
 
         # Transcribe + diarize
         result = await transcribe(chunk_audio)
+        transcript_text = " ".join(
+            seg.get("text", "").strip()
+            for seg in result.get("segments", [])
+        )
         logger.debug(
-            "Utterance %d/%d chunk %d transcript: %s",
+            "Utterance %d/%d chunk %d: %s",
             user_id,
             utterance_id,
             i,
-            result,
+            transcript_text or "(empty)",
         )
 
         # Extract diarization for speaker matching
