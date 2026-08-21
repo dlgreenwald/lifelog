@@ -85,8 +85,8 @@ static void generate_wav_header(uint8_t *wav_header, uint32_t wav_size, uint32_t
 // ── Forward declarations ──────────────────────────────────────────
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
 static void opus_init();
-static void opus_file_start(const char* filename);
-static int opus_file_write(const int16_t* pcm, int samples);
+static void opus_init_stream();
+static int opus_encode_to_buffer(const int16_t* pcm, int samples);
 static void opus_file_end();
 #endif
 static void upload_if_connected(const char* filename);
@@ -242,6 +242,7 @@ static void afeInit() {
 
 #define RING_SLOTS       32
 #define RING_CHUNK_SAMPLES 512   // matches AFE feed chunksize
+#define OGG_BUF_CAPACITY 16384  // 16KB PSRAM buffer for accumulated OGG pages before SD open
 
 static int16_t* ring_buf[RING_SLOTS] = {0};  // ring slot buffers in PSRAM
 static volatile uint32_t ring_head = 0;       // next slot to write
@@ -265,8 +266,11 @@ static File opus_file;                // currently open .opus file
 static ogg_int64_t opus_granulepos;   // running granule position across frames
 static ogg_int64_t opus_packetno;     // running packet number
 static uint32_t opus_encoded_bytes;   // encoded bytes since last flush
-static bool file_preopened = false;   // next file already open?
-static char preopened_name[64] = {0}; // name of pre-opened file
+
+// ── OGG page buffer — accumulates pages in memory until ≥4KB before opening SD ──
+static uint8_t *ogg_buf = NULL;       // PSRAM buffer for accumulated OGG pages
+static uint32_t ogg_buf_pos = 0;      // write position in ogg_buf
+static bool pages_flushed = false;    // true after first SD write
 
 // Build OpusHead identification header (RFC 7845)
 static void generate_opus_head_packet() {
@@ -398,6 +402,10 @@ void audioInit() {
     LOG_AUDIO(LOG_INFO, "Ring buffer ready (%d slots × %d samples = %dms)",
               RING_SLOTS, RING_CHUNK_SAMPLES,
               (RING_SLOTS * RING_CHUNK_SAMPLES * 1000) / SAMPLE_RATE);
+
+    // Allocate OGG page buffer in PSRAM (deferred SD open — accumulates until ≥4KB)
+    ogg_buf = (uint8_t *)ps_malloc(OGG_BUF_CAPACITY);
+    assert(ogg_buf);
 
     // Upload task — offloads blocking HTTP uploads from writerTask
     uploadQueue = xQueueCreate(8, sizeof(UploadRequest));
@@ -540,52 +548,75 @@ void afeFetchTask(void *pvParameters) {
     }
 }
 
-// ── Incremental Opus file API ──────────────────────────────────────
-// Call start when voice begins, write per ring drain, end on silence.
+// ── Deferred SD open API ──────────────────────────────────────────
+// Call init_stream when voice begins — buffers in memory, no SD file yet.
+// OGG pages accumulate in ogg_buf until ≥4KB, then flush to SD.
+// If voice ends before 4KB, discard — no SD writes for short utterances.
 
-static void opus_file_start(const char* filename) {
-    if (!file_preopened) {
-        sdTake();
-        opus_file = SD.open(filename, FILE_WRITE);
-        sdGive();
-        if (!opus_file) {
-            LOG_AUDIO(LOG_ERROR, "opus_file_start: failed to open %s", filename);
-            return;
-        }
-    }
-    file_preopened = false;
-
+static void opus_init_stream() {
     ogg_stream_reset_serialno(&ogg_stream, ogg_serialno);
 
-    // OpusHead packet
+    opus_granulepos = 0;
+    opus_packetno = 2;      // head=0, tags=1, first audio=2
+    opus_encoded_bytes = 0;
+
+    // Queue header packets so libogg generates pages with correct sequence numbers
     ogg_opus_head.b_o_s = 1;
     ogg_opus_head.e_o_s = 0;
     ogg_opus_head.granulepos = 0;
     ogg_opus_head.packetno = 0;
     ogg_stream_packetin(&ogg_stream, &ogg_opus_head);
-    sdTake();
-    ogg_write_page(opus_file);
-    sdGive();
 
-    // OpusTags packet
     ogg_opus_tags.b_o_s = 0;
     ogg_opus_tags.e_o_s = 0;
     ogg_opus_tags.granulepos = 0;
     ogg_opus_tags.packetno = 1;
     ogg_stream_packetin(&ogg_stream, &ogg_opus_tags);
-    sdTake();
-    ogg_write_page(opus_file);
-    sdGive();
 
-    opus_granulepos = 0;
-    opus_packetno = 2;
-    opus_encoded_bytes = 0;
+    // Drain header pages into buffer immediately
+    while (ogg_stream_pageout(&ogg_stream, &ogg_page_buf) != 0) {
+        memcpy(ogg_buf + ogg_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
+        ogg_buf_pos += ogg_page_buf.header_len;
+        memcpy(ogg_buf + ogg_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
+        ogg_buf_pos += ogg_page_buf.body_len;
+    }
 
-    LOG_AUDIO(LOG_INFO, "opus_file_start: %s", filename);
+    pages_flushed = false;
+
+    LOG_AUDIO(LOG_INFO, "opus_init_stream: buffering (header=%lu bytes)",
+              (unsigned long)ogg_buf_pos);
 }
 
-// Returns number of unconsumed samples (remainder < opus_frame_size_samples).
-static int opus_file_write(const int16_t* pcm, int samples) {
+// Opens SD file, writes all buffered OGG pages (headers + audio), transitions to streaming mode.
+static void ogg_flush_buffer() {
+    if (ogg_buf_pos == 0 || pages_flushed) return;
+
+    char filename[64];
+    snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+
+    sdTake();
+    opus_file = SD.open(filename, FILE_WRITE);
+    sdGive();
+
+    if (!opus_file) {
+        LOG_AUDIO(LOG_ERROR, "ogg_flush_buffer: failed to open %s", filename);
+        ogg_buf_pos = 0;
+        return;
+    }
+
+    sdTake();
+    opus_file.write(ogg_buf, ogg_buf_pos);
+    sdGive();
+
+    LOG_AUDIO(LOG_INFO, "ogg_flush_buffer: wrote %lu bytes to %s",
+              (unsigned long)ogg_buf_pos, filename);
+
+    strcpy(lastSavedFile, filename);
+    pages_flushed = true;
+    ogg_buf_pos = 0;
+}
+
+static int opus_encode_to_buffer(const int16_t* pcm, int samples) {
     const int16_t *ptr = pcm;
     int remaining = samples;
 
@@ -609,28 +640,60 @@ static int opus_file_write(const int16_t* pcm, int samples) {
         opus_encoded_bytes += (encoded_bytes > 0) ? encoded_bytes : 0;
     }
 
-    // Flush accumulated pages every ~4KB encoded output (~1.3s at 24kbps)
-    if (opus_encoded_bytes >= 4096) {
+    // Drain OGG pages from stream
+    while (ogg_stream_pageout(&ogg_stream, &ogg_page_buf) != 0) {
+        int page_size = ogg_page_buf.header_len + ogg_page_buf.body_len;
+
+        if (!pages_flushed) {
+            // Buffer in memory
+            if (ogg_buf_pos + page_size > OGG_BUF_CAPACITY) {
+                LOG_AUDIO(LOG_WARN, "OGG buffer full (%lu), flushing early",
+                          (unsigned long)ogg_buf_pos);
+                ogg_flush_buffer();
+            }
+            memcpy(ogg_buf + ogg_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
+            ogg_buf_pos += ogg_page_buf.header_len;
+            memcpy(ogg_buf + ogg_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
+            ogg_buf_pos += ogg_page_buf.body_len;
+
+            // ≥4KB threshold → open file and flush
+            if (ogg_buf_pos >= 4096 && !pages_flushed) {
+                ogg_flush_buffer();
+            }
+        } else {
+            // Already flushed → write directly to file
+            sdTake();
+            opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
+            opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
+            sdGive();
+        }
+    }
+
+    // Periodic yield when streaming
+    if (pages_flushed && opus_encoded_bytes >= 4096) {
         sdTake();
         ogg_write_page(opus_file);
         sdGive();
         opus_encoded_bytes = 0;
-        vTaskDelay(pdMS_TO_TICKS(1));  // yield to other tasks
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
-    return remaining;  // unconsumed samples
+    return remaining;
 }
 
 static void opus_file_end() {
-    if (!opus_file) return;
+    if (!pages_flushed) {
+        // Never reached 4KB — discard, prepare for next stream
+        LOG_AUDIO(LOG_INFO, "opus_file_end: discarding %lu bytes (short utterance)",
+                  (unsigned long)ogg_buf_pos);
+        ogg_buf_pos = 0;
+        return;
+    }
 
+    // File open — write EOS and close
     sdTake();
-
-    // Flush any remaining encoded audio pages
     ogg_write_page(opus_file);
 
-    // Write EOS packet — e_o_s flag on the page signals end-of-stream.
-    // libogg drops zero-byte packets, so use a 1-byte body.
     uint8_t eos_data = 0;
     ogg_packet eos_op = {0};
     eos_op.packet = &eos_data;
@@ -641,7 +704,6 @@ static void opus_file_end() {
     eos_op.packetno = opus_packetno;
     ogg_stream_packetin(&ogg_stream, &eos_op);
 
-    // Flush forces the EOS page out even if not enough packets for a normal page
     if (ogg_stream_flush(&ogg_stream, &ogg_page_buf) != 0) {
         opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
         opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
@@ -650,28 +712,10 @@ static void opus_file_end() {
     opus_file.flush();
     uint32_t fileSize = opus_file.size();
     opus_file.close();
-    sdGive();  // MUST be after file.close()
+    sdGive();
 
     LOG_AUDIO(LOG_INFO, "opus_file_end: %lu bytes, granule=%lld",
               (unsigned long)fileSize, (long long)opus_granulepos);
-
-    // Pre-open next file while SD is idle — avoids ~150ms FAT32 create
-    // in opus_file_start when voice begins.
-    char next[64];
-    snprintf(next, sizeof(next), "/lifelog/rec_%05lu.opus", fileIndex);
-    sdTake();
-    File nextFile = SD.open(next, FILE_WRITE);
-    sdGive();
-    if (nextFile) {
-        opus_file = nextFile;
-        file_preopened = true;
-        strcpy(preopened_name, next);
-        fileIndex++;
-        LOG_AUDIO(LOG_INFO, "pre-opened: %s", next);
-    } else {
-        file_preopened = false;
-        LOG_AUDIO(LOG_WARN, "pre-open failed: %s", next);
-    }
 }
 
 // ── Upload worker task — non-blocking upload from queue ────────────
@@ -701,39 +745,40 @@ void writerTask(void *pvParameters) {
     assert(pcm_buf);
 
     while (true) {
-        // Detect recording transitions
+        // ── Voice start: init OGG stream in memory (no SD file) ──
         if (!prev_recording && recording) {
-            // Voice started — open new Opus file
-            char filename[64];
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
-            if (file_preopened) {
-                strcpy(filename, preopened_name);
-            } else {
-                snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
-            }
-            opus_file_start(filename);
-            strcpy(lastSavedFile, filename);
+            opus_init_stream();
 #else
+            char filename[64];
             snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
+            strcpy(lastSavedFile, filename);
 #endif
             prev_recording = true;
-        } else if (prev_recording && !recording) {
-            // Voice ended — finalize file, then queue upload with metadata snapshot
+        }
+
+        // ── Voice end: close file or discard, prepare for next stream ──
+        if (prev_recording && !recording) {
             LOG_AUDIO(LOG_INFO, "writer: voice ended, finalizing");
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
             opus_file_end();
 #endif
             prev_recording = false;
-            UploadRequest req;
-            strncpy(req.filename, lastSavedFile, sizeof(req.filename) - 1);
-            req.filename[sizeof(req.filename) - 1] = '\0';
-            req.utteranceId = utteranceId;
-            req.chunkIndex = chunkIndex;
-            req.isFinal = isFinal;
-            chunkIndex++;
-            if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
-                LOG_AUDIO(LOG_WARN, "Upload queue full (%lu/%d), skipping %s",
-                          (unsigned long)uxQueueMessagesWaiting(uploadQueue), 8, req.filename);
+
+            if (pages_flushed) {
+                UploadRequest req;
+                strncpy(req.filename, lastSavedFile, sizeof(req.filename) - 1);
+                req.filename[sizeof(req.filename) - 1] = '\0';
+                req.utteranceId = utteranceId;
+                req.chunkIndex = chunkIndex;
+                req.isFinal = isFinal;
+                chunkIndex++;
+                if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
+                    LOG_AUDIO(LOG_WARN, "Upload queue full (%lu/%d), skipping %s",
+                              (unsigned long)uxQueueMessagesWaiting(uploadQueue), 8, req.filename);
+                }
+            } else {
+                LOG_AUDIO(LOG_INFO, "writer: no file to upload (short utterance)");
             }
             continue;
         }
@@ -784,7 +829,7 @@ void writerTask(void *pvParameters) {
         totalSamplesWritten += pcm_count - frame_rem;
 
         // Encode frames, returns unconsumed count
-        unconsumed = opus_file_write(pcm_buf, pcm_count);
+        unconsumed = opus_encode_to_buffer(pcm_buf, pcm_count);
         if (unconsumed > 0) {
             // Save remainder for next iteration (must be < opus_frame_size_samples)
             memmove(frame_buf, pcm_buf + (pcm_count - unconsumed),

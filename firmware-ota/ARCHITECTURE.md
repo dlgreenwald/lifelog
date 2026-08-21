@@ -29,7 +29,7 @@ rectangle "Core 1" {
 }
 
 rectangle "Shared" {
-  component "Ring Buffer\n16 slots × 512 samples" as ring
+  component "Ring Buffer\n32 slots × 512 samples" as ring
   component "Upload Queue\n8 slots" as queue
   component "sdMutex\n(Recursive)" as mutex
 }
@@ -122,7 +122,7 @@ end note
 
 ## Audio Pipeline
 
-The audio pipeline transforms raw PDM microphone samples into Opus-encoded OGG files on the SD card.
+The audio pipeline transforms raw PDM microphone samples into Opus-encoded OGG files on the SD card. OGG pages are first buffered in PSRAM (≥4KB) before opening the SD file, eliminating SD latency during voice onset. Short utterances (<4KB) are discarded without touching SD.
 
 ```plantuml
 @startuml
@@ -150,8 +150,7 @@ end note
 if (VAD state changed?) then (voice start)
   :Set recording = true;
   :Prepend VAD cache\n(8192 samples pre-trigger);
-  :Open new Opus file;
-  :Initialize OGG stream;
+  :Init OGG stream in memory\n(copy pre-generated headers);
   :xTaskNotifyGive(writerTask);
 elseif (voice continued) then
   :Write 512 samples to ring buffer;
@@ -169,19 +168,26 @@ if (ring buffer has data?) then (yes)
   :Accumulate into pcm_buf (8KB);
   while (pcm_buf has ≥320 samples?) do (Opus frame)
     :Encode 20ms frame (320 samples);
-    :Write OGG page to SD;
-    note right: Granulepos in 48kHz units\n(×3 for 16kHz input)
+    :Drain OGG pages to buffer or SD;
+    note right
+      Before 4KB: buffer in PSRAM
+      ≥4KB: open SD file, flush buffer
+      After flush: write directly to SD
+    end note
   endwhile
 else (empty)
   :Wait for ring buffer notification;
 endif
 
 if (recording ended?) then (yes)
-  :Write EOS page;
-  :Flush + close file;
-  :Pre-open next file;
-  note right: Avoids ~150ms\nFAT32 create latency
-  :Queue upload request;
+  if (pages_flushed?) then (yes)
+    :Write EOS page;
+    :Flush + close file;
+    :Queue upload request;
+  else (short utterance)
+    :Discard buffered pages;
+    note right: No SD write for\nutterances <4KB
+  endif
 else (no)
 endif
 
@@ -219,11 +225,13 @@ rectangle "Shared State" {
 
   rectangle "ring_head\nvolatile uint32_t" as head
   rectangle "ring_tail\nvolatile uint32_t" as tail
-  rectangle "ring_used[16]\nvolatile bool[]" as used
+  rectangle "ring_used[32]\nvolatile bool[]" as used
   rectangle "recording\nvolatile bool" as recording
   rectangle "utteranceId\nvolatile uint32_t" as utt_id
   rectangle "chunkIndex\nvolatile uint32_t" as chunk_idx
   rectangle "isFinal\nvolatile bool" as is_final
+  rectangle "ogg_buf\nPSRAM 16KB" as ogg_buf
+  rectangle "pages_flushed\nvolatile bool" as flushed
 }
 
 rectangle "afeFetchTask" as fetch
@@ -265,11 +273,11 @@ The ring buffer decouples the real-time audio capture from the variable-latency 
 
 | Property | Value |
 |----------|-------|
-| Slots | 16 |
+| Slots | 32 |
 | Samples per slot | 512 |
 | Bytes per slot | 1024 (512 × 2 bytes) |
-| Total size | 16,384 bytes (16KB) |
-| Duration | 512ms at 16kHz |
+| Total size | 32,768 bytes (32KB) |
+| Duration | 1024ms at 16kHz |
 | Producer | `afeFetchTask` (writes `ring_head`) |
 | Consumer | `writerTask` (reads `ring_tail`) |
 | Overflow | Oldest slot dropped, `flushDropCount++` |
@@ -278,12 +286,12 @@ The ring buffer decouples the real-time audio capture from the variable-latency 
 @startuml
 skinparam backgroundColor white
 
-rectangle "Ring Buffer (16 slots)" {
+rectangle "Ring Buffer (32 slots)" {
   collections "slot 0" as s0
   collections "slot 1" as s1
   collections "slot 2" as s2
   collections "..." as s3
-  collections "slot 15" as s15
+  collections "slot 31" as s15
 
   s0 -[hidden]right-> s1
   s1 -[hidden]right-> s2
@@ -300,10 +308,10 @@ consumer -down-> ring_tail : advances
 note as n1
   **Flow:**
   1. afeFetchTask writes to ring_used[ring_head]
-  2. Advances ring_head = (ring_head + 1) % 16
+  2. Advances ring_head = (ring_head + 1) % 32
   3. Notifies writerTask via xTaskNotifyGive
   4. writerTask reads from ring_used[ring_tail]
-  5. Advances ring_tail = (ring_tail + 1) % 16
+  5. Advances ring_tail = (ring_tail + 1) % 32
 
   **Overflow:**
   If ring_used[next_head] is true (slot not consumed),
@@ -490,8 +498,10 @@ stop
 |---------|-------|----------|
 | Sample rate | 16,000 Hz | `audio.h` |
 | DMA buffers | 4 × 1024 samples | `audio.cpp` |
-| Ring buffer slots | 16 | `audio.cpp` |
+| Ring buffer slots | 32 | `audio.cpp` |
 | Ring buffer chunk | 512 samples (32ms) | `audio.cpp` |
+| OGG buffer capacity | 16 KB (PSRAM) | `audio.cpp` |
+| OGG flush threshold | 4 KB before SD open | `audio.cpp` |
 | Opus frame | 20ms (320 samples) | `config.h` |
 | Opus bitrate | 24 kbps | `config.h` |
 | Opus complexity | 5 | `config.h` |

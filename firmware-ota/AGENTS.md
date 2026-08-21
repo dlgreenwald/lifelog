@@ -48,17 +48,25 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 |---|---|---|
 | `sdMutex` | Recursive mutex | All SD SPI access (`sdTake()`/`sdGive()`) |
 | `ring_mutex` | Mutex | Ring buffer head/tail/used[] |
-| `ring_head` / `ring_tail` | `volatile uint32_t` | Ring buffer indexes (16 slots) |
-| `ring_used[16]` | `volatile bool[]` | Per-slot data-present flags |
+| `ring_head` / `ring_tail` | `volatile uint32_t` | Ring buffer indexes (32 slots) |
+| `ring_used[32]` | `volatile bool[]` | Per-slot data-present flags |
 | `recording` | `volatile bool` | VAD state, read by writerTask |
 | `utteranceId`, `chunkIndex`, `isFinal` | `volatile` | Utterance metadata |
+| `ogg_buf` | `uint8_t *` (PSRAM, 16KB) | Deferred SD open — OGG pages buffered until ≥4KB |
+| `pages_flushed` | `bool` | True after first SD write; false = still buffering |
 | `uploadQueue` | FreeRTOS queue (depth 8) | `UploadRequest` structs |
 
 ### Ring Buffer
-- 16 slots × 512 samples × 2 bytes = 16KB total (512ms at 16kHz)
+- 32 slots × 512 samples × 2 bytes = 32KB total (1024ms at 16kHz)
 - Producer: `afeFetchTask` writes slot, advances `ring_head`
 - Consumer: `writerTask` reads slot, advances `ring_tail`
 - Overflow: oldest slot dropped, `flushDropCount++`
+
+### Deferred SD Open
+- OGG pages accumulate in `ogg_buf` (16KB PSRAM) before opening SD file
+- SD file opens only when buffer ≥4KB (~1.3s of audio)
+- Short utterances (<4KB) discarded without touching SD
+- Pre-generated OGG headers (OpusHead + OpusTags) produced once at init, memcpy'd per stream
 
 ## Key Files
 
