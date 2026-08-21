@@ -10,19 +10,19 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
         return false;
     }
 
-    // Open file and get size — brief sdMutex hold
+    // Quick size check — open, get size, close immediately
     sdTake();
-    File file = SD.open(filename, FILE_READ);
-    if (!file) {
+    File probe = SD.open(filename, FILE_READ);
+    if (!probe) {
         sdGive();
         LOG_UPLOAD(LOG_ERROR, "Failed to open %s", filename);
         return false;
     }
-    uint32_t fileSize = file.size();
+    uint32_t fileSize = probe.size();
+    probe.close();
     sdGive();
 
     // Discard clips shorter than ~5s — at 24kbps speech ~4KB, headers alone ~200B
-    // Don't delete here — caller (upload_if_connected) handles deletion on return true.
     if (fileSize < 4096) {
         LOG_UPLOAD(LOG_INFO, "Discarded short clip: %s (%luB)", filename,
                    (unsigned long)fileSize);
@@ -52,13 +52,10 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     body += "Content-Disposition: form-data; name=\"file\"; filename=\"" + String(filename) + "\"\r\n";
     body += "Content-Type: application/octet-stream\r\n\r\n";
 
-    // Connect to server — no SD access
+    // Connect to server — no SD access, may take seconds
     WiFiClient client;
     if (!client.connect(SERVER_HOST, SERVER_PORT)) {
         LOG_UPLOAD(LOG_ERROR, "Connection failed");
-        sdTake();
-        file.close();
-        sdGive();
         return false;
     }
 
@@ -79,23 +76,29 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     client.print(headers);
     client.print(body);
 
-    // Stream file in 4K chunks — sdMutex held only during each read(),
-    // released while WiFi sends so writerTask can drain the ring buffer.
-    // Yield after each chunk so I2S DMA can use the shared FSPI bus.
+    // Open file for streaming — card selected, immediately start reading
+    // No idle gap between open and first read
+    sdTake();
+    File file = SD.open(filename, FILE_READ);
+    if (!file) {
+        sdGive();
+        LOG_UPLOAD(LOG_ERROR, "Failed to reopen %s", filename);
+        return false;
+    }
+
+    // Stream file in 4K chunks — sdMutex held during read, released during WiFi send
     uint8_t readBuf[4096];
     uint32_t totalSent = 0;
     while (totalSent < fileSize) {
-        sdTake();
         int n = file.read(readBuf, sizeof(readBuf));
-        sdGive();
         if (n <= 0) break;
+        sdGive();
         client.write(readBuf, n);
         totalSent += n;
         vTaskDelay(pdMS_TO_TICKS(1));
+        sdTake();
     }
 
-    // Close file — brief sdMutex hold
-    sdTake();
     file.close();
     sdGive();
 
