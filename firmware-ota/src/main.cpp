@@ -204,23 +204,4 @@ static void logStats() {
 void loop() {
     ArduinoOTA.handle();
     logStats();
-
-    // if (xSemaphoreTakeRecursive(sdMutex, 0) == pdTRUE) {
-    //     xSemaphoreGiveRecursive(sdMutex);
-    //     if (recording) {
-    //         digitalWrite(LED_PIN, HIGH);
-    //         delay(200);
-    //         digitalWrite(LED_PIN, LOW);
-    //         delay(200);
-    //     } else {
-    //         digitalWrite(LED_PIN, HIGH);
-    //         delay(1000);
-    //         digitalWrite(LED_PIN, LOW);
-    //         delay(1000);
-    //     }
-    // } else {
-    //     // SD in use — skip LED toggle to avoid GPIO 21 conflict
-    //     delay(100);
-    // }
-    delay(10);  // yield to RTOS tasks
 }

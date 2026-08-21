@@ -240,7 +240,7 @@ static void afeInit() {
 // Consumer: writerTask — reads ring_tail
 // Each slot holds one AFE chunk (~32ms at 16kHz)
 
-#define RING_SLOTS       16
+#define RING_SLOTS       32
 #define RING_CHUNK_SAMPLES 512   // matches AFE feed chunksize
 
 static int16_t* ring_buf[RING_SLOTS] = {0};  // ring slot buffers in PSRAM
@@ -401,7 +401,7 @@ void audioInit() {
 
     // Upload task — offloads blocking HTTP uploads from writerTask
     uploadQueue = xQueueCreate(8, sizeof(UploadRequest));
-    xTaskCreatePinnedToCore(uploadWorkerTask, "uploader", 8192, NULL, 1, &uploadTaskHandle, 1);
+    xTaskCreatePinnedToCore(uploadWorkerTask, "uploader", 8192, NULL, 1, &uploadTaskHandle, 0);
     LOG_AUDIO(LOG_INFO, "Upload task started (queue depth=4)");
 }
 
@@ -694,9 +694,11 @@ void writerTask(void *pvParameters) {
     int frame_rem = 0;
     bool prev_recording = false;
 
-    // Local PCM buffer for draining ring — RING_SLOTS * RING_CHUNK_SAMPLES
-    // = 4096 samples = 8KB. Temporary: copied from ring, fed to encoder, discarded.
-    int16_t pcm_buf[RING_SLOTS * RING_CHUNK_SAMPLES];
+    // Local PCM buffer for draining ring — allocated in PSRAM to avoid stack overflow.
+    // Temporary: copied from ring, fed to encoder, discarded.
+    const int pcm_buf_capacity = RING_SLOTS * RING_CHUNK_SAMPLES;
+    int16_t *pcm_buf = (int16_t *)ps_malloc(pcm_buf_capacity * sizeof(int16_t));
+    assert(pcm_buf);
 
     while (true) {
         // Detect recording transitions
@@ -746,7 +748,7 @@ void writerTask(void *pvParameters) {
             pcm_count = frame_rem;
         }
         while (ring_used[ring_tail] && ring_tail != ring_head) {
-            if (pcm_count + RING_CHUNK_SAMPLES > (int)(sizeof(pcm_buf) / sizeof(pcm_buf[0]))) {
+            if (pcm_count + RING_CHUNK_SAMPLES > pcm_buf_capacity) {
                 LOG_AUDIO(LOG_WARN, "writer: pcm_buf overflow");
                 break;
             }
