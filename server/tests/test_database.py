@@ -23,10 +23,21 @@ class MockPoolConnection:
         return False
 
 
+class MockTransaction:
+    """Simulates conn.transaction() returning an async context manager."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
 def _make_mock_pool(mock_conn):
     """Create a mock pool whose acquire() returns an async context manager."""
     pool = MagicMock()
     pool.acquire.return_value = MockPoolConnection(mock_conn)
+    mock_conn.transaction = MagicMock(return_value=MockTransaction())
     return pool
 
 
@@ -294,11 +305,43 @@ async def test_delete_todo(mock_conn):
 
 
 @pytest.mark.asyncio
+async def test_save_decisions(mock_conn):
+    from lifelog.database import save_decisions
+
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        await save_decisions(
+            10,
+            1,
+            [
+                {"decision": "Use Postgres", "made_by": "Alice", "context": "DB choice", "reason": "Team experience"},
+                {"decision": "Launch Friday", "made_by": "Bob"},
+            ],
+        )
+
+    # First call is DELETE, then two INSERTs
+    assert mock_conn.execute.await_count == 3
+    sql_first = mock_conn.execute.call_args_list[0].args[0]
+    assert "DELETE FROM decisions" in sql_first
+
+
+@pytest.mark.asyncio
 async def test_get_decisions(mock_conn):
     from lifelog.database import get_decisions
 
     mock_conn.fetch.return_value = [
-        {"id": 1, "timestamp": datetime(2024, 1, 15, tzinfo=UTC), "summary": "Decided to go"},
+        {
+            "id": 1,
+            "decision": "Use Postgres",
+            "made_by": "Alice",
+            "context": "DB choice",
+            "reason": "Team experience",
+            "archived": False,
+            "created_at": datetime(2024, 1, 15, tzinfo=UTC),
+            "recording_id": 10,
+            "recording_timestamp": datetime(2024, 1, 15, tzinfo=UTC),
+        },
     ]
     pool = _make_mock_pool(mock_conn)
 
@@ -306,6 +349,50 @@ async def test_get_decisions(mock_conn):
         result = await get_decisions(1, limit=10)
 
     assert len(result) == 1
+    assert result[0]["decision"] == "Use Postgres"
+    assert result[0]["reason"] == "Team experience"
+
+
+@pytest.mark.asyncio
+async def test_get_decisions_for_recording(mock_conn):
+    from lifelog.database import get_decisions_for_recording
+
+    mock_conn.fetch.return_value = [
+        {"id": 1, "decision": "Go with A", "made_by": "Bob", "context": None, "reason": None, "archived": False, "created_at": datetime(2024, 1, 15, tzinfo=UTC)},
+    ]
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        result = await get_decisions_for_recording(10)
+
+    assert len(result) == 1
+    assert result[0]["decision"] == "Go with A"
+
+
+@pytest.mark.asyncio
+async def test_update_decision_archive(mock_conn):
+    from lifelog.database import update_decision_archive
+
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        await update_decision_archive(1, True)
+
+    sql = mock_conn.execute.call_args.args[0]
+    assert "UPDATE decisions" in sql
+
+
+@pytest.mark.asyncio
+async def test_delete_decision(mock_conn):
+    from lifelog.database import delete_decision
+
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        await delete_decision(1)
+
+    sql = mock_conn.execute.call_args.args[0]
+    assert "DELETE FROM decisions" in sql
 
 
 @pytest.mark.asyncio

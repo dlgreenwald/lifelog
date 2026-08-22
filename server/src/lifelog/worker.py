@@ -487,32 +487,86 @@ async def transcribe_window(
 async def _reprocess_session(session: dict):
     """Batch transcribe session audio, summarize, save recording.
 
-    Uses transcribe_window() for the full session time range, then
-    runs LLM summarization and saves the final recording.
+    Splits long sessions into 30-minute transcription windows to avoid
+    ffmpeg timeouts, then combines results into a single recording.
     """
     session_id = session["id"]
+    t_start = time.monotonic()
+    CHUNK_MINUTES = 30
+
+    logger.info("Session %d: starting reprocess", session_id)
 
     utterances = await db.get_session_all_utterances(session_id)
     if not utterances:
         logger.warning("Session %d has no utterances, skipping", session_id)
         return
 
+    logger.info("Session %d: found %d utterances", session_id, len(utterances))
+
     # Determine full time range from utterances
     first = utterances[0]["created_at"].replace(tzinfo=None)
     last = utterances[-1]["created_at"].replace(tzinfo=None)
+    total_minutes = (last - first).total_seconds() / 60
+    logger.info(
+        "Session %d: time range [%s, %s] (%.1f minutes)",
+        session_id, first, last, total_minutes,
+    )
 
-    # Transcribe the full session
-    result = await transcribe_window(session, first, last + timedelta(seconds=10))
+    # Split into 30-minute chunks (no overlap — segments map to utterances by timestamp)
+    all_named_segments = []
+    full_transcript = {"segments": []}
+    combined_speaker_map = {}
 
-    all_named_segments = result["all_named_segments"]
-    full_transcript = result["full_transcript"]
+    # Build chunk boundaries from utterance timestamps
+    chunk_starts = [first]
+    chunk_start = first
+    while chunk_start < last:
+        chunk_start = chunk_start + timedelta(minutes=CHUNK_MINUTES)
+        if chunk_start < last:
+            chunk_starts.append(chunk_start)
+    chunk_starts.append(last + timedelta(seconds=10))
+
+    for i in range(len(chunk_starts) - 1):
+        window_start = chunk_starts[i]
+        window_end = chunk_starts[i + 1]
+        chunk_num = i + 1
+        logger.info(
+            "Session %d: chunk %d/%d [%s, %s]",
+            session_id, chunk_num, len(chunk_starts) - 1, window_start, window_end,
+        )
+
+        t_chunk = time.monotonic()
+        result = await transcribe_window(session, window_start, window_end)
+        chunk_elapsed = time.monotonic() - t_chunk
+
+        segs = result["all_named_segments"]
+        logger.info(
+            "Session %d: chunk %d done in %.1fs: %d segments",
+            session_id, chunk_num, chunk_elapsed, len(segs),
+        )
+
+        all_named_segments.extend(segs)
+        full_transcript["segments"].extend(result["full_transcript"]["segments"])
+        combined_speaker_map.update(result["speaker_map"])
+
+    logger.info(
+        "Session %d: transcription complete: %d total segments across %d chunks",
+        session_id, len(all_named_segments), len(chunk_starts) - 1,
+    )
 
     if not all_named_segments:
         logger.warning("Session %d: no segments from transcription, skipping save", session_id)
+        await db.mark_session_processed(session_id)
         return
 
     # LLM summarization
+    t_llm = time.monotonic()
+    logger.info("Session %d: calling LLM summarize...", session_id)
     llm_result = summarize(all_named_segments)
+    logger.info(
+        "Session %d: LLM summarize returned in %.1fs",
+        session_id, time.monotonic() - t_llm,
+    )
 
     # Get audio filenames for the recording
     audio_files = await db.get_recording_audio_filenames(session_id)
@@ -529,6 +583,7 @@ async def _reprocess_session(session: dict):
         session_timestamp=session["started_at"],
         category=category,
     )
+    logger.info("Session %d: saved recording id=%d", session_id, recording_id)
 
     # Save todos only on first processing — never regenerate on reprocessing
     if existing_recording is None:
@@ -536,13 +591,19 @@ async def _reprocess_session(session: dict):
         if todos:
             await db.save_todos(recording_id, session["user_id"], todos)
 
+    # Save decisions — always overwrite (opposite of todos)
+    decisions = llm_result.get("decisions", [])
+    if decisions:
+        await db.save_decisions(recording_id, session["user_id"], decisions)
+
     # Mark session as processed
     await db.mark_session_processed(session_id)
     logger.info(
-        "Session %d reprocessed: %d segments, %d speakers, %d todos",
+        "Session %d reprocessed in %.1fs: %d segments, %d speakers, %d todos",
         session_id,
+        time.monotonic() - t_start,
         len(all_named_segments),
-        len(result["speaker_map"]),
+        len(combined_speaker_map),
         len(llm_result.get("todos", [])),
     )
 
@@ -569,8 +630,16 @@ async def hourly_reprocess_loop():
 
         try:
             sessions = await db.get_sessions_for_reprocessing()
-            logger.info("Hourly reprocess: %d session(s) to process", len(sessions))
+            logger.info(
+                "Hourly reprocess: %d session(s) to process%s",
+                len(sessions),
+                " [session ids: %s]" % [s["id"] for s in sessions] if sessions else "",
+            )
             for session in sessions:
+                logger.info(
+                    "Hourly reprocess: starting session %d (user=%d, started=%s)",
+                    session["id"], session["user_id"], session["started_at"],
+                )
                 try:
                     await _reprocess_session(session)
                 except Exception:

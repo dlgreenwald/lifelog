@@ -160,17 +160,72 @@ describe('api client', () => {
   });
 
   describe('api.getDecisions', () => {
-    it('fetches decisions', async () => {
+    it('fetches decisions with default include_archived=false', async () => {
       const data = { decisions: [{ decision: 'Go', made_by: 'Alice' }] };
       mockFetch.mockReturnValueOnce(jsonResponse(data));
 
       const result = await api.getDecisions();
 
       expect(mockFetch).toHaveBeenCalledWith(
-        '/api/v1/dashboard/decisions',
+        '/api/v1/dashboard/decisions?include_archived=false',
         expect.anything()
       );
       expect(result).toEqual(data);
+    });
+
+    it('fetches decisions with include_archived=true', async () => {
+      const data = { decisions: [] };
+      mockFetch.mockReturnValueOnce(jsonResponse(data));
+
+      await api.getDecisions(true);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/dashboard/decisions?include_archived=true',
+        expect.anything()
+      );
+    });
+  });
+
+  describe('api.getDecisionsForRecording', () => {
+    it('fetches decisions for a recording', async () => {
+      const data = { decisions: [{ decision: 'Go', made_by: 'Alice' }] };
+      mockFetch.mockReturnValueOnce(jsonResponse(data));
+
+      const result = await api.getDecisionsForRecording('10');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/dashboard/recording/10/decisions',
+        expect.anything()
+      );
+      expect(result).toEqual(data);
+    });
+  });
+
+  describe('api.archiveDecision', () => {
+    it('archives a decision', async () => {
+      mockFetch.mockReturnValueOnce(jsonResponse({ ok: true }));
+
+      const result = await api.archiveDecision(5, true);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/dashboard/decisions/5/archive',
+        expect.objectContaining({ method: 'POST' })
+      );
+      expect(result).toEqual({ ok: true });
+    });
+  });
+
+  describe('api.deleteDecision', () => {
+    it('deletes a decision', async () => {
+      mockFetch.mockReturnValueOnce(jsonResponse({ ok: true }));
+
+      const result = await api.deleteDecision(5);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/dashboard/decisions/5',
+        expect.objectContaining({ method: 'DELETE' })
+      );
+      expect(result).toEqual({ ok: true });
     });
   });
 

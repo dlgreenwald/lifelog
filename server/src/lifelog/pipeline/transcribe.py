@@ -51,14 +51,121 @@ async def transcribe(audio_bytes: bytes) -> dict:
     return result
 
 
+MAX_INPUTS_PER_FFMPEG = 50
+
+
+async def _run_ffmpeg_batch(
+    audio_list: list[bytes],
+    timestamps: list[datetime],
+    tmpdir: str,
+    batch_num: int,
+) -> bytes:
+    """Run a single ffmpeg concat for a batch of segments (max MAX_INPUTS_PER_FFMPEG).
+
+    Returns concatenated opus audio bytes for this batch.
+    """
+    n = len(audio_list)
+    input_args = []
+    filter_parts = []
+
+    for i, (audio_bytes, ts) in enumerate(zip(audio_list, timestamps)):
+        delay_ms = int((ts - timestamps[0]).total_seconds() * 1000)
+        seg_path = os.path.join(tmpdir, f"b{batch_num}_seg_{i}.opus")
+        with open(seg_path, "wb") as f:
+            f.write(audio_bytes)
+        input_args.extend(["-i", seg_path])
+        filter_parts.append(f"[{i}:a]adelay={delay_ms}|{delay_ms}[a{i}]")
+
+    concat_inputs = "".join(f"[a{i}]" for i in range(n))
+    filter_parts.append(f"{concat_inputs}concat=n={n}:v=0:a=1[out]")
+    filter_complex = ";\n".join(filter_parts)
+
+    filter_script_path = os.path.join(tmpdir, f"filter_b{batch_num}.txt")
+    with open(filter_script_path, "w") as f:
+        f.write(filter_complex)
+
+    cmd = [
+        "ffmpeg", "-y",
+        *input_args,
+        "-filter_complex_script", filter_script_path,
+        "-map", "[out]",
+        "-c:a", "libopus", "-b:a", "24000",
+        "-f", "ogg", "pipe:1",
+    ]
+
+    t_cmd = time.monotonic()
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+
+    stderr_chunks = []
+    async def _read_stderr():
+        while True:
+            chunk = await proc.stderr.read(4096)
+            if not chunk:
+                break
+            stderr_chunks.append(chunk)
+            text = chunk.decode(errors="replace")
+            for line in text.split("\n"):
+                if "size=" in line or "time=" in line:
+                    logger.info("FFmpeg batch %d progress: %s", batch_num, line.strip())
+
+    stderr_task = asyncio.create_task(_read_stderr())
+
+    try:
+        stdout = await asyncio.wait_for(proc.stdout.read(), timeout=600)
+        await asyncio.wait_for(proc.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        await stderr_task
+        raise RuntimeError(f"FFmpeg batch {batch_num} timed out (pid={proc.pid})")
+
+    await stderr_task
+    elapsed = time.monotonic() - t_cmd
+    logger.info("FFmpeg batch %d finished in %.1fs (exit=%d)", batch_num, elapsed, proc.returncode)
+
+    if proc.returncode != 0:
+        stderr_text = b"".join(stderr_chunks).decode()[:500]
+        raise RuntimeError(f"FFmpeg batch {batch_num} failed (exit {proc.returncode}): {stderr_text}")
+
+    return stdout
+
+
+async def _concatopus_files(file_list: list[str], tmpdir: str) -> bytes:
+    """Concat multiple opus files using ffmpeg concat demuxer (no re-encode)."""
+    list_path = os.path.join(tmpdir, "concat_list.txt")
+    with open(list_path, "w") as f:
+        for path in file_list:
+            f.write(f"file '{path}'\n")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", list_path,
+        "-c", "copy",
+        "-f", "ogg", "pipe:1",
+    ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"FFmpeg concat failed (exit {proc.returncode}): {stderr.decode()[:500]}")
+
+    return stdout
+
+
 async def concatenate_opus(
     audio_list: list[bytes],
     timestamps: list[datetime],
 ) -> bytes:
     """Concatenate multiple Opus audio segments into one stream with silence gaps.
 
-    Each segment is delayed by the time gap from the first segment's timestamp.
-    FFmpeg handles decode, delay (silence insertion), concat, and re-encode.
+    Splits into batches of MAX_INPUTS_PER_FFMPEG to avoid overwhelming ffmpeg,
+    then concatenates batch results.
 
     Args:
         audio_list: List of raw Opus audio bytes.
@@ -79,82 +186,52 @@ async def concatenate_opus(
         )
 
     start_time = time.monotonic()
+    n = len(audio_list)
     tmpdir = tempfile.mkdtemp(prefix="opus_concat_")
 
     try:
-        # Write each segment to a file and compute delay
-        input_args = []
-        filter_parts = []
+        if n <= MAX_INPUTS_PER_FFMPEG:
+            # Single batch — run directly
+            logger.info("Concatenating %d audio segments (single batch)", n)
+            result = await _run_ffmpeg_batch(audio_list, timestamps, tmpdir, 0)
+            logger.info("Concatenation complete in %.2fs: %d bytes", time.monotonic() - start_time, len(result))
+            return result
 
-        for i, (audio_bytes, ts) in enumerate(zip(audio_list, timestamps)):
-            # Compute delay in milliseconds from first timestamp
-            delay_ms = int((ts - timestamps[0]).total_seconds() * 1000)
-
-            # Write segment to temp file
-            seg_path = os.path.join(tmpdir, f"seg_{i}.opus")
-            with open(seg_path, "wb") as f:
-                f.write(audio_bytes)
-
-            input_args.extend(["-i", seg_path])
-            # adelay filter: delay_ms|delay_ms for stereo safety
-            filter_parts.append(f"[{i}:a]adelay={delay_ms}|{delay_ms}[a{i}]")
-
-        # Concat all delayed streams
-        n = len(audio_list)
-        concat_inputs = "".join(f"[a{i}]" for i in range(n))
-        filter_parts.append(f"{concat_inputs}concat=n={n}:v=0:a=1[out]")
-
-        filter_complex = ";\n".join(filter_parts)
-
-        cmd = [
-            "ffmpeg",
-            "-y",  # Overwrite output
-            *input_args,
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "[out]",
-            "-c:a",
-            "libopus",
-            "-b:a",
-            "24000",
-            "-f",
-            "ogg",
-            "pipe:1",
-        ]
-
+        # Multiple batches
+        batch_files = []
+        num_batches = (n + MAX_INPUTS_PER_FFMPEG - 1) // MAX_INPUTS_PER_FFMPEG
         logger.info(
-            "Concatenating %d audio segments (delays: %s)",
-            n,
-            ", ".join(
-                str(int((ts - timestamps[0]).total_seconds() * 1000)) + "ms"
-                for ts in timestamps
-            ),
+            "Concatenating %d audio segments in %d batches of %d",
+            n, num_batches, MAX_INPUTS_PER_FFMPEG,
         )
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
+        for batch_idx in range(num_batches):
+            start = batch_idx * MAX_INPUTS_PER_FFMPEG
+            end = min(start + MAX_INPUTS_PER_FFMPEG, n)
+            batch_audio = audio_list[start:end]
+            batch_ts = timestamps[start:end]
 
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"FFmpeg failed (exit {proc.returncode}): {stderr.decode()[:500]}"
-            )
+            logger.info("Processing batch %d/%d (%d segments)", batch_idx + 1, num_batches, len(batch_audio))
+            batch_bytes = await _run_ffmpeg_batch(batch_audio, batch_ts, tmpdir, batch_idx)
 
-        duration_s = time.monotonic() - start_time
-        logger.info(
-            "Concatenation complete in %.2fs: %d bytes output",
-            duration_s,
-            len(stdout),
-        )
+            batch_path = os.path.join(tmpdir, f"batch_{batch_idx}.ogg")
+            with open(batch_path, "wb") as f:
+                f.write(batch_bytes)
+            batch_files.append(batch_path)
 
-        return stdout
+        # Concat all batch files
+        if len(batch_files) == 1:
+            with open(batch_files[0], "rb") as f:
+                result = f.read()
+        else:
+            logger.info("Concatenating %d batch files", len(batch_files))
+            result = await _concatopus_files(batch_files, tmpdir)
+
+        elapsed = time.monotonic() - start_time
+        logger.info("Full concatenation complete in %.2fs: %d bytes", elapsed, len(result))
+        return result
 
     finally:
-        # Clean up temp directory
         for f in os.listdir(tmpdir):
             os.remove(os.path.join(tmpdir, f))
         os.rmdir(tmpdir)

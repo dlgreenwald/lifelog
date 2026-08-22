@@ -9,6 +9,9 @@ vi.mock('../api/client', () => ({
   api: {
     getRecording: vi.fn(),
     getTodosForRecording: vi.fn().mockResolvedValue({ todos: [] }),
+    getDecisionsForRecording: vi.fn().mockResolvedValue({ decisions: [] }),
+    archiveDecision: vi.fn().mockResolvedValue({ ok: true }),
+    deleteDecision: vi.fn().mockResolvedValue({ ok: true }),
     completeTodo: vi.fn().mockResolvedValue({ ok: true }),
     deleteTodo: vi.fn().mockResolvedValue({ ok: true }),
     fetchAudio: vi.fn().mockResolvedValue('blob:mock'),
@@ -34,7 +37,7 @@ const mockRecording: Recording = {
   notes: ['Q1 focus on reliability'],
   conversation_changes: [],
   audio_filename: 'rec10.enc',
-  decisions: [{ decision: 'Go with plan A', made_by: 'Alice', context: 'Discussed options' }],
+  decisions: null,
 };
 
 function renderDetail(id = '10') {
@@ -128,11 +131,22 @@ describe('RecordingDetail', () => {
   });
 
   it('renders decisions section', async () => {
-    const withDecisions = {
-      ...mockRecording,
-      decisions: [{ decision: 'Go with plan A', made_by: 'Alice' }],
-    };
-    mockApi.getRecording.mockResolvedValue(withDecisions);
+    mockApi.getRecording.mockResolvedValue(mockRecording);
+    mockApi.getDecisionsForRecording.mockResolvedValue({
+      decisions: [
+        {
+          id: 1,
+          decision: 'Go with plan A',
+          made_by: 'Alice',
+          context: 'Discussed options',
+          reason: null,
+          archived: false,
+          recording_id: 10,
+          recording_timestamp: '2024-01-15T10:30:00',
+          created_at: '2024-01-15T10:30:00',
+        },
+      ],
+    });
 
     renderDetail();
 

@@ -29,6 +29,7 @@ Your task is to analyze the conversation and produce a structured JSON output wi
    - "decision": What was decided
    - "made_by": Who made or agreed to the decision
    - "context": Brief context around the decision
+   - "reason": Brief explanation of why this decision was made or what factors influenced it
 
 4. **todos**: List any action items or tasks that were discussed or assigned:
    - "task": The action item
