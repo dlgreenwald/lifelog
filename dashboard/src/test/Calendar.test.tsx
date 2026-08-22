@@ -24,9 +24,9 @@ beforeEach(() => {
   mockApi.getRecordings.mockResolvedValue({ recordings: [] });
 });
 
-function renderCalendar() {
+function renderCalendar(entries: string[] = ['/']) {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={entries}>
       <Calendar />
     </MemoryRouter>
   );
@@ -37,10 +37,10 @@ describe('Calendar', () => {
     renderCalendar();
 
     await waitFor(() => {
-      expect(screen.getByRole('heading')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { level: 2 })).toBeInTheDocument();
     });
 
-    const heading = screen.getByRole('heading');
+    const heading = screen.getByRole('heading', { level: 2 });
     expect(heading.textContent).toMatch(/\w+ \d{4}/);
   });
 
@@ -128,5 +128,58 @@ describe('Calendar', () => {
         expect(screen.getByText(/Recordings for/)).toBeInTheDocument();
       });
     }
+  });
+
+  it('defaults to today when no date param in URL', async () => {
+    renderCalendar(['/']);
+
+    await waitFor(() => {
+      expect(mockApi.getCalendar).toHaveBeenCalled();
+    });
+
+    // Should show recordings panel (selectedDate defaults to today)
+    expect(screen.getByText(/Recordings for/)).toBeInTheDocument();
+  });
+
+  it('selects date from URL search params', async () => {
+    renderCalendar(['/?date=2024-06-15&month=2024-06']);
+
+    await waitFor(() => {
+      expect(mockApi.getCalendar).toHaveBeenCalled();
+    });
+
+    expect(screen.getByText('Recordings for 2024-06-15')).toBeInTheDocument();
+  });
+
+  it('clicking a date updates URL search params', async () => {
+    const user = userEvent.setup();
+    mockApi.getRecordings.mockResolvedValue({
+      recordings: [{ id: 1, timestamp: '2024-06-20T10:00:00', summary: 'Afternoon chat' }],
+    });
+
+    renderCalendar(['/?month=2024-06']);
+
+    await waitFor(() => {
+      expect(mockApi.getCalendar).toHaveBeenCalled();
+    });
+
+    // Click day 15
+    const day15 = screen.getByText('15', { selector: '.calendar-day' });
+    await user.click(day15);
+
+    await waitFor(() => {
+      expect(screen.getByText('Recordings for 2024-06-15')).toBeInTheDocument();
+    });
+  });
+
+  it('loads month from URL search params', async () => {
+    renderCalendar(['/?month=2024-03']);
+
+    await waitFor(() => {
+      expect(mockApi.getCalendar).toHaveBeenCalled();
+    });
+
+    // Should display March 2024 in the header
+    expect(screen.getByText('March 2024')).toBeInTheDocument();
   });
 });

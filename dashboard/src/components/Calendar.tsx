@@ -1,14 +1,21 @@
 import { useState, useEffect, useCallback } from 'react';
-import { format } from 'date-fns';
+import { useSearchParams } from 'react-router-dom';
+import { format, parse } from 'date-fns';
 import { api } from '../api/client';
 import RecordingList from './RecordingList';
 import type { Recording, CalendarDay, Todo } from '../types';
 
 export default function Calendar() {
-  const [currentDate, setCurrentDate] = useState(new Date());
+  const [searchParams, setSearchParams] = useSearchParams();
+  const today = format(new Date(), 'yyyy-MM-dd');
+  const todayMonth = format(new Date(), 'yyyy-MM');
+
+  const selectedDate = searchParams.get('date') ?? today;
+  const currentMonthParam = searchParams.get('month') ?? todayMonth;
+  const [currentDate, setCurrentDate] = useState(() => parse(currentMonthParam, 'yyyy-MM', new Date()));
+
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]);
   const [dailySummary, setDailySummary] = useState<Record<string, string> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -23,6 +30,14 @@ export default function Calendar() {
       setCalendarDays(data.dates);
     });
   }, [year, month]);
+
+  useEffect(() => {
+    const parsed = parse(currentMonthParam, 'yyyy-MM', new Date());
+    setCurrentDate(prev => {
+      if (format(prev, 'yyyy-MM') !== currentMonthParam) return parsed;
+      return prev;
+    });
+  }, [currentMonthParam]);
 
   const loadActive = useCallback(() => {
     api.getActiveRecording().then(setActiveRecording).catch(() => setActiveRecording(null));
@@ -55,16 +70,20 @@ export default function Calendar() {
   }, [selectedDate, categoryFilter]);
 
   const handlePrevMonth = () => {
-    setCurrentDate(new Date(year, month - 2, 1));
+    const newDate = new Date(year, month - 2, 1);
+    setCurrentDate(newDate);
+    setSearchParams(prev => { prev.set('month', format(newDate, 'yyyy-MM')); return prev; });
   };
 
   const handleNextMonth = () => {
-    setCurrentDate(new Date(year, month, 1));
+    const newDate = new Date(year, month, 1);
+    setCurrentDate(newDate);
+    setSearchParams(prev => { prev.set('month', format(newDate, 'yyyy-MM')); return prev; });
   };
 
   const handleDateClick = (day: number) => {
     const dateStr = format(new Date(year, month - 1, day), 'yyyy-MM-dd');
-    setSelectedDate(dateStr);
+    setSearchParams(prev => { prev.set('date', dateStr); return prev; });
   };
 
   const handleToggleTodo = async (todo: Todo) => {
