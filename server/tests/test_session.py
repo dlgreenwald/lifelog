@@ -37,81 +37,6 @@ def mock_conn():
     return conn
 
 
-# ── is_meaningful_speech tests ─────────────────────────────────────
-
-
-class TestIsMeaningfulSpeech:
-    def test_empty_segments_not_meaningful(self):
-        from lifelog.database import is_meaningful_speech
-        assert is_meaningful_speech([]) is False
-
-    def test_short_duration_still_meaningful(self):
-        from lifelog.database import is_meaningful_speech
-        segments = [
-            {"start": 0, "end": 5, "text": "hello world"},
-            {"start": 5, "end": 10, "text": "this is a test"},
-        ]
-        assert is_meaningful_speech(segments) is True
-
-    def test_enough_duration_meaningful(self):
-        from lifelog.database import is_meaningful_speech
-        # 35 seconds of multi-word segments
-        segments = [
-            {"start": 0, "end": 10, "text": "hello world how are you doing today"},
-            {"start": 10, "end": 20, "text": "I am doing well thank you very much"},
-            {"start": 20, "end": 35, "text": "let me tell you about the meeting yesterday"},
-        ]
-        assert is_meaningful_speech(segments) is True
-
-    def test_garbled_segments_still_meaningful(self):
-        from lifelog.database import is_meaningful_speech
-        # Even short/fragmented text counts as meaningful
-        segments = [
-            {"start": 0, "end": 3, "text": "yes"},
-            {"start": 3, "end": 6, "text": "no"},
-            {"start": 6, "end": 9, "text": "ok"},
-            {"start": 9, "end": 12, "text": "right"},
-            {"start": 12, "end": 15, "text": "well"},
-            {"start": 15, "end": 25, "text": "this is a longer segment with more words"},
-            {"start": 25, "end": 35, "text": "another longer segment with enough words"},
-            {"start": 35, "end": 45, "text": "one more longer segment with enough words here"},
-        ]
-        assert is_meaningful_speech(segments) is True
-
-    def test_empty_text_segments_not_meaningful(self):
-        from lifelog.database import is_meaningful_speech
-        # All segments have empty/whitespace text
-        segments = [
-            {"start": 0, "end": 5, "text": ""},
-            {"start": 5, "end": 10, "text": "   "},
-            {"start": 10, "end": 15, "text": ""},
-        ]
-        assert is_meaningful_speech(segments) is False
-
-    def test_mixed_empty_and_text_meaningful(self):
-        from lifelog.database import is_meaningful_speech
-        # Some empty, some with text → meaningful
-        segments = [
-            {"start": 0, "end": 5, "text": ""},
-            {"start": 5, "end": 10, "text": "hello world"},
-            {"start": 10, "end": 15, "text": ""},
-        ]
-        assert is_meaningful_speech(segments) is True
-
-    def test_few_short_segments_still_meaningful(self):
-        from lifelog.database import is_meaningful_speech
-        # 35 seconds, only 2/6 = 33% short segments
-        segments = [
-            {"start": 0, "end": 3, "text": "yes"},
-            {"start": 3, "end": 6, "text": "no"},
-            {"start": 6, "end": 15, "text": "this is a much longer segment of speech"},
-            {"start": 15, "end": 25, "text": "another long segment with plenty of words here"},
-            {"start": 25, "end": 35, "text": "one more segment with enough words to count"},
-            {"start": 35, "end": 45, "text": "final segment with a lot of words in it"},
-        ]
-        assert is_meaningful_speech(segments) is True
-
-
 # ── Session CRUD tests ─────────────────────────────────────────────
 
 
@@ -187,7 +112,6 @@ class TestSessionCRUD:
                 audio_filename="encrypted.opus",
                 transcript={"segments": []},
                 named_segments=[{"name": "Alice", "text": "hello"}],
-                is_meaningful=True,
             )
 
         mock_conn.execute.assert_awaited_once()
@@ -195,50 +119,27 @@ class TestSessionCRUD:
         assert "INSERT INTO session_utterances" in sql
 
     @pytest.mark.asyncio
-    async def test_get_session_meaningful_utterances(self, mock_conn):
-        from lifelog.database import get_session_meaningful_utterances
-
-        fake_rows = [
-            {
-                "utterance_id": 1,
-                "audio_filename": "f1.opus",
-                "transcript": json.dumps({"segments": []}),
-                "named_segments": json.dumps([{"name": "Alice", "text": "hello"}]),
-                "created_at": datetime.now(UTC),
-            }
-        ]
-        mock_conn.fetch.return_value = fake_rows
-        pool = _make_mock_pool(mock_conn)
-
-        with patch("lifelog.database.pool", pool):
-            result = await get_session_meaningful_utterances(1)
-
-        assert len(result) == 1
-        sql = mock_conn.fetch.call_args[0][0]
-        assert "is_meaningful = TRUE" in sql
-
-    @pytest.mark.asyncio
-    async def test_get_last_meaningful_utterance_time(self, mock_conn):
-        from lifelog.database import get_last_meaningful_utterance_time
+    async def test_get_last_utterance_time(self, mock_conn):
+        from lifelog.database import get_last_utterance_time
 
         now = datetime.now(UTC)
         mock_conn.fetchrow.return_value = {"created_at": now}
         pool = _make_mock_pool(mock_conn)
 
         with patch("lifelog.database.pool", pool):
-            result = await get_last_meaningful_utterance_time(1)
+            result = await get_last_utterance_time(1)
 
         assert result == now
 
     @pytest.mark.asyncio
-    async def test_get_last_meaningful_utterance_time_none(self, mock_conn):
-        from lifelog.database import get_last_meaningful_utterance_time
+    async def test_get_last_utterance_time_none(self, mock_conn):
+        from lifelog.database import get_last_utterance_time
 
         mock_conn.fetchrow.return_value = None
         pool = _make_mock_pool(mock_conn)
 
         with patch("lifelog.database.pool", pool):
-            result = await get_last_meaningful_utterance_time(1)
+            result = await get_last_utterance_time(1)
 
         assert result is None
 
@@ -409,6 +310,93 @@ class TestSessionCRUD:
         assert result is not None
         assert result["audio_filenames"] == ["legacy.opus"]
 
+    @pytest.mark.asyncio
+    async def test_get_session_utterances_in_range(self, mock_conn):
+        """get_session_utterances_in_range fetches utterances within a time range."""
+        from lifelog.database import get_session_utterances_in_range
+
+        fake_utterances = [
+            {
+                "utterance_id": 1,
+                "audio_filename": "utt1.opus",
+                "transcript": {},
+                "named_segments": [],
+                "created_at": datetime(2025, 1, 1, 10, 0, 0),
+            },
+            {
+                "utterance_id": 2,
+                "audio_filename": "utt2.opus",
+                "transcript": {},
+                "named_segments": [],
+                "created_at": datetime(2025, 1, 1, 10, 5, 0),
+            },
+        ]
+        mock_conn.fetch.return_value = fake_utterances
+        pool = _make_mock_pool(mock_conn)
+
+        start = datetime(2025, 1, 1, 9, 55, 0)
+        end = datetime(2025, 1, 1, 10, 10, 0)
+
+        with patch("lifelog.database.pool", pool):
+            result = await get_session_utterances_in_range(1, start, end)
+
+        assert len(result) == 2
+        mock_conn.fetch.assert_awaited_once()
+        sql = mock_conn.fetch.call_args[0][0]
+        assert "created_at >= $2" in sql
+        assert "created_at <= $3" in sql
+
+    @pytest.mark.asyncio
+    async def test_get_session_utterances_in_range_empty(self, mock_conn):
+        """get_session_utterances_in_range returns empty when no utterances in range."""
+        from lifelog.database import get_session_utterances_in_range
+
+        mock_conn.fetch.return_value = []
+        pool = _make_mock_pool(mock_conn)
+
+        start = datetime(2025, 1, 1, 11, 0, 0)
+        end = datetime(2025, 1, 1, 12, 0, 0)
+
+        with patch("lifelog.database.pool", pool):
+            result = await get_session_utterances_in_range(1, start, end)
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_active_sessions_with_utterances(self, mock_conn):
+        """get_active_sessions_with_utterances returns active sessions that have utterances."""
+        from lifelog.database import get_active_sessions_with_utterances
+
+        fake_sessions = [
+            {"id": 1, "user_id": 1, "started_at": datetime(2025, 1, 1, 10, 0, 0), "ended_at": None},
+            {"id": 3, "user_id": 2, "started_at": datetime(2025, 1, 1, 11, 0, 0), "ended_at": None},
+        ]
+        mock_conn.fetch.return_value = fake_sessions
+        pool = _make_mock_pool(mock_conn)
+
+        with patch("lifelog.database.pool", pool):
+            result = await get_active_sessions_with_utterances()
+
+        assert len(result) == 2
+        assert result[0]["id"] == 1
+        mock_conn.fetch.assert_awaited_once()
+        sql = mock_conn.fetch.call_args[0][0]
+        assert "JOIN session_utterances" in sql
+        assert "status = 'active'" in sql
+
+    @pytest.mark.asyncio
+    async def test_get_active_sessions_with_utterances_empty(self, mock_conn):
+        """get_active_sessions_with_utterances returns empty when no active sessions."""
+        from lifelog.database import get_active_sessions_with_utterances
+
+        mock_conn.fetch.return_value = []
+        pool = _make_mock_pool(mock_conn)
+
+        with patch("lifelog.database.pool", pool):
+            result = await get_active_sessions_with_utterances()
+
+        assert result == []
+
 
 # ── Reprocessing tests ─────────────────────────────────────────────
 
@@ -419,30 +407,28 @@ class TestHourlyReprocessing:
         """Hourly reprocess creates a recording for an ended session."""
         from lifelog.worker import _reprocess_session
 
-        # Mock get_session_meaningful_utterances
+        # Mock get_session_all_utterances — deferred transcription model
         utterances = [
             {
                 "utterance_id": 1,
                 "audio_filename": "utt1.opus",
-                "transcript": json.dumps({"segments": [{"text": "hello"}]}),
-                "named_segments": json.dumps([
-                    {"name": "Alice", "start": 0, "end": 10, "text": "hello world"}
-                ]),
-                "created_at": datetime.now(UTC),
+                "transcript": {},
+                "named_segments": [],
+                "created_at": datetime(2025, 1, 1, 10, 0, 0),
             }
         ]
 
-        # Mock get_recording_audio_filenames
-        audio_files = ["utt1.opus"]
+        fake_window_result = {
+            "all_named_segments": [
+                {"id": 0, "name": "Alice", "start": 0.0, "end": 5.0, "text": "hello world"},
+            ],
+            "full_transcript": {
+                "segments": [{"start": 0.0, "end": 5.0, "text": "hello world", "speaker": "Alice"}],
+            },
+            "speaker_map": {"SPEAKER_00": "Alice"},
+        }
 
-        mock_conn.fetchrow.side_effect = [
-            {"id": 99},  # save_session_recording INSERT result
-        ]
-        mock_conn.fetch.side_effect = [utterances, audio_files]
-
-        pool = _make_mock_pool(mock_conn)
-
-        fake_result = {
+        fake_llm_result = {
             "summary": "Test summary",
             "todos": [],
             "calendar": [],
@@ -450,32 +436,30 @@ class TestHourlyReprocessing:
         }
 
         with (
-            patch("lifelog.database.pool", pool),
-            patch("lifelog.worker.summarize", return_value=fake_result) as mock_summarize,
             patch("lifelog.worker.db") as mock_db,
+            patch("lifelog.worker.transcribe_window", new_callable=AsyncMock, return_value=fake_window_result),
+            patch("lifelog.worker.summarize", return_value=fake_llm_result),
         ):
-            mock_db.get_session_meaningful_utterances = AsyncMock(return_value=utterances)
-            mock_db.get_recording_audio_filenames = AsyncMock(return_value=audio_files)
+            mock_db.get_session_all_utterances = AsyncMock(return_value=utterances)
+            mock_db.get_recording_audio_filenames = AsyncMock(return_value=["utt1.opus"])
             mock_db.save_session_recording = AsyncMock(return_value=99)
             mock_db.mark_session_processed = AsyncMock()
 
-            session = {"id": 1, "user_id": 1}
+            session = {"id": 1, "user_id": 1, "started_at": datetime(2025, 1, 1, 10, 0, 0)}
             await _reprocess_session(session)
 
-            mock_summarize.assert_called_once()
             mock_db.save_session_recording.assert_called_once()
             mock_db.mark_session_processed.assert_called_once_with(1)
 
     @pytest.mark.asyncio
-    async def test_reprocess_session_no_meaningful_utterances(self, mock_conn):
-        """Hourly reprocess skips session with no meaningful utterances."""
+    async def test_reprocess_session_no_utterances(self, mock_conn):
+        """Hourly reprocess skips session with no utterances."""
         from lifelog.worker import _reprocess_session
 
         with (
-            patch("lifelog.database.pool", _make_mock_pool(mock_conn)),
             patch("lifelog.worker.db") as mock_db,
         ):
-            mock_db.get_session_meaningful_utterances = AsyncMock(return_value=[])
+            mock_db.get_session_all_utterances = AsyncMock(return_value=[])
 
             session = {"id": 1, "user_id": 1}
             await _reprocess_session(session)
@@ -486,54 +470,35 @@ class TestHourlyReprocessing:
 
 class TestDailyReprocessing:
     @pytest.mark.asyncio
-    async def test_daily_reprocess_joins_adjacent_sessions(self, mock_conn):
-        """Daily reprocess joins sessions with small gaps."""
+    async def test_daily_reprocess_generates_summary(self, mock_conn):
+        """Daily reprocess collects transcripts and generates a daily summary."""
         from lifelog.worker import _daily_reprocess_user
 
         now = datetime.now(UTC)
         sessions = [
             {"id": 1, "user_id": 1, "started_at": now - timedelta(hours=3),
              "ended_at": now - timedelta(hours=2)},
-            {"id": 2, "user_id": 1, "started_at": now - timedelta(hours=2, minutes=56),
-             "ended_at": now - timedelta(hours=1)},
-            {"id": 3, "user_id": 1, "started_at": now - timedelta(minutes=30),
-             "ended_at": now},
         ]
 
         utterances = [
             {
                 "utterance_id": 1,
-                "audio_filename": "utt1.opus",
-                "transcript": json.dumps({"segments": [{"text": "hello"}]}),
-                "named_segments": json.dumps([
-                    {"name": "Alice", "start": 0, "end": 10, "text": "hello"}
-                ]),
-                "created_at": now,
-            }
+                "transcript": {"segments": [{"speaker": "SPEAKER_00", "text": "hello"}]},
+            },
         ]
-        audio_files = ["utt1.opus"]
 
         with (
             patch("lifelog.worker.db") as mock_db,
-            patch("lifelog.worker.summarize", return_value={
-                "summary": "Summary",
-                "todos": [],
-                "calendar": [],
-                "notes": [],
-            }),
+            patch("lifelog.pipeline.llm.summarize_day", return_value={"daily_summary": "Work: Met with team."}) as mock_summarize,
         ):
             mock_db.get_sessions_by_date_range = AsyncMock(return_value=sessions)
-            mock_db.join_sessions = AsyncMock()
-            mock_db.get_session_meaningful_utterances = AsyncMock(return_value=utterances)
-            mock_db.get_recording_audio_filenames = AsyncMock(return_value=audio_files)
-            mock_db.save_session_recording = AsyncMock(return_value=1)
+            mock_db.get_session_all_utterances = AsyncMock(return_value=utterances)
+            mock_db.save_daily_summary = AsyncMock()
 
             await _daily_reprocess_user(1)
 
-            # Sessions 1 and 2 are within 5min gap → should be joined
-            mock_db.join_sessions.assert_called()
-            # save_session_recording should be called for each remaining session
-            assert mock_db.save_session_recording.await_count >= 1
+            mock_summarize.assert_called_once()
+            mock_db.save_daily_summary.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_daily_reprocess_no_sessions(self, mock_conn):
@@ -548,5 +513,5 @@ class TestDailyReprocessing:
             # Should not raise
             await _daily_reprocess_user(1)
 
-            mock_db.join_sessions.assert_not_called()
+            mock_db.save_daily_summary.assert_not_called()
 

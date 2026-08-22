@@ -35,8 +35,11 @@ class Settings(BaseSettings):
     session_gap_minutes: int = 5
     meaningful_speech_min_seconds: float = 30.0
     garbled_segment_ratio: float = 0.4
-    hourly_reprocess_interval_minutes: int = 60
-    daily_reprocess_hour: int = 3
+    hourly_reprocess_interval_minutes: int = 1
+
+    # Live transcription sliding window
+    live_transcribe_window_seconds: int = 300  # 5-minute window
+    live_transcribe_overlap_seconds: int = 60  # 1-minute overlap
 
     class Config:
         env_file = ".env"

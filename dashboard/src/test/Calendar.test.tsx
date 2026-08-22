@@ -10,6 +10,7 @@ vi.mock('../api/client', () => ({
     getCalendar: vi.fn(),
     getRecordings: vi.fn(),
     getActiveRecording: vi.fn().mockResolvedValue(null),
+    getDailySummary: vi.fn().mockResolvedValue({ daily_summary: null }),
   },
 }));
 

@@ -59,13 +59,23 @@ export const api = {
   },
   getCalendar: (year: number, month: number) =>
     fetchApi(`/dashboard/calendar/${year}/${month}`),
-  getRecordings: (date: string) => fetchApi(`/dashboard/recordings/${date}`),
+  getRecordings: (date: string, category?: string) =>
+    fetchApi(`/dashboard/recordings/${date}${category ? `?category=${category}` : ''}`),
   getRecording: (id: string) => fetchApi(`/dashboard/recording/${id}`),
   getTodos: () => fetchApi('/dashboard/todos'),
   getDecisions: () => fetchApi('/dashboard/decisions'),
   getUnknownSpeakers: () => fetchApi('/dashboard/unknown-speakers'),
   deleteRecording: (id: string) =>
     fetchApi(`/dashboard/recording/${id}`, { method: 'DELETE' }),
+  reprocessRecording: (id: string) =>
+    fetchApi(`/dashboard/recording/${id}/reprocess`, { method: 'POST' }),
+  updateRecordingCategory: (id: string, category: string) =>
+    fetchApi(`/dashboard/recording/${id}/category`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category }),
+    }),
+  getDailySummary: (date: string) => fetchApi(`/dashboard/daily-summary/${date}`),
   getActiveRecording: () => fetchApi('/dashboard/active-recording'),
   labelSpeaker: (recordingId: number, speakerId: string, label: string) =>
     fetchApi('/speakers/label', {

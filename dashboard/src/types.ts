@@ -5,12 +5,14 @@ export interface Recording {
   speakers: Speaker[] | null;
   todos: Todo[] | null;
   is_live?: boolean;
+  pending_reprocessing?: boolean;
   decisions: Decision[] | null;
   calendar: CalendarEvent[] | null;
   notes: string[] | null;
   conversation_changes: ConversationChange[] | null;
   audio_filename: string | null;
   audio_filenames?: string[];
+  category?: string;
 }
 
 export interface Speaker {

@@ -10,7 +10,9 @@ export default function Calendar() {
   const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]);
+  const [dailySummary, setDailySummary] = useState<Record<string, string> | null>(null);
   const [loading, setLoading] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth() + 1;
@@ -36,12 +38,16 @@ export default function Calendar() {
   useEffect(() => {
     if (selectedDate) {
       setLoading(true);
-      api.getRecordings(selectedDate).then((data: { recordings: Recording[] }) => {
+      setDailySummary(null);
+      api.getRecordings(selectedDate, categoryFilter ?? undefined).then((data: { recordings: Recording[] }) => {
         setRecordings(data.recordings);
         setLoading(false);
       });
+      api.getDailySummary(selectedDate).then((data: { daily_summary: { daily_summary: Record<string, string> } | null }) => {
+        setDailySummary(data.daily_summary?.daily_summary ?? null);
+      }).catch(() => setDailySummary(null));
     }
-  }, [selectedDate]);
+  }, [selectedDate, categoryFilter]);
 
   const handlePrevMonth = () => {
     setCurrentDate(new Date(year, month - 2, 1));
@@ -109,14 +115,53 @@ export default function Calendar() {
 
       {selectedDate && (
         <div className="recordings-panel">
-          <h3>Recordings for {selectedDate}</h3>
-          {loading ? (
-            <p>Loading...</p>
-          ) : recordings.length === 0 ? (
-            <p>No recordings found</p>
-          ) : (
-            <RecordingList recordings={recordings} />
+          {dailySummary && Object.keys(dailySummary).length > 0 && (
+            <div className="daily-summary">
+              <h3>Daily Summary</h3>
+              {Object.entries(dailySummary).map(([section, text]) => (
+                <div key={section}>
+                  <h4>{section}</h4>
+                  <p style={{ whiteSpace: 'pre-wrap' }}>{text}</p>
+                </div>
+              ))}
+            </div>
           )}
+          <div className="recordings-list">
+            <h3>Recordings for {selectedDate}</h3>
+            <div className="category-filter">
+              <button
+                className={categoryFilter === null ? 'active' : ''}
+                onClick={() => setCategoryFilter(null)}
+              >
+                Both
+              </button>
+              <button
+                className={categoryFilter === 'work' ? 'active' : ''}
+                onClick={() => setCategoryFilter('work')}
+              >
+                Work
+              </button>
+              <button
+                className={categoryFilter === 'personal' ? 'active' : ''}
+                onClick={() => setCategoryFilter('personal')}
+              >
+                Personal
+              </button>
+              <button
+                className={categoryFilter === 'not_meaningful' ? 'active' : ''}
+                onClick={() => setCategoryFilter('not_meaningful')}
+              >
+                Other
+              </button>
+            </div>
+            {loading ? (
+              <p>Loading...</p>
+            ) : recordings.length === 0 ? (
+              <p>No recordings found</p>
+            ) : (
+              <RecordingList recordings={recordings} />
+            )}
+          </div>
         </div>
       )}
     </div>

@@ -8,11 +8,14 @@ from lifelog.crypto import audio_crypto
 from lifelog.database import (
     delete_recording,
     get_active_session_recording,
+    get_daily_summary,
     get_decisions,
     get_recording,
     get_recordings_by_date,
     get_todos,
     get_unknown_speakers,
+    reset_session_for_reprocessing,
+    update_recording_category,
 )
 
 logger = logging.getLogger("lifelog.dashboard")
@@ -46,10 +49,17 @@ async def get_calendar(year: int, month: int, user: dict = Depends(validate_oidc
 
 
 @router.get("/recordings/{date}")
-async def get_day_recordings(date: str, user: dict = Depends(validate_oidc_token)):
-    """Get all recordings for a specific day (YYYY-MM-DD)."""
-    logger.debug("Day recordings request: user=%d, date=%s", user["id"], date)
-    recordings = await get_recordings_by_date(user["id"], date)
+async def get_day_recordings(
+    date: str,
+    user: dict = Depends(validate_oidc_token),
+    category: str | None = None,
+):
+    """Get all recordings for a specific day (YYYY-MM-DD).
+
+    Optional query param: category (personal, work, not_meaningful).
+    """
+    logger.debug("Day recordings request: user=%d, date=%s, category=%s", user["id"], date, category)
+    recordings = await get_recordings_by_date(user["id"], date, category=category)
     logger.debug("Found %d recordings for %s", len(recordings), date)
     return {"recordings": recordings}
 
@@ -112,8 +122,60 @@ async def delete_recording_route(recording_id: int, user: dict = Depends(validat
     return {"ok": True}
 
 
+@router.post("/recording/{recording_id}/reprocess")
+async def reprocess_recording_route(recording_id: int, user: dict = Depends(validate_oidc_token)):
+    """Requeue a recording for reprocessing at the next hourly run.
+
+    Resets the session status to 'ended' and deletes the existing recording.
+    The hourly reprocess loop will regenerate it with batch transcription.
+    """
+    recording = await get_recording(user["id"], recording_id)
+    if not recording:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    session_id = recording.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Recording has no associated session")
+
+    reset = await reset_session_for_reprocessing(session_id)
+    if not reset:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    logger.info(
+        "Recording %d requeued for reprocessing (session %d)", recording_id, session_id
+    )
+    return {"ok": True, "session_id": session_id}
+
+
+@router.post("/recording/{recording_id}/category")
+async def update_category_route(
+    recording_id: int,
+    body: dict,
+    user: dict = Depends(validate_oidc_token),
+):
+    """Update the category classification for a recording."""
+    category = body.get("category")
+    if category not in ("work", "personal", "not_meaningful", ""):
+        raise HTTPException(status_code=400, detail="Invalid category")
+
+    recording = await get_recording(user["id"], recording_id)
+    if not recording:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    await update_recording_category(recording_id, category)
+    logger.info("Recording %d category updated to '%s'", recording_id, category)
+    return {"ok": True}
+
+
 @router.get("/active-recording")
 async def get_active_recording_route(user: dict = Depends(validate_oidc_token)):
     """Get the current active session as a recording (live view)."""
     recording = await get_active_session_recording(user["id"])
     return recording
+
+
+@router.get("/daily-summary/{date}")
+async def get_daily_summary_route(date: str, user: dict = Depends(validate_oidc_token)):
+    """Get the daily summary for a specific date (YYYY-MM-DD)."""
+    summary = await get_daily_summary(user["id"], date)
+    return {"daily_summary": summary}

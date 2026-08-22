@@ -11,12 +11,11 @@ from fastapi.staticfiles import StaticFiles
 from lifelog.config import settings
 from lifelog.database import init_pool
 from lifelog.routes import dashboard, speakers, upload
-from lifelog.worker import daily_reprocess_loop, hourly_reprocess_loop, worker_loop
+from lifelog.worker import hourly_reprocess_loop, worker_loop
 
 logger = logging.getLogger("lifelog")
 _worker_task = None
 _hourly_task = None
-_daily_task = None
 
 
 def _configure_logging() -> None:
@@ -57,12 +56,6 @@ async def lifespan(app: FastAPI):
         logger.info("Hourly reprocess loop started")
     except Exception:
         logger.exception("Failed to start hourly reprocess loop")
-
-    try:
-        _daily_task = asyncio.create_task(daily_reprocess_loop())
-        logger.info("Daily reprocess loop started")
-    except Exception:
-        logger.exception("Failed to start daily reprocess loop")
 
     yield
 

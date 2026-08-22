@@ -54,6 +54,25 @@ export default function RecordingDetail() {
     navigate('/', { replace: true });
   };
 
+  const [reprocessing, setReprocessing] = useState(false);
+  const handleReprocess = async () => {
+    if (!id || isLive || reprocessing) return;
+    if (!confirm('Reprocess this recording? It will be regenerated at the next hourly run.')) return;
+    setReprocessing(true);
+    try {
+      await api.reprocessRecording(id);
+      navigate('/', { replace: true });
+    } catch {
+      setReprocessing(false);
+    }
+  };
+
+  const handleCategoryChange = async (category: string) => {
+    if (!id || isLive) return;
+    await api.updateRecordingCategory(id, category);
+    setRecording(prev => prev ? { ...prev, category } : null);
+  };
+
   if (!recording) return <div>Loading...</div>;
 
   return (
@@ -64,7 +83,28 @@ export default function RecordingDetail() {
       </h2>
 
       {!isLive && (
-        <button className="delete-button" onClick={handleDelete}>Delete</button>
+        <>
+          <button className="delete-button" onClick={handleDelete}>Delete</button>
+          <button
+            className="reprocess-button"
+            onClick={handleReprocess}
+            disabled={reprocessing || recording.pending_reprocessing}
+          >
+            {reprocessing || recording.pending_reprocessing ? 'Reprocessing…' : 'Reprocess'}
+          </button>
+          <div className="category-buttons">
+            <span className="category-label">Category:</span>
+            {['work', 'personal', 'not_meaningful'].map(cat => (
+              <button
+                key={cat}
+                className={`category-btn ${recording.category === cat ? 'active' : ''}`}
+                onClick={() => handleCategoryChange(cat)}
+              >
+                {cat === 'not_meaningful' ? 'Other' : cat.charAt(0).toUpperCase() + cat.slice(1)}
+              </button>
+            ))}
+          </div>
+        </>
       )}
 
       {recording.summary && (

@@ -130,6 +130,60 @@ header nav a:hover {
   border-radius: 8px;
 }
 
+.daily-summary {
+  margin-top: 16px;
+  padding: 16px;
+  background: white;
+  border-radius: 8px;
+  border-left: 4px solid #3498db;
+}
+
+.recordings-list {
+  margin-top: 16px;
+  padding: 16px;
+  background: white;
+  border-radius: 8px;
+  border-left: 4px solid #2ecc71;
+}
+
+.daily-summary h3 {
+  margin-bottom: 8px;
+  color: #2c3e50;
+}
+
+.category-filter {
+  display: flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  overflow: hidden;
+  width: fit-content;
+}
+
+.category-filter button {
+  padding: 6px 16px;
+  border: none;
+  background: white;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #555;
+  transition: background 0.15s, color 0.15s;
+}
+
+.category-filter button:not(:last-child) {
+  border-right: 1px solid #ddd;
+}
+
+.category-filter button:hover {
+  background: #f0f0f0;
+}
+
+.category-filter button.active {
+  background: #3498db;
+  color: white;
+}
+
 .recording-list {
   display: flex;
   flex-direction: column;
@@ -182,6 +236,68 @@ header nav a:hover {
 .recording-detail h3 {
   margin-bottom: 10px;
   color: #34495e;
+}
+
+.recording-detail .delete-button,
+.reprocess-button {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  margin-right: 8px;
+  margin-bottom: 16px;
+  transition: background 0.2s;
+}
+
+.reprocess-button {
+  background: #3498db;
+  color: white;
+}
+
+.reprocess-button:hover:not(:disabled) {
+  background: #2980b9;
+}
+
+.reprocess-button:disabled {
+  background: #95a5a6;
+  cursor: not-allowed;
+}
+
+.category-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.category-label {
+  font-size: 0.85rem;
+  color: #666;
+  margin-right: 4px;
+}
+
+.category-btn {
+  padding: 4px 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  color: #555;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.category-btn:hover {
+  border-color: #3498db;
+  color: #3498db;
+}
+
+.category-btn.active {
+  background: #3498db;
+  border-color: #3498db;
+  color: white;
 }
 
 .recording-detail .summary {

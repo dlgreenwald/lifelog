@@ -123,7 +123,7 @@ docker-compose logs -f server  # Tail orchestrator logs
 ### All tests at once
 ```bash
 # Python services (each in its own venv)
-cd server && .venv/bin/python -m pytest tests/ -q        # 77 tests
+cd server && .venv/bin/python -m pytest tests/ -q        # 81 tests
 cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
 cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 15 tests
 
@@ -274,7 +274,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 
 ## Testing & QA
 
-**Total**: ~148 tests across 5 components (77 server + 8 diarization + 15 speaker-id + 58 dashboard + 68 firmware-ota)
+**Total**: ~152 tests across 5 components (81 server + 8 diarization + 15 speaker-id + 58 dashboard + 68 firmware-ota)
 
 ### Python test framework
 - **pytest** with `pytest-asyncio` (`asyncio_mode = "auto"`)
@@ -332,7 +332,7 @@ Before merging any change:
 
 1. **Lint**: `ruff check src/ tests/` passes on all Python services (0 errors)
 2. **Type check**: `npx tsc --noEmit` passes on dashboard (0 errors)
-3. **Tests**: All ~148 tests pass across all 5 services
+3. **Tests**: All ~152 tests pass across all 5 services
 4. **No regressions**: Existing functionality not broken
 
 ### Ruff configuration
@@ -364,7 +364,7 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | Script | Steps |
 |--------|-------|
 | `build.sh` | Runs all component builds, reports pass/fail |
-| `server/build.sh` | compile check → ruff lint → pytest (77 tests) |
+| `server/build.sh` | compile check → ruff lint → pytest (81 tests) |
 | `diarization/build.sh` | compile check → ruff lint → pytest (8 tests) |
 | `speaker-id/build.sh` | compile check → ruff lint → pytest (15 tests) |
 | `dashboard/build.sh` | tsc type check → vite build → vitest (58 tests) → bundle size |
