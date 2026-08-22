@@ -76,10 +76,32 @@ async def test_get_recording_not_found():
 
 @pytest.mark.asyncio
 async def test_get_todos():
-    """Todos endpoint returns aggregated TODOs."""
+    """Todos endpoint returns all todos from the todos table."""
     fake_todos = [
-        {"task": "Buy milk", "owner": "Bob", "priority": "low"},
-        {"task": "Fix bug", "owner": "Alice", "priority": "high"},
+        {
+            "id": 1,
+            "task": "Buy milk",
+            "owner": "Bob",
+            "due": None,
+            "priority": "low",
+            "completed": False,
+            "completed_at": None,
+            "created_at": "2024-01-15T10:00:00",
+            "recording_id": 10,
+            "recording_timestamp": "2024-01-15T10:00:00",
+        },
+        {
+            "id": 2,
+            "task": "Fix bug",
+            "owner": "Alice",
+            "due": "2024-01-20",
+            "priority": "high",
+            "completed": False,
+            "completed_at": None,
+            "created_at": "2024-01-15T11:00:00",
+            "recording_id": 10,
+            "recording_timestamp": "2024-01-15T10:00:00",
+        },
     ]
 
     app = _app_with_mocks()
@@ -90,6 +112,100 @@ async def test_get_todos():
 
     assert response.status_code == 200
     assert len(response.json()["todos"]) == 2
+    assert response.json()["todos"][0]["id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_todos_for_date():
+    """Todos for date endpoint returns todos from that day's recordings."""
+    fake_todos = [
+        {"id": 1, "task": "Buy milk", "owner": "Bob", "completed": False},
+    ]
+
+    app = _app_with_mocks()
+
+    with patch("lifelog.routes.dashboard.get_todos_for_date", new_callable=AsyncMock, return_value=fake_todos):
+        client = TestClient(app)
+        response = client.get("/todos/2024-01-15")
+
+    assert response.status_code == 200
+    assert len(response.json()["todos"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_todo():
+    """Complete todo endpoint marks a todo as done."""
+    app = _app_with_mocks()
+
+    with (
+        patch("lifelog.routes.dashboard.get_todo_owner", new_callable=AsyncMock, return_value=1),
+        patch("lifelog.routes.dashboard.update_todo_completion", new_callable=AsyncMock),
+    ):
+        client = TestClient(app)
+        response = client.post("/todos/5/complete", json={"completed": True})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_complete_todo_not_found():
+    """Complete todo returns 404 for nonexistent todo."""
+    app = _app_with_mocks()
+
+    with patch("lifelog.routes.dashboard.get_todo_owner", new_callable=AsyncMock, return_value=None):
+        client = TestClient(app)
+        response = client.post("/todos/999/complete", json={"completed": True})
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_todo_endpoint():
+    """Delete todo endpoint removes a todo."""
+    app = _app_with_mocks()
+
+    with (
+        patch("lifelog.routes.dashboard.get_todo_owner", new_callable=AsyncMock, return_value=1),
+        patch("lifelog.routes.dashboard.delete_todo", new_callable=AsyncMock),
+    ):
+        client = TestClient(app)
+        response = client.delete("/todos/5")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_delete_todo_not_found():
+    """Delete todo returns 404 for nonexistent todo."""
+    app = _app_with_mocks()
+
+    with patch("lifelog.routes.dashboard.get_todo_owner", new_callable=AsyncMock, return_value=None):
+        client = TestClient(app)
+        response = client.delete("/todos/999")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_recording_todos():
+    """Recording todos endpoint returns todos for a specific recording."""
+    fake_todos = [
+        {"id": 1, "task": "Buy milk", "completed": False},
+    ]
+
+    app = _app_with_mocks()
+
+    with (
+        patch("lifelog.routes.dashboard.get_recording", new_callable=AsyncMock, return_value={"id": 10}),
+        patch("lifelog.routes.dashboard.get_todos_for_recording", new_callable=AsyncMock, return_value=fake_todos),
+    ):
+        client = TestClient(app)
+        response = client.get("/recording/10/todos")
+
+    assert response.status_code == 200
+    assert len(response.json()["todos"]) == 1
 
 
 @pytest.mark.asyncio

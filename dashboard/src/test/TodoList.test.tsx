@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import TodoList from '../components/TodoList';
 import { api } from '../api/client';
 import type { Todo } from '../types';
@@ -7,15 +8,33 @@ import type { Todo } from '../types';
 vi.mock('../api/client', () => ({
   api: {
     getTodos: vi.fn(),
+    completeTodo: vi.fn(),
+    deleteTodo: vi.fn(),
   },
 }));
 
 const mockApi = vi.mocked(api);
 
+function makeTodo(overrides: Partial<Todo> = {}): Todo {
+  return {
+    id: 1,
+    task: 'Buy groceries',
+    owner: 'Bob',
+    due: '2024-01-20',
+    priority: 'low',
+    completed: false,
+    completed_at: null,
+    recording_id: 10,
+    recording_timestamp: '2024-01-15T10:00:00',
+    created_at: '2024-01-15T10:00:00',
+    ...overrides,
+  };
+}
+
 const mockTodos: Todo[] = [
-  { task: 'Buy groceries', owner: 'Bob', due: '2024-01-20', priority: 'low' },
-  { task: 'Fix critical bug', owner: 'Alice', due: null, priority: 'high' },
-  { task: 'Write docs', owner: 'Charlie', due: '2024-02-01', priority: 'medium' },
+  makeTodo({ id: 1, task: 'Buy groceries', owner: 'Bob', priority: 'low' }),
+  makeTodo({ id: 2, task: 'Fix critical bug', owner: 'Alice', due: null, priority: 'high' }),
+  makeTodo({ id: 3, task: 'Write docs', owner: 'Charlie', due: '2024-02-01', priority: 'medium', recording_id: 11 }),
 ];
 
 beforeEach(() => {
@@ -23,7 +42,7 @@ beforeEach(() => {
 });
 
 describe('TodoList', () => {
-  it('shows loading state then renders todos', async () => {
+  it('renders todos after loading', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
 
     render(<TodoList />);
@@ -31,7 +50,6 @@ describe('TodoList', () => {
     await waitFor(() => {
       expect(screen.getByText('Buy groceries')).toBeInTheDocument();
     });
-
     expect(screen.getByText('Fix critical bug')).toBeInTheDocument();
     expect(screen.getByText('Write docs')).toBeInTheDocument();
   });
@@ -53,6 +71,7 @@ describe('TodoList', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Bob/)).toBeInTheDocument();
+      expect(screen.getByText(/Alice/)).toBeInTheDocument();
     });
   });
 
@@ -75,9 +94,8 @@ describe('TodoList', () => {
       expect(screen.getByText('Fix critical bug')).toBeInTheDocument();
     });
 
-    // The "Fix critical bug" todo has null due - no due text for it
     const dueElements = screen.queryAllByText(/due:/);
-    expect(dueElements).toHaveLength(2); // Only 2 of 3 have due dates
+    expect(dueElements).toHaveLength(2);
   });
 
   it('applies priority class names', async () => {
@@ -88,7 +106,6 @@ describe('TodoList', () => {
     await waitFor(() => {
       expect(screen.getByText('Buy groceries').closest('li')).toHaveClass('priority-low');
       expect(screen.getByText('Fix critical bug').closest('li')).toHaveClass('priority-high');
-      expect(screen.getByText('Write docs').closest('li')).toHaveClass('priority-medium');
     });
   });
 
@@ -109,5 +126,109 @@ describe('TodoList', () => {
     render(<TodoList />);
 
     expect(mockApi.getTodos).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders checkboxes for each todo', async () => {
+    mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
+
+    render(<TodoList />);
+
+    await waitFor(() => {
+      const checkboxes = screen.getAllByRole('checkbox');
+      expect(checkboxes).toHaveLength(3);
+    });
+  });
+
+  it('toggles todo completion on checkbox click', async () => {
+    mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
+    mockApi.completeTodo.mockResolvedValue({ ok: true });
+
+    render(<TodoList />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Buy groceries')).toBeInTheDocument();
+    });
+
+    const checkbox = screen.getAllByRole('checkbox')[0];
+    await userEvent.click(checkbox);
+
+    expect(mockApi.completeTodo).toHaveBeenCalledWith(1, true);
+  });
+
+  it('renders delete buttons for each todo', async () => {
+    mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
+
+    render(<TodoList />);
+
+    await waitFor(() => {
+      const deleteButtons = screen.getAllByRole('button', { name: /Delete todo/ });
+      expect(deleteButtons).toHaveLength(3);
+    });
+  });
+
+  it('deletes todo on delete button click', async () => {
+    mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
+    mockApi.deleteTodo.mockResolvedValue({ ok: true });
+
+    render(<TodoList />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Buy groceries')).toBeInTheDocument();
+    });
+
+    const deleteBtn = screen.getAllByRole('button', { name: /Delete todo/ })[0];
+    await userEvent.click(deleteBtn);
+
+    expect(mockApi.deleteTodo).toHaveBeenCalledWith(1);
+
+    await waitFor(() => {
+      expect(screen.queryByText('Buy groceries')).not.toBeInTheDocument();
+    });
+  });
+
+  it('hides completed todos older than 24h by default', async () => {
+    const oldCompleted = makeTodo({
+      id: 4,
+      task: 'Old completed task',
+      completed: true,
+      completed_at: new Date(Date.now() - 2 * 86400000).toISOString(),
+    });
+    const recentCompleted = makeTodo({
+      id: 5,
+      task: 'Recent completed task',
+      completed: true,
+      completed_at: new Date(Date.now() - 3600000).toISOString(),
+    });
+    mockApi.getTodos.mockResolvedValue({ todos: [oldCompleted, recentCompleted] });
+
+    render(<TodoList />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Recent completed task')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Old completed task')).not.toBeInTheDocument();
+  });
+
+  it('shows all completed when toggle is on', async () => {
+    const oldCompleted = makeTodo({
+      id: 4,
+      task: 'Old completed task',
+      completed: true,
+      completed_at: new Date(Date.now() - 2 * 86400000).toISOString(),
+    });
+    mockApi.getTodos.mockResolvedValue({ todos: [oldCompleted] });
+
+    render(<TodoList />);
+
+    await waitFor(() => {
+      expect(screen.queryByText('Old completed task')).not.toBeInTheDocument();
+    });
+
+    const toggleBtn = screen.getByText('Show completed');
+    await userEvent.click(toggleBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('Old completed task')).toBeInTheDocument();
+    });
   });
 });

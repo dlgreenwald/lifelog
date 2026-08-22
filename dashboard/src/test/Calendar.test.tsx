@@ -11,6 +11,9 @@ vi.mock('../api/client', () => ({
     getRecordings: vi.fn(),
     getActiveRecording: vi.fn().mockResolvedValue(null),
     getDailySummary: vi.fn().mockResolvedValue({ daily_summary: null }),
+    getTodosForDate: vi.fn().mockResolvedValue({ todos: [] }),
+    completeTodo: vi.fn().mockResolvedValue({ ok: true }),
+    deleteTodo: vi.fn().mockResolvedValue({ ok: true }),
   },
 }));
 

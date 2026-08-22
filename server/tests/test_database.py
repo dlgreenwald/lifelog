@@ -219,7 +219,18 @@ async def test_get_todos(mock_conn):
     from lifelog.database import get_todos
 
     mock_conn.fetch.return_value = [
-        {"id": 1, "timestamp": datetime(2024, 1, 15, tzinfo=UTC), "todos": json.dumps([{"task": "Buy milk", "owner": "Bob", "priority": "low"}])},
+        {
+            "id": 1,
+            "task": "Buy milk",
+            "owner": "Bob",
+            "due": None,
+            "priority": "low",
+            "completed": False,
+            "completed_at": None,
+            "created_at": datetime(2024, 1, 15, tzinfo=UTC),
+            "recording_id": 10,
+            "recording_timestamp": datetime(2024, 1, 15, tzinfo=UTC),
+        },
     ]
     pool = _make_mock_pool(mock_conn)
 
@@ -228,7 +239,58 @@ async def test_get_todos(mock_conn):
 
     assert len(result) == 1
     assert result[0]["task"] == "Buy milk"
-    assert result[0]["recording_id"] == 1
+    assert result[0]["recording_id"] == 10
+    assert result[0]["completed"] is False
+
+
+@pytest.mark.asyncio
+async def test_save_todos(mock_conn):
+    from lifelog.database import save_todos
+
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        await save_todos(
+            recording_id=10,
+            user_id=1,
+            todos=[
+                {"task": "Buy milk", "owner": "Bob", "priority": "low"},
+                {"task": "Fix bug", "owner": "Alice", "priority": "high"},
+            ],
+        )
+
+    assert mock_conn.execute.await_count == 2
+    first_sql = mock_conn.execute.call_args_list[0].args[0]
+    assert "INSERT INTO todos" in first_sql
+
+
+@pytest.mark.asyncio
+async def test_update_todo_completion(mock_conn):
+    from lifelog.database import update_todo_completion
+
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        await update_todo_completion(todo_id=5, completed=True)
+
+    sql = mock_conn.execute.call_args.args[0]
+    assert "UPDATE todos" in sql
+    assert mock_conn.execute.call_args.args[1] is True
+    assert mock_conn.execute.call_args.args[2] == 5
+
+
+@pytest.mark.asyncio
+async def test_delete_todo(mock_conn):
+    from lifelog.database import delete_todo
+
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        await delete_todo(todo_id=5)
+
+    sql = mock_conn.execute.call_args.args[0]
+    assert "DELETE FROM todos" in sql
+    assert mock_conn.execute.call_args.args[1] == 5
 
 
 @pytest.mark.asyncio

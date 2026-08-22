@@ -63,6 +63,17 @@ export const api = {
     fetchApi(`/dashboard/recordings/${date}${category ? `?category=${category}` : ''}`),
   getRecording: (id: string) => fetchApi(`/dashboard/recording/${id}`),
   getTodos: () => fetchApi('/dashboard/todos'),
+  getTodosForDate: (date: string) => fetchApi(`/dashboard/todos/${date}`),
+  getTodosForRecording: (recordingId: string) =>
+    fetchApi(`/dashboard/recording/${recordingId}/todos`),
+  completeTodo: (todoId: number, completed: boolean) =>
+    fetchApi(`/dashboard/todos/${todoId}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ completed }),
+    }),
+  deleteTodo: (todoId: number) =>
+    fetchApi(`/dashboard/todos/${todoId}`, { method: 'DELETE' }),
   getDecisions: () => fetchApi('/dashboard/decisions'),
   getUnknownSpeakers: () => fetchApi('/dashboard/unknown-speakers'),
   deleteRecording: (id: string) =>

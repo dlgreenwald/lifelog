@@ -3,13 +3,14 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { formatDateTime } from '../utils/format';
 import AudioPlayer from './AudioPlayer';
-import type { Recording } from '../types';
+import type { Recording, Todo } from '../types';
 
 export default function RecordingDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [recording, setRecording] = useState<Recording | null>(null);
   const [audioUrls, setAudioUrls] = useState<string[]>([]);
+  const [recordingTodos, setRecordingTodos] = useState<Todo[]>([]);
 
   const isLive = id?.startsWith('active-');
 
@@ -46,6 +47,32 @@ export default function RecordingDetail() {
 
     return () => audioUrls.forEach((url) => URL.revokeObjectURL(url));
   }, [recording]);
+
+  // Fetch todos for this recording
+  useEffect(() => {
+    if (recording && !isLive && id) {
+      api.getTodosForRecording(id).then((data: { todos: Todo[] }) => {
+        setRecordingTodos(data.todos);
+      }).catch(() => setRecordingTodos([]));
+    }
+  }, [recording, isLive, id]);
+
+  const handleTodoToggle = async (todo: Todo) => {
+    const newCompleted = !todo.completed;
+    await api.completeTodo(todo.id, newCompleted);
+    setRecordingTodos(prev =>
+      prev.map(t =>
+        t.id === todo.id
+          ? { ...t, completed: newCompleted, completed_at: newCompleted ? new Date().toISOString() : null }
+          : t
+      )
+    );
+  };
+
+  const handleTodoDelete = async (todoId: number) => {
+    await api.deleteTodo(todoId);
+    setRecordingTodos(prev => prev.filter(t => t.id !== todoId));
+  };
 
   const handleDelete = async () => {
     if (!id || isLive) return;
@@ -154,15 +181,32 @@ export default function RecordingDetail() {
         </div>
       )}
 
-      {recording.todos && recording.todos.length > 0 && (
+      {recordingTodos.length > 0 && (
         <div className="todos">
           <h3>TODOs</h3>
           <ul>
-            {recording.todos.map((todo, i) => (
-              <li key={i} className={`priority-${todo.priority}`}>
-                <span>{todo.task}</span>
+            {recordingTodos.map(todo => (
+              <li
+                key={todo.id}
+                className={`priority-${todo.priority} ${todo.completed ? 'completed' : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  className="todo-checkbox"
+                  checked={todo.completed}
+                  onChange={() => handleTodoToggle(todo)}
+                />
+                <span className="todo-task">{todo.task}</span>
                 <span> - {todo.owner}</span>
                 {todo.due && <span> (due: {todo.due})</span>}
+                <span className="priority-badge">{todo.priority}</span>
+                <button
+                  className="todo-delete"
+                  onClick={() => handleTodoDelete(todo.id)}
+                  aria-label={`Delete todo: ${todo.task}`}
+                >
+                  ×
+                </button>
               </li>
             ))}
           </ul>

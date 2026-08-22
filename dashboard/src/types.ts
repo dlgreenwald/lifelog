@@ -24,10 +24,16 @@ export interface Speaker {
 }
 
 export interface Todo {
+  id: number;
   task: string;
   owner: string;
   due: string | null;
   priority: 'high' | 'medium' | 'low';
+  completed: boolean;
+  completed_at: string | null;
+  recording_id: number;
+  recording_timestamp: string;
+  created_at: string;
 }
 
 export interface CalendarEvent {

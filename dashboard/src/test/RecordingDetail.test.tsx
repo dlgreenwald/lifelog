@@ -8,9 +8,14 @@ import type { Recording } from '../types';
 vi.mock('../api/client', () => ({
   api: {
     getRecording: vi.fn(),
+    getTodosForRecording: vi.fn().mockResolvedValue({ todos: [] }),
+    completeTodo: vi.fn().mockResolvedValue({ ok: true }),
+    deleteTodo: vi.fn().mockResolvedValue({ ok: true }),
     fetchAudio: vi.fn().mockResolvedValue('blob:mock'),
     getActiveRecording: vi.fn().mockResolvedValue(null),
     deleteRecording: vi.fn().mockResolvedValue({ ok: true }),
+    reprocessRecording: vi.fn().mockResolvedValue({ ok: true }),
+    updateRecordingCategory: vi.fn().mockResolvedValue({ ok: true }),
   },
 }));
 
@@ -24,9 +29,7 @@ const mockRecording: Recording = {
     { id: 0, name: 'Alice', start: 0.0, end: 3.0, text: 'Let us plan Q1.' },
     { id: 1, name: 'Bob', start: 3.0, end: 6.0, text: 'Sounds good.' },
   ],
-  todos: [
-    { task: 'Write proposal', owner: 'Alice', due: '2024-01-20', priority: 'high' },
-  ],
+  todos: null,
   calendar: [{ event: 'Kickoff meeting', time: '2024-01-22 10:00', participants: 'All' }],
   notes: ['Q1 focus on reliability'],
   conversation_changes: [],
@@ -98,6 +101,22 @@ describe('RecordingDetail', () => {
 
   it('renders TODOs section', async () => {
     mockApi.getRecording.mockResolvedValue(mockRecording);
+    mockApi.getTodosForRecording.mockResolvedValue({
+      todos: [
+        {
+          id: 1,
+          task: 'Write proposal',
+          owner: 'Alice',
+          due: '2024-01-20',
+          priority: 'high',
+          completed: false,
+          completed_at: null,
+          recording_id: 10,
+          recording_timestamp: '2024-01-15T10:30:00',
+          created_at: '2024-01-15T10:30:00',
+        },
+      ],
+    });
 
     renderDetail();
 
@@ -105,7 +124,6 @@ describe('RecordingDetail', () => {
       expect(screen.getByText('Write proposal')).toBeInTheDocument();
     });
 
-    // Verify Alice is listed as owner in the TODO
     expect(screen.getByText('Write proposal').closest('li')).toHaveTextContent('Alice');
   });
 

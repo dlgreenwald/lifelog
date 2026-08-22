@@ -442,13 +442,17 @@ class TestHourlyReprocessing:
         ):
             mock_db.get_session_all_utterances = AsyncMock(return_value=utterances)
             mock_db.get_recording_audio_filenames = AsyncMock(return_value=["utt1.opus"])
+            mock_db.get_recording = AsyncMock(return_value=None)  # first processing
             mock_db.save_session_recording = AsyncMock(return_value=99)
+            mock_db.save_todos = AsyncMock()
             mock_db.mark_session_processed = AsyncMock()
 
             session = {"id": 1, "user_id": 1, "started_at": datetime(2025, 1, 1, 10, 0, 0)}
             await _reprocess_session(session)
 
             mock_db.save_session_recording.assert_called_once()
+            # No todos in llm_result, so save_todos should not be called
+            mock_db.save_todos.assert_not_called()
             mock_db.mark_session_processed.assert_called_once_with(1)
 
     @pytest.mark.asyncio

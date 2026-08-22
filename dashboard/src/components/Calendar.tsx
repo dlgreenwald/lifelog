@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { format } from 'date-fns';
 import { api } from '../api/client';
 import RecordingList from './RecordingList';
-import type { Recording, CalendarDay } from '../types';
+import type { Recording, CalendarDay, Todo } from '../types';
 
 export default function Calendar() {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -13,6 +13,7 @@ export default function Calendar() {
   const [dailySummary, setDailySummary] = useState<Record<string, string> | null>(null);
   const [loading, setLoading] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const [dayTodos, setDayTodos] = useState<Todo[]>([]);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth() + 1;
@@ -39,6 +40,7 @@ export default function Calendar() {
     if (selectedDate) {
       setLoading(true);
       setDailySummary(null);
+      setDayTodos([]);
       api.getRecordings(selectedDate, categoryFilter ?? undefined).then((data: { recordings: Recording[] }) => {
         setRecordings(data.recordings);
         setLoading(false);
@@ -46,6 +48,9 @@ export default function Calendar() {
       api.getDailySummary(selectedDate).then((data: { daily_summary: { daily_summary: Record<string, string> } | null }) => {
         setDailySummary(data.daily_summary?.daily_summary ?? null);
       }).catch(() => setDailySummary(null));
+      api.getTodosForDate(selectedDate).then((data: { todos: Todo[] }) => {
+        setDayTodos(data.todos);
+      }).catch(() => setDayTodos([]));
     }
   }, [selectedDate, categoryFilter]);
 
@@ -60,6 +65,23 @@ export default function Calendar() {
   const handleDateClick = (day: number) => {
     const dateStr = format(new Date(year, month - 1, day), 'yyyy-MM-dd');
     setSelectedDate(dateStr);
+  };
+
+  const handleToggleTodo = async (todo: Todo) => {
+    const newCompleted = !todo.completed;
+    await api.completeTodo(todo.id, newCompleted);
+    setDayTodos(prev =>
+      prev.map(t =>
+        t.id === todo.id
+          ? { ...t, completed: newCompleted, completed_at: newCompleted ? new Date().toISOString() : null }
+          : t
+      )
+    );
+  };
+
+  const handleDeleteTodo = async (todoId: number) => {
+    await api.deleteTodo(todoId);
+    setDayTodos(prev => prev.filter(t => t.id !== todoId));
   };
 
   const daysInMonth = new Date(year, month, 0).getDate();
@@ -162,6 +184,37 @@ export default function Calendar() {
               <RecordingList recordings={recordings} />
             )}
           </div>
+          {dayTodos.length > 0 && (
+            <div className="day-todos">
+              <h3>TODOs for {selectedDate}</h3>
+              <ul>
+                {dayTodos.map(todo => (
+                  <li
+                    key={todo.id}
+                    className={`priority-${todo.priority} ${todo.completed ? 'completed' : ''}`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="todo-checkbox"
+                      checked={todo.completed}
+                      onChange={() => handleToggleTodo(todo)}
+                    />
+                    <span className="todo-task">{todo.task}</span>
+                    <span> - {todo.owner}</span>
+                    {todo.due && <span> (due: {todo.due})</span>}
+                    <span className="priority-badge">{todo.priority}</span>
+                    <button
+                      className="todo-delete"
+                      onClick={() => handleDeleteTodo(todo.id)}
+                      aria-label={`Delete todo: ${todo.task}`}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
     </div>

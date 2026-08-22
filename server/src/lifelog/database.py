@@ -1,4 +1,3 @@
-import json
 from datetime import UTC, datetime
 
 import asyncpg
@@ -367,27 +366,106 @@ async def save_voiceprint(user_id: int, name: str, embedding: bytes):
 
 
 async def get_todos(user_id: int) -> list[dict]:
-    """Get all open TODOs across all recordings."""
+    """Get all todos for a user, ordered by creation date."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, timestamp, todos
-            FROM recordings
-            WHERE user_id = $1
-            AND todos IS NOT NULL
-            AND todos != '[]'::jsonb
-            ORDER BY timestamp DESC
-        """,
+            SELECT t.id, t.task, t.owner, t.due, t.priority, t.completed,
+                   t.completed_at, t.created_at, t.recording_id,
+                   r.timestamp AS recording_timestamp
+            FROM todos t
+            JOIN recordings r ON r.id = t.recording_id
+            WHERE t.user_id = $1
+            ORDER BY t.created_at ASC
+            """,
             user_id,
         )
-        result = []
-        for row in rows:
-            todos = json.loads(row["todos"]) if isinstance(row["todos"], str) else row["todos"]
-            for todo in todos:
-                todo["recording_id"] = row["id"]
-                todo["recording_timestamp"] = str(row["timestamp"])
-                result.append(todo)
-        return result
+        return [dict(row) for row in rows]
+
+
+async def get_todos_for_date(user_id: int, date: str) -> list[dict]:
+    """Get todos from recordings on a specific date (YYYY-MM-DD, Eastern Time)."""
+    from datetime import date as _date
+
+    parts = date.split("-")
+    query_date = _date(int(parts[0]), int(parts[1]), int(parts[2]))
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT t.id, t.task, t.owner, t.due, t.priority, t.completed,
+                   t.completed_at, t.created_at, t.recording_id,
+                   r.timestamp AS recording_timestamp
+            FROM todos t
+            JOIN recordings r ON r.id = t.recording_id
+            WHERE t.user_id = $1
+              AND DATE(r.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2
+            ORDER BY t.created_at ASC
+            """,
+            user_id,
+            query_date,
+        )
+        return [dict(row) for row in rows]
+
+
+async def get_todos_for_recording(recording_id: int) -> list[dict]:
+    """Get all todos for a specific recording."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, task, owner, due, priority, completed, completed_at, created_at
+            FROM todos WHERE recording_id = $1
+            ORDER BY created_at ASC
+            """,
+            recording_id,
+        )
+        return [dict(row) for row in rows]
+
+
+async def save_todos(recording_id: int, user_id: int, todos: list[dict]):
+    """Insert todos for a recording. Called only on first processing."""
+    async with pool.acquire() as conn:
+        for todo in todos:
+            await conn.execute(
+                """
+                INSERT INTO todos (user_id, recording_id, task, owner, due, priority)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                user_id,
+                recording_id,
+                todo["task"],
+                todo.get("owner") or "Unassigned",
+                todo.get("due"),
+                todo.get("priority", "medium"),
+            )
+
+
+async def update_todo_completion(todo_id: int, completed: bool):
+    """Mark a todo as completed or incomplete."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE todos
+            SET completed = $1, completed_at = CASE WHEN $1 THEN NOW() ELSE NULL END
+            WHERE id = $2
+            """,
+            completed,
+            todo_id,
+        )
+
+
+async def delete_todo(todo_id: int):
+    """Delete a todo."""
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM todos WHERE id = $1", todo_id)
+
+
+async def get_todo_owner(todo_id: int) -> int | None:
+    """Get the user_id that owns a todo. Returns None if not found."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT user_id FROM todos WHERE id = $1", todo_id
+        )
+        return row["user_id"] if row else None
 
 
 async def get_decisions(user_id: int, limit: int = 20) -> list[dict]:

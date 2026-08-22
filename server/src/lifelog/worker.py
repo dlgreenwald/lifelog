@@ -518,14 +518,23 @@ async def _reprocess_session(session: dict):
     audio_files = await db.get_recording_audio_filenames(session_id)
     first_audio = audio_files[0] if audio_files else ""
 
+    # Check if recording already exists (reprocessing) vs first processing
+    existing_recording = await db.get_recording(session["user_id"], session_id)
+
     # Save (or update) recording — preserve original session start time
     category = llm_result.get("category", "not_meaningful")
-    await db.save_session_recording(
+    recording_id = await db.save_session_recording(
         session["user_id"], session_id, full_transcript,
         all_named_segments, llm_result, first_audio,
         session_timestamp=session["started_at"],
         category=category,
     )
+
+    # Save todos only on first processing — never regenerate on reprocessing
+    if existing_recording is None:
+        todos = llm_result.get("todos", [])
+        if todos:
+            await db.save_todos(recording_id, session["user_id"], todos)
 
     # Mark session as processed
     await db.mark_session_processed(session_id)

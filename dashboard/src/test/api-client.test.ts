@@ -88,7 +88,7 @@ describe('api client', () => {
 
   describe('api.getTodos', () => {
     it('fetches todos', async () => {
-      const data = { todos: [{ task: 'Buy milk', owner: 'Bob', priority: 'low' }] };
+      const data = { todos: [{ id: 1, task: 'Buy milk', owner: 'Bob', priority: 'low', completed: false }] };
       mockFetch.mockReturnValueOnce(jsonResponse(data));
 
       const result = await api.getTodos();
@@ -98,6 +98,64 @@ describe('api client', () => {
         expect.anything()
       );
       expect(result).toEqual(data);
+    });
+  });
+
+  describe('api.getTodosForDate', () => {
+    it('fetches todos for a specific date', async () => {
+      const data = { todos: [{ id: 1, task: 'Buy milk', completed: false }] };
+      mockFetch.mockReturnValueOnce(jsonResponse(data));
+
+      const result = await api.getTodosForDate('2024-01-15');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/dashboard/todos/2024-01-15',
+        expect.anything()
+      );
+      expect(result).toEqual(data);
+    });
+  });
+
+  describe('api.getTodosForRecording', () => {
+    it('fetches todos for a recording', async () => {
+      const data = { todos: [{ id: 1, task: 'Write proposal', completed: false }] };
+      mockFetch.mockReturnValueOnce(jsonResponse(data));
+
+      const result = await api.getTodosForRecording('10');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/dashboard/recording/10/todos',
+        expect.anything()
+      );
+      expect(result).toEqual(data);
+    });
+  });
+
+  describe('api.completeTodo', () => {
+    it('marks a todo as completed', async () => {
+      mockFetch.mockReturnValueOnce(jsonResponse({ ok: true }));
+
+      const result = await api.completeTodo(5, true);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/dashboard/todos/5/complete',
+        expect.objectContaining({ method: 'POST' })
+      );
+      expect(result).toEqual({ ok: true });
+    });
+  });
+
+  describe('api.deleteTodo', () => {
+    it('deletes a todo', async () => {
+      mockFetch.mockReturnValueOnce(jsonResponse({ ok: true }));
+
+      const result = await api.deleteTodo(5);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/dashboard/todos/5',
+        expect.objectContaining({ method: 'DELETE' })
+      );
+      expect(result).toEqual({ ok: true });
     });
   });
 

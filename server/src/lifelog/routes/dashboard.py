@@ -7,15 +7,20 @@ from lifelog.auth import validate_oidc_token
 from lifelog.crypto import audio_crypto
 from lifelog.database import (
     delete_recording,
+    delete_todo,
     get_active_session_recording,
     get_daily_summary,
     get_decisions,
     get_recording,
     get_recordings_by_date,
+    get_todo_owner,
     get_todos,
+    get_todos_for_date,
+    get_todos_for_recording,
     get_unknown_speakers,
     reset_session_for_reprocessing,
     update_recording_category,
+    update_todo_completion,
 )
 
 logger = logging.getLogger("lifelog.dashboard")
@@ -91,10 +96,58 @@ async def get_audio(filename: str, user: dict = Depends(validate_oidc_token)):
 
 @router.get("/todos")
 async def get_todos_route(user: dict = Depends(validate_oidc_token)):
-    """Get all open TODOs across all recordings."""
+    """Get all todos across all recordings."""
     todos = await get_todos(user["id"])
     logger.debug("Todos request: user=%d, found=%d", user["id"], len(todos))
     return {"todos": todos}
+
+
+@router.get("/todos/{date}")
+async def get_todos_for_date_route(date: str, user: dict = Depends(validate_oidc_token)):
+    """Get todos from recordings on a specific date (YYYY-MM-DD)."""
+    todos = await get_todos_for_date(user["id"], date)
+    return {"todos": todos}
+
+
+@router.get("/recording/{recording_id}/todos")
+async def get_recording_todos_route(
+    recording_id: int, user: dict = Depends(validate_oidc_token)
+):
+    """Get todos for a specific recording. Verifies user owns the recording."""
+    recording = await get_recording(user["id"], recording_id)
+    if not recording:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    todos = await get_todos_for_recording(recording_id)
+    return {"todos": todos}
+
+
+@router.post("/todos/{todo_id}/complete")
+async def complete_todo_route(
+    todo_id: int, body: dict, user: dict = Depends(validate_oidc_token)
+):
+    """Mark a todo as completed or incomplete. Verifies user owns the todo."""
+    owner = await get_todo_owner(todo_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    if owner != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    completed = body.get("completed", False)
+    await update_todo_completion(todo_id, completed)
+    return {"ok": True}
+
+
+@router.delete("/todos/{todo_id}")
+async def delete_todo_route(
+    todo_id: int, user: dict = Depends(validate_oidc_token)
+):
+    """Delete a todo. Verifies user owns the todo."""
+    owner = await get_todo_owner(todo_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    if owner != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    await delete_todo(todo_id)
+    return {"ok": True}
 
 
 @router.get("/decisions")

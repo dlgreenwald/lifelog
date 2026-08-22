@@ -401,6 +401,88 @@ header nav a:hover {
   border-left: 4px solid #27ae60;
 }
 
+.todo-list li.completed,
+.day-todos li.completed,
+.recording-detail .todos li.completed {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.todo-checkbox {
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+.todo-task {
+  font-weight: 500;
+}
+
+.todo-delete {
+  float: right;
+  background: none;
+  border: none;
+  color: #ccc;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.todo-delete:hover {
+  color: #e74c3c;
+}
+
+.toggle-completed {
+  margin-bottom: 12px;
+  padding: 6px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  color: #555;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.toggle-completed:hover {
+  background: #f0f0f0;
+}
+
+.day-todos {
+  margin-top: 16px;
+  padding: 16px;
+  background: white;
+  border-radius: 8px;
+  border-left: 4px solid #e67e22;
+}
+
+.day-todos h3 {
+  margin-bottom: 8px;
+  color: #2c3e50;
+}
+
+.day-todos ul {
+  list-style: none;
+}
+
+.day-todos li {
+  padding: 8px;
+  border-bottom: 1px solid #ecf0f1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.day-todos li.priority-high {
+  border-left: 4px solid #e74c3c;
+}
+
+.day-todos li.priority-medium {
+  border-left: 4px solid #f39c12;
+}
+
+.day-todos li.priority-low {
+  border-left: 4px solid #27ae60;
+}
+
 .priority-badge {
   margin-left: 10px;
   padding: 2px 8px;
