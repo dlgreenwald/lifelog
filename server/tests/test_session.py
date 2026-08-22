@@ -456,17 +456,20 @@ class TestHourlyReprocessing:
 
     @pytest.mark.asyncio
     async def test_reprocess_session_no_utterances(self, mock_conn):
-        """Hourly reprocess skips session with no utterances."""
+        """Hourly reprocess marks session processed when it has no utterances."""
         from lifelog.worker import _reprocess_session
 
         with (
             patch("lifelog.worker.db") as mock_db,
         ):
             mock_db.get_session_all_utterances = AsyncMock(return_value=[])
+            mock_db.mark_session_processed = AsyncMock()
 
             session = {"id": 1, "user_id": 1}
             await _reprocess_session(session)
 
+            # Should mark as processed to avoid infinite reprocessing
+            mock_db.mark_session_processed.assert_awaited_once_with(1)
             # Should not attempt to save
             mock_db.save_session_recording.assert_not_called()
 

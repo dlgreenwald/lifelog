@@ -497,7 +497,8 @@ async def _reprocess_session(session: dict):
 
     utterances = await db.get_session_all_utterances(session_id)
     if not utterances:
-        logger.warning("Session %d has no utterances, skipping", session_id)
+        logger.warning("Session %d has no utterances, marking processed and skipping", session_id)
+        await db.mark_session_processed(session_id)
         return
 
     logger.info("Session %d: found %d utterances", session_id, len(utterances))
