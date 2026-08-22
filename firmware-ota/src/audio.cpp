@@ -90,6 +90,7 @@ static int opus_encode_to_buffer(const int16_t* pcm, int samples);
 static void opus_file_end();
 #endif
 static void upload_if_connected(const char* filename);
+static void closePendingFile();
 static void uploadWorkerTask(void *pvParameters);
 
 // ── Upload request (metadata captured at file-close time) ──────────
@@ -117,6 +118,8 @@ static void upload_if_connected(const UploadRequest &req) {
             LOG_AUDIO(LOG_WARN, "Upload failed: %s", req.filename);
         }
     }
+    // Close deferred file after upload attempt (success or fail)
+    closePendingFile();
 }
 
 // ── Public API ─────────────────────────────────────────────────────
@@ -681,6 +684,19 @@ static int opus_encode_to_buffer(const int16_t* pcm, int samples) {
     return remaining;
 }
 
+// ── Deferred file close — writer returns immediately after queuing upload ──
+static File pendingCloseFile;
+static bool hasPendingClose = false;
+
+static void closePendingFile() {
+    if (!hasPendingClose) return;
+    sdTake();
+    pendingCloseFile.close();
+    sdGive();
+    hasPendingClose = false;
+    LOG_AUDIO(LOG_DEBUG, "Deferred file close completed");
+}
+
 static void opus_file_end() {
     if (!pages_flushed) {
         // Never reached 4KB — discard, prepare for next stream
@@ -690,7 +706,10 @@ static void opus_file_end() {
         return;
     }
 
-    // File open — write EOS and close
+    // Close any previously deferred file first
+    closePendingFile();
+
+    // File open — write EOS and defer close
     sdTake();
     ogg_write_page(opus_file);
 
@@ -710,12 +729,14 @@ static void opus_file_end() {
     }
 
     opus_file.flush();
-    uint32_t fileSize = opus_file.size();
-    opus_file.close();
+
+    // Defer the close — writer returns immediately, upload task reads then we close
+    pendingCloseFile = opus_file;
+    hasPendingClose = true;
     sdGive();
 
-    LOG_AUDIO(LOG_INFO, "opus_file_end: %lu bytes, granule=%lld",
-              (unsigned long)fileSize, (long long)opus_granulepos);
+    LOG_AUDIO(LOG_INFO, "opus_file_end: %lu bytes, granule=%lld (close deferred)",
+              (unsigned long)pendingCloseFile.size(), (long long)opus_granulepos);
 }
 
 // ── Upload worker task — non-blocking upload from queue ────────────
