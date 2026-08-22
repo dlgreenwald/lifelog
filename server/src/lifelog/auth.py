@@ -1,6 +1,6 @@
+import jwt as pyjwt
 from fastapi import Depends, Header, HTTPException
 from fastapi.security import HTTPBearer
-import jwt as pyjwt
 
 from lifelog.config import settings
 

@@ -44,4 +44,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S110", "BLE001"]  # try-except-pass in tests is intentional
+"tests/*" = ["S110", "BLE001", "DTZ001"]  # try-except-pass in tests is intentional; naive datetimes OK in tests

@@ -29,7 +29,7 @@ def _configure_logging() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _worker_task, _hourly_task, _daily_task
+    global _worker_task, _hourly_task
 
     _configure_logging()
 

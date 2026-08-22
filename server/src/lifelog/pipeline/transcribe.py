@@ -71,7 +71,7 @@ async def _run_ffmpeg_batch(
     for i, (audio_bytes, ts) in enumerate(zip(audio_list, timestamps)):
         delay_ms = int((ts - timestamps[0]).total_seconds() * 1000)
         seg_path = os.path.join(tmpdir, f"b{batch_num}_seg_{i}.opus")
-        with open(seg_path, "wb") as f:
+        with open(seg_path, "wb") as f:  # noqa: ASYNC230
             f.write(audio_bytes)
         input_args.extend(["-i", seg_path])
         filter_parts.append(f"[{i}:a]adelay={delay_ms}|{delay_ms}[a{i}]")
@@ -81,7 +81,7 @@ async def _run_ffmpeg_batch(
     filter_complex = ";\n".join(filter_parts)
 
     filter_script_path = os.path.join(tmpdir, f"filter_b{batch_num}.txt")
-    with open(filter_script_path, "w") as f:
+    with open(filter_script_path, "w") as f:  # noqa: ASYNC230
         f.write(filter_complex)
 
     cmd = [
@@ -115,7 +115,7 @@ async def _run_ffmpeg_batch(
     try:
         stdout = await asyncio.wait_for(proc.stdout.read(), timeout=600)
         await asyncio.wait_for(proc.wait(), timeout=10)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         await stderr_task
@@ -135,9 +135,8 @@ async def _run_ffmpeg_batch(
 async def _concatopus_files(file_list: list[str], tmpdir: str) -> bytes:
     """Concat multiple opus files using ffmpeg concat demuxer (no re-encode)."""
     list_path = os.path.join(tmpdir, "concat_list.txt")
-    with open(list_path, "w") as f:
-        for path in file_list:
-            f.write(f"file '{path}'\n")
+    with open(list_path, "w") as f:  # noqa: ASYNC230
+        f.writelines(f"file '{path}'\n" for path in file_list)
 
     cmd = [
         "ffmpeg", "-y",
@@ -215,13 +214,13 @@ async def concatenate_opus(
             batch_bytes = await _run_ffmpeg_batch(batch_audio, batch_ts, tmpdir, batch_idx)
 
             batch_path = os.path.join(tmpdir, f"batch_{batch_idx}.ogg")
-            with open(batch_path, "wb") as f:
+            with open(batch_path, "wb") as f:  # noqa: ASYNC230
                 f.write(batch_bytes)
             batch_files.append(batch_path)
 
         # Concat all batch files
         if len(batch_files) == 1:
-            with open(batch_files[0], "rb") as f:
+            with open(batch_files[0], "rb") as f:  # noqa: ASYNC230
                 result = f.read()
         else:
             logger.info("Concatenating %d batch files", len(batch_files))

@@ -3,7 +3,6 @@
 asyncpg's pool.acquire() returns an async context manager directly
 (not a coroutine). The mock must replicate this pattern.
 """
-import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 

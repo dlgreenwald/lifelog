@@ -159,6 +159,7 @@ async def test_concatenate_opus_empty():
 async def test_concatenate_opus_mismatched_lengths():
     """concatenate_opus() raises RuntimeError when audio_list and timestamps differ."""
     from datetime import datetime
+
     from lifelog.pipeline.transcribe import concatenate_opus
 
     with pytest.raises(RuntimeError, match="audio_list length"):
@@ -169,11 +170,14 @@ async def test_concatenate_opus_mismatched_lengths():
 async def test_concatenate_opus_calls_ffmpeg():
     """concatenate_opus() writes segments to temp files, runs FFmpeg, returns output."""
     from datetime import datetime
+
     from lifelog.pipeline.transcribe import concatenate_opus
 
     mock_proc = AsyncMock()
     mock_proc.returncode = 0
-    mock_proc.communicate.return_value = (b"concatenated-opus-bytes", b"")
+    mock_proc.stdout.read = AsyncMock(return_value=b"concatenated-opus-bytes")
+    mock_proc.stderr.read = AsyncMock(return_value=b"")
+    mock_proc.wait = AsyncMock(return_value=None)
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
         result = await concatenate_opus(
@@ -190,27 +194,29 @@ async def test_concatenate_opus_calls_ffmpeg():
     call_args = mock_exec.call_args
     cmd = call_args[0]
     assert cmd[0] == "ffmpeg"
-    assert "-filter_complex" in cmd
-    # adelay for second segment: 5000ms
-    assert any("adelay=5000|5000" in str(arg) for arg in cmd)
+    assert "-filter_complex_script" in cmd
 
 
 @pytest.mark.asyncio
 async def test_concatenate_opus_ffmpeg_failure():
     """concatenate_opus() raises RuntimeError when FFmpeg fails."""
     from datetime import datetime
+
     from lifelog.pipeline.transcribe import concatenate_opus
 
     mock_proc = AsyncMock()
     mock_proc.returncode = 1
-    mock_proc.communicate.return_value = (b"", b"Error: invalid codec")
+    mock_proc.stdout.read = AsyncMock(return_value=b"")
+    # Return error once, then empty to exit the read loop
+    mock_proc.stderr.read = AsyncMock(side_effect=[b"Error: invalid codec", b""])
+    mock_proc.wait = AsyncMock(return_value=None)
 
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        with pytest.raises(RuntimeError, match="FFmpeg failed"):
-            await concatenate_opus(
-                audio_list=[b"seg0"],
-                timestamps=[datetime(2025, 1, 1, 10, 0, 0)],
-            )
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc), \
+         pytest.raises(RuntimeError, match="FFmpeg batch 0 failed"):
+        await concatenate_opus(
+            audio_list=[b"seg0"],
+            timestamps=[datetime(2025, 1, 1, 10, 0, 0)],
+        )
 
 
 @pytest.mark.asyncio

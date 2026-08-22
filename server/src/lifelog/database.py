@@ -1,8 +1,11 @@
+import logging
 from datetime import UTC, datetime
 
 import asyncpg
 
 from lifelog.config import settings
+
+logger = logging.getLogger("lifelog.database")
 
 # ── Pure helpers ───────────────────────────────────────────────────
 
@@ -484,8 +487,7 @@ async def get_todo_owner(todo_id: int) -> int | None:
 
 async def save_decisions(recording_id: int, user_id: int, decisions: list[dict]):
     """Insert decisions for a recording. Always overwrites existing decisions."""
-    async with pool.acquire() as conn:
-        async with conn.transaction():
+    async with pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "DELETE FROM decisions WHERE recording_id = $1", recording_id
             )
@@ -1193,7 +1195,7 @@ async def get_daily_summary(user_id: int, date_str: str) -> dict | None:
 async def get_users_with_sessions_previous_day() -> list[int]:
     """Get distinct user_ids that had sessions yesterday."""
     from datetime import timedelta
-    now = datetime.now(UTC) if datetime.now(UTC).tzinfo else datetime.now()
+    now = datetime.now(UTC)
     yesterday = (now - timedelta(days=1)).date()
     async with pool.acquire() as conn:
         rows = await conn.fetch(

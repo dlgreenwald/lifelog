@@ -319,8 +319,8 @@ async def transcribe_window(
 
     Returns dict with all_named_segments, full_transcript, speaker_map.
     """
-    from lifelog.pipeline.transcribe import concatenate_opus, transcribe_batch
     from lifelog.pipeline.speaker_client import identify_speakers
+    from lifelog.pipeline.transcribe import concatenate_opus, transcribe_batch
 
     session_id = session["id"]
     user_id = session["user_id"]
@@ -421,21 +421,20 @@ async def transcribe_window(
                 assigned = True
                 break
 
-        if not assigned:
-            if utterances:
-                last_utt = utterances[-1]
-                uid = last_utt["utterance_id"]
-                named_seg = {
-                    "id": len(utterance_segments[uid]),
-                    "name": seg.get("speaker", "SPEAKER_00"),
-                    "start": seg.get("start", 0) - utterance_offsets[-1],
-                    "end": seg.get("end", 0) - utterance_offsets[-1],
-                    "text": seg.get("text", "").strip(),
-                }
-                utterance_segments[uid].append(named_seg)
-                utterance_transcripts[uid].append(seg)
-                all_named_segments.append(named_seg)
-                full_transcript["segments"].append(seg)
+        if not assigned and utterances:
+            last_utt = utterances[-1]
+            uid = last_utt["utterance_id"]
+            named_seg = {
+                "id": len(utterance_segments[uid]),
+                "name": seg.get("speaker", "SPEAKER_00"),
+                "start": seg.get("start", 0) - utterance_offsets[-1],
+                "end": seg.get("end", 0) - utterance_offsets[-1],
+                "text": seg.get("text", "").strip(),
+            }
+            utterance_segments[uid].append(named_seg)
+            utterance_transcripts[uid].append(seg)
+            all_named_segments.append(named_seg)
+            full_transcript["segments"].append(seg)
 
     # Identify speakers across the window
     diarization_segments = [
@@ -456,8 +455,8 @@ async def transcribe_window(
         speaker_id = named_seg["name"]
         named_seg["name"] = speaker_map.get(speaker_id, speaker_id)
 
-    for uid in utterance_segments:
-        for named_seg in utterance_segments[uid]:
+    for uid, segments in utterance_segments.items():
+        for named_seg in segments:
             speaker_id = named_seg["name"]
             named_seg["name"] = speaker_map.get(speaker_id, speaker_id)
 
@@ -663,9 +662,9 @@ async def _daily_reprocess_user(user_id: int, target_date=None):
         user_id: The user to summarize for.
         target_date: A date object or datetime. If None, uses yesterday.
     """
-    from lifelog.pipeline.llm import summarize_day
+    from datetime import timedelta
 
-    from datetime import timedelta, date as _date
+    from lifelog.pipeline.llm import summarize_day
 
     if target_date is None:
         now = datetime.now(UTC)

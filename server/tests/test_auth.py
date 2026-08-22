@@ -34,7 +34,6 @@ async def test_validate_api_key_invalid():
 
 def _make_jwk_mock(private_key):
     """Create a mock PyJWKClient that returns a signing key from the given RSA key."""
-    from jwt import PyJWK
 
     # Build a JWKS-like dict from the public key
     public_pem = private_key.public_key().public_bytes(
@@ -76,14 +75,14 @@ async def test_validate_oidc_token_valid():
 
     mock_jwk_client = _make_jwk_mock(private_key)
 
-    with patch("lifelog.auth._get_jwk_client", return_value=mock_jwk_client):
-        with patch("lifelog.auth.settings") as mock_settings:
-            mock_settings.oidc_client_id = "test-client"
-            mock_settings.oidc_issuer_url = "https://auth.test.com"
-            with patch("lifelog.database.get_user_by_oidc_sub", new_callable=AsyncMock) as mock_get:
-                mock_get.return_value = fake_user
-                result = await validate_oidc_token(token=mock_token)
-                assert result == fake_user
+    with patch("lifelog.auth._get_jwk_client", return_value=mock_jwk_client), \
+         patch("lifelog.auth.settings") as mock_settings, \
+         patch("lifelog.database.get_user_by_oidc_sub", new_callable=AsyncMock) as mock_get:
+        mock_settings.oidc_client_id = "test-client"
+        mock_settings.oidc_issuer_url = "https://auth.test.com"
+        mock_get.return_value = fake_user
+        result = await validate_oidc_token(token=mock_token)
+        assert result == fake_user
 
 
 @pytest.mark.asyncio
@@ -132,14 +131,14 @@ async def test_validate_oidc_token_user_not_found():
     mock_jwk_client = _make_jwk_mock(private_key)
     new_user = {"id": 99, "oidc_sub": "unknown-user", "name": "User"}
 
-    with patch("lifelog.auth._get_jwk_client", return_value=mock_jwk_client):
-        with patch("lifelog.auth.settings") as mock_settings:
-            mock_settings.oidc_client_id = "test-client"
-            mock_settings.oidc_issuer_url = "https://auth.test.com"
-            with patch("lifelog.database.get_user_by_oidc_sub", new_callable=AsyncMock) as mock_get:
-                mock_get.return_value = None
-                with patch("lifelog.database.create_user", new_callable=AsyncMock) as mock_create:
-                    mock_create.return_value = new_user
-                    result = await validate_oidc_token(token=mock_token)
-                    assert result == new_user
-                    mock_create.assert_awaited_once()
+    with patch("lifelog.auth._get_jwk_client", return_value=mock_jwk_client), \
+         patch("lifelog.auth.settings") as mock_settings, \
+         patch("lifelog.database.get_user_by_oidc_sub", new_callable=AsyncMock) as mock_get, \
+         patch("lifelog.database.create_user", new_callable=AsyncMock) as mock_create:
+        mock_settings.oidc_client_id = "test-client"
+        mock_settings.oidc_issuer_url = "https://auth.test.com"
+        mock_get.return_value = None
+        mock_create.return_value = new_user
+        result = await validate_oidc_token(token=mock_token)
+        assert result == new_user
+        mock_create.assert_awaited_once()

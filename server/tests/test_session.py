@@ -2,7 +2,6 @@
 
 Tests session assignment, meaningful speech detection, and reprocessing.
 """
-import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
