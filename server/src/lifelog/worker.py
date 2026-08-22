@@ -227,23 +227,40 @@ async def process_utterance(user_id: int, utterance_id: int):
             # Within window — append to existing session
             session_id = active_session["id"]
         else:
-            # Gap too large — end current session, create new one
+            # Gap too large — end current session and reprocess immediately
             await db.end_session(active_session["id"])
+            logger.info(
+                "Session %d ended (gap %.1f min > %d min), reprocessing",
+                active_session["id"],
+                gap_minutes,
+                settings.session_gap_minutes,
+            )
+            try:
+                await _reprocess_session(active_session)
+            except Exception:
+                logger.exception("Error reprocessing session %d on end", active_session["id"])
             session_id = await db.create_session(user_id, utterance_time)
     else:
         # No active session — create one
         session_id = await db.create_session(user_id, utterance_time)
 
-    # Store utterance in session
-    audio_filename = audio_filenames[0] if audio_filenames else ""
-    await db.append_session_utterance(
-        session_id,
-        utterance_id,
-        audio_filename,
-        full_transcript,
-        all_named_segments,
-        meaningful,
-    )
+    # Store utterance in session (skip meaningless — no transcribed text)
+    if meaningful:
+        audio_filename = audio_filenames[0] if audio_filenames else ""
+        await db.append_session_utterance(
+            session_id,
+            utterance_id,
+            audio_filename,
+            full_transcript,
+            all_named_segments,
+            meaningful,
+        )
+    else:
+        logger.info(
+            "Utterance %d/%d: no meaningful speech, skipping session storage",
+            user_id,
+            utterance_id,
+        )
 
     await complete_utterance(user_id, utterance_id, None)
 

@@ -46,6 +46,17 @@ async function fetchApi(path: string, options: RequestInit = {}) {
 }
 
 export const api = {
+  fetchAudio: async (path: string): Promise<string> => {
+    const headers: Record<string, string> = {};
+    if (_getToken) {
+      const token = await _getToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+    }
+    const resp = await fetch(`${API_BASE}${path}`, { headers });
+    if (!resp.ok) throw new Error(`Audio fetch failed: ${resp.statusText}`);
+    const blob = await resp.blob();
+    return URL.createObjectURL(blob);
+  },
   getCalendar: (year: number, month: number) =>
     fetchApi(`/dashboard/calendar/${year}/${month}`),
   getRecordings: (date: string) => fetchApi(`/dashboard/recordings/${date}`),
@@ -53,6 +64,9 @@ export const api = {
   getTodos: () => fetchApi('/dashboard/todos'),
   getDecisions: () => fetchApi('/dashboard/decisions'),
   getUnknownSpeakers: () => fetchApi('/dashboard/unknown-speakers'),
+  deleteRecording: (id: string) =>
+    fetchApi(`/dashboard/recording/${id}`, { method: 'DELETE' }),
+  getActiveRecording: () => fetchApi('/dashboard/active-recording'),
   labelSpeaker: (recordingId: number, speakerId: string, label: string) =>
     fetchApi('/speakers/label', {
       method: 'POST',

@@ -9,6 +9,7 @@ vi.mock('../api/client', () => ({
   api: {
     getCalendar: vi.fn(),
     getRecordings: vi.fn(),
+    getActiveRecording: vi.fn().mockResolvedValue(null),
   },
 }));
 

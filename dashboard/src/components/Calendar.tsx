@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { format } from 'date-fns';
 import { api } from '../api/client';
 import RecordingList from './RecordingList';
@@ -7,6 +7,7 @@ import type { Recording, CalendarDay } from '../types';
 export default function Calendar() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]);
   const [loading, setLoading] = useState(false);
@@ -19,6 +20,18 @@ export default function Calendar() {
       setCalendarDays(data.dates);
     });
   }, [year, month]);
+
+  const loadActive = useCallback(() => {
+    api.getActiveRecording().then(setActiveRecording).catch(() => setActiveRecording(null));
+  }, []);
+
+  useEffect(() => { loadActive(); }, [loadActive]);
+
+  // Auto-refresh active recording
+  useEffect(() => {
+    const interval = setInterval(loadActive, 5000);
+    return () => clearInterval(interval);
+  }, [loadActive]);
 
   useEffect(() => {
     if (selectedDate) {
@@ -86,6 +99,14 @@ export default function Calendar() {
         <div className="calendar-weekday">Sat</div>
         {calendarDaysList}
       </div>
+
+      {activeRecording && (
+        <div className="recordings-panel active-recording">
+          <h3>🎙️ Recording in progress</h3>
+          <RecordingList recordings={[activeRecording]} />
+        </div>
+      )}
+
       {selectedDate && (
         <div className="recordings-panel">
           <h3>Recordings for {selectedDate}</h3>

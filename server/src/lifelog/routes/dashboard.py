@@ -6,6 +6,8 @@ from fastapi.responses import StreamingResponse
 from lifelog.auth import validate_oidc_token
 from lifelog.crypto import audio_crypto
 from lifelog.database import (
+    delete_recording,
+    get_active_session_recording,
     get_decisions,
     get_recording,
     get_recordings_by_date,
@@ -28,12 +30,12 @@ async def get_calendar(year: int, month: int, user: dict = Depends(validate_oidc
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT DATE(timestamp) as date, COUNT(*) as count
+            SELECT DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') as date, COUNT(*) as count
             FROM recordings
             WHERE user_id = $1
-              AND EXTRACT(YEAR FROM timestamp) = $2
-              AND EXTRACT(MONTH FROM timestamp) = $3
-            GROUP BY DATE(timestamp)
+              AND EXTRACT(YEAR FROM timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2
+              AND EXTRACT(MONTH FROM timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $3
+            GROUP BY date
             ORDER BY date
         """,
             user["id"],
@@ -99,3 +101,19 @@ async def get_unknown_speakers_route(user: dict = Depends(validate_oidc_token)):
     recordings = await get_unknown_speakers(user["id"])
     logger.debug("Unknown speakers request: user=%d, found=%d", user["id"], len(recordings))
     return {"recordings": recordings}
+
+
+@router.delete("/recording/{recording_id}")
+async def delete_recording_route(recording_id: int, user: dict = Depends(validate_oidc_token)):
+    """Delete a recording."""
+    deleted = await delete_recording(user["id"], recording_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    return {"ok": True}
+
+
+@router.get("/active-recording")
+async def get_active_recording_route(user: dict = Depends(validate_oidc_token)):
+    """Get the current active session as a recording (live view)."""
+    recording = await get_active_session_recording(user["id"])
+    return recording

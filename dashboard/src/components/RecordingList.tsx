@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { formatTime } from '../utils/format';
 import type { Recording } from '../types';
 
 interface RecordingListProps {
@@ -15,7 +16,7 @@ export default function RecordingList({ recordings }: RecordingListProps) {
           className="recording-item"
         >
           <div className="recording-time">
-            {new Date(recording.timestamp).toLocaleTimeString()}
+            {formatTime(recording.timestamp)}
           </div>
           <div className="recording-summary">
             {recording.summary || 'No summary'}

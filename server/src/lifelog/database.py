@@ -23,6 +23,11 @@ def is_meaningful_speech(named_segments: list) -> bool:
 pool: asyncpg.Pool = None
 
 
+async def _init_connection(conn):
+    """Register JSONB codec so asyncpg returns parsed Python objects, not strings."""
+    await conn.set_type_codec('jsonb', encoder=__import__('json').dumps, decoder=__import__('json').loads, schema='pg_catalog')
+
+
 async def init_pool():
     """Initialize PostgreSQL connection pool (migrations run separately via migrate.py)."""
     global pool
@@ -35,6 +40,7 @@ async def init_pool():
         min_size=5,
         max_size=20,
         ssl=False,
+        init=_init_connection,
     )
 
 
@@ -120,20 +126,20 @@ async def save_recording(
         """,
             user_id,
             datetime.now(UTC).replace(tzinfo=None),
-            json.dumps(transcript),
-            json.dumps(named_segments),
+            transcript,
+            named_segments,
             result["summary"],
-            json.dumps(result["todos"]),
-            json.dumps(result["calendar"]),
-            json.dumps(result["notes"]),
-            json.dumps(result.get("conversation_changes", [])),
+            result["todos"],
+            result["calendar"],
+            result["notes"],
+            result.get("conversation_changes", []),
             audio_filename,
         )
         return row["id"]
 
 
 async def get_recordings_by_date(user_id: int, date: str) -> list[dict]:
-    """Get all recordings for a user on a specific date (YYYY-MM-DD)."""
+    """Get all recordings for a user on a specific date (YYYY-MM-DD, Eastern Time)."""
     from datetime import date as _date
     date_obj = _date.fromisoformat(date)
     async with pool.acquire() as conn:
@@ -141,7 +147,8 @@ async def get_recordings_by_date(user_id: int, date: str) -> list[dict]:
             """
             SELECT id, timestamp, summary, todos, calendar, notes, speakers
             FROM recordings
-            WHERE user_id = $1 AND DATE(timestamp) = $2
+            WHERE user_id = $1
+              AND DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2
             ORDER BY timestamp DESC
         """,
             user_id,
@@ -185,6 +192,82 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
                 [result["audio_filename"]] if result.get("audio_filename") else []
             )
         return result
+
+
+async def delete_recording(user_id: int, recording_id: int) -> bool:
+    """Delete a recording. Returns True if deleted."""
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM recordings WHERE id = $1 AND user_id = $2",
+            recording_id,
+            user_id,
+        )
+        return result == "DELETE 1"
+
+
+async def get_active_session_recording(user_id: int) -> dict | None:
+    """Build a recording-like dict from the active session's utterances.
+
+    Returns None if no active session or no meaningful utterances yet.
+    """
+    async with pool.acquire() as conn:
+        session = await conn.fetchrow(
+            """
+            SELECT id, user_id, started_at
+            FROM sessions
+            WHERE user_id = $1 AND status = 'active'
+            ORDER BY started_at DESC LIMIT 1
+            """,
+            user_id,
+        )
+        if not session:
+            return None
+
+        # Get all meaningful utterances in chronological order
+        utterances = await conn.fetch(
+            """
+            SELECT utterance_id, audio_filename, transcript, named_segments, created_at
+            FROM session_utterances
+            WHERE session_id = $1 AND is_meaningful = TRUE
+            ORDER BY created_at
+            """,
+            session["id"],
+        )
+        if not utterances:
+            return None
+
+        # Merge transcripts and speakers across all utterances
+        import json as _json
+        all_segments = []
+        all_named = []
+        for utt in utterances:
+            transcript = utt["transcript"]
+            if isinstance(transcript, str):
+                transcript = _json.loads(transcript)
+            all_segments.extend(transcript.get("segments", []))
+
+            named = utt["named_segments"]
+            if isinstance(named, str):
+                named = _json.loads(named)
+            all_named.extend(named)
+
+        audio_files = [utt["audio_filename"] for utt in utterances if utt["audio_filename"]]
+
+        return {
+            "id": f"active-{session['id']}",
+            "session_id": session["id"],
+            "timestamp": session["started_at"],
+            "transcript": {"segments": all_segments},
+            "speakers": all_named,
+            "summary": None,
+            "todos": [],
+            "calendar": [],
+            "notes": [],
+            "conversation_changes": [],
+            "audio_filename": audio_files[0] if audio_files else None,
+            "audio_filenames": audio_files,
+            "is_live": True,
+        }
 
 
 async def get_unknown_speakers(user_id: int) -> list[dict]:
@@ -352,7 +435,7 @@ async def update_recording_speakers(recording_id: int, speakers: list):
             SET speakers = $1::jsonb
             WHERE id = $2
         """,
-            json.dumps(speakers),
+            speakers,
             recording_id,
         )
 
@@ -436,8 +519,8 @@ async def append_session_utterance(
             session_id,
             utterance_id,
             audio_filename,
-            json.dumps(transcript),
-            json.dumps(named_segments),
+            transcript,
+            named_segments,
             is_meaningful,
         )
 
@@ -528,13 +611,13 @@ async def save_session_recording(
                     audio_filename = $8, timestamp = NOW()
                 WHERE id = $9
                 """,
-                json.dumps(transcript),
-                json.dumps(speakers),
+                transcript,
+                speakers,
                 result["summary"],
-                json.dumps(result["todos"]),
-                json.dumps(result["calendar"]),
-                json.dumps(result["notes"]),
-                json.dumps(result.get("conversation_changes", [])),
+                result["todos"],
+                result["calendar"],
+                result["notes"],
+                result.get("conversation_changes", []),
                 audio_filename,
                 existing["id"],
             )
@@ -550,13 +633,13 @@ async def save_session_recording(
                 """,
                 user_id,
                 session_id,
-                json.dumps(transcript),
-                json.dumps(speakers),
+                transcript,
+                speakers,
                 result["summary"],
-                json.dumps(result["todos"]),
-                json.dumps(result["calendar"]),
-                json.dumps(result["notes"]),
-                json.dumps(result.get("conversation_changes", [])),
+                result["todos"],
+                result["calendar"],
+                result["notes"],
+                result.get("conversation_changes", []),
                 audio_filename,
             )
             return row["id"]

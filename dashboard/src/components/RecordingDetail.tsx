@@ -1,36 +1,85 @@
-import { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { formatDateTime } from '../utils/format';
 import AudioPlayer from './AudioPlayer';
 import type { Recording } from '../types';
 
 export default function RecordingDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [recording, setRecording] = useState<Recording | null>(null);
+  const [audioUrls, setAudioUrls] = useState<string[]>([]);
 
-  useEffect(() => {
-    if (id) {
+  const isLive = id?.startsWith('active-');
+
+  const loadRecording = useCallback(() => {
+    if (!id) return;
+    if (isLive) {
+      api.getActiveRecording().then(setRecording).catch(() => setRecording(null));
+    } else {
       api.getRecording(id).then(setRecording);
     }
-  }, [id]);
+  }, [id, isLive]);
+
+  useEffect(() => { loadRecording(); }, [loadRecording]);
+
+  // Auto-refresh for live recordings
+  useEffect(() => {
+    if (!isLive) return;
+    const interval = setInterval(loadRecording, 5000);
+    return () => clearInterval(interval);
+  }, [isLive, loadRecording]);
+
+  useEffect(() => {
+    if (!recording) return;
+    const filenames = recording.audio_filenames?.length
+      ? recording.audio_filenames
+      : recording.audio_filename
+        ? [recording.audio_filename]
+        : [];
+    if (filenames.length === 0) return;
+
+    Promise.all(
+      filenames.map((f) => api.fetchAudio(`/dashboard/audio/${f}`))
+    ).then(setAudioUrls);
+
+    return () => audioUrls.forEach((url) => URL.revokeObjectURL(url));
+  }, [recording]);
+
+  const handleDelete = async () => {
+    if (!id || isLive) return;
+    if (!confirm('Delete this recording?')) return;
+    await api.deleteRecording(id);
+    navigate('/', { replace: true });
+  };
 
   if (!recording) return <div>Loading...</div>;
 
   return (
     <div className="recording-detail">
-      <h2>Recording from {new Date(recording.timestamp).toLocaleString()}</h2>
+      <h2>
+        {isLive ? '🎙️ Live Recording' : `Recording from ${formatDateTime(recording.timestamp)}`}
+        {isLive && <span className="live-badge"> LIVE</span>}
+      </h2>
 
-      <div className="summary">
-        <h3>Summary</h3>
-        <p>{recording.summary}</p>
-      </div>
+      {!isLive && (
+        <button className="delete-button" onClick={handleDelete}>Delete</button>
+      )}
+
+      {recording.summary && (
+        <div className="summary">
+          <h3>Summary</h3>
+          <p>{recording.summary}</p>
+        </div>
+      )}
 
       {recording.speakers && recording.speakers.length > 0 && (
         <div className="speakers">
-          <h3>Speakers</h3>
+          <h3>Transcript</h3>
           <ul>
-            {recording.speakers.map((speaker) => (
-              <li key={speaker.id} className={speaker.name === 'Unknown' ? 'unknown' : ''}>
+            {recording.speakers.map((speaker, i) => (
+              <li key={i} className={speaker.name === 'Unknown' ? 'unknown' : ''}>
                 {speaker.name}: {speaker.text}
                 {speaker.name === 'Unknown' && (
                   <button onClick={() => labelSpeaker(speaker)}>Label</button>
@@ -41,23 +90,11 @@ export default function RecordingDetail() {
         </div>
       )}
 
-      {recording.audio_filenames && recording.audio_filenames.length > 0 && (
+      {audioUrls.length > 0 && (
         <div className="audio-player">
           <h3>Audio</h3>
           <AudioPlayer
-            sources={recording.audio_filenames.map(
-              (f) => `/api/v1/dashboard/audio/${f}`
-            )}
-            segments={recording.speakers || []}
-          />
-        </div>
-      )}
-
-      {!recording.audio_filenames?.length && recording.audio_filename && (
-        <div className="audio-player">
-          <h3>Audio</h3>
-          <AudioPlayer
-            src={`/api/v1/dashboard/audio/${recording.audio_filename}`}
+            sources={audioUrls}
             segments={recording.speakers || []}
           />
         </div>
@@ -95,7 +132,6 @@ export default function RecordingDetail() {
   );
 
   function labelSpeaker(speaker: { id: number; name: string }) {
-    // In a real app, this would open a modal to label the speaker
     console.log('Label speaker:', speaker);
   }
 }

@@ -1,9 +1,10 @@
 export interface Recording {
-  id: number;
+  id: number | string;
   timestamp: string;
   summary: string | null;
   speakers: Speaker[] | null;
   todos: Todo[] | null;
+  is_live?: boolean;
   decisions: Decision[] | null;
   calendar: CalendarEvent[] | null;
   notes: string[] | null;
