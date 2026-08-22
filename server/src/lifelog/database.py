@@ -30,7 +30,7 @@ async def init_pool():
         password=settings.postgres_password,
         min_size=5,
         max_size=20,
-        ssl=False,
+        ssl=settings.postgres_ssl,
         init=_init_connection,
     )
 
@@ -59,7 +59,7 @@ async def init_db():
 async def get_user_by_api_key(api_key: str) -> dict | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, api_key, oidc_sub, name, encryption_secret FROM users WHERE api_key = $1",
+            "SELECT id, api_key, oidc_sub, name, encryption_secret, key_salt FROM users WHERE api_key = $1",
             api_key,
         )
         return dict(row) if row else None
@@ -68,7 +68,7 @@ async def get_user_by_api_key(api_key: str) -> dict | None:
 async def get_user_by_oidc_sub(oidc_sub: str) -> dict | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, api_key, oidc_sub, name, encryption_secret FROM users WHERE oidc_sub = $1",
+            "SELECT id, api_key, oidc_sub, name, encryption_secret, key_salt FROM users WHERE oidc_sub = $1",
             oidc_sub,
         )
         return dict(row) if row else None
@@ -80,15 +80,17 @@ async def create_user(
     import secrets
 
     encryption_secret = secrets.token_hex(32)
+    key_salt = secrets.token_bytes(16)
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO users (api_key, oidc_sub, name, encryption_secret)
-               VALUES ($1, $2, $3, $4) RETURNING id""",
+            """INSERT INTO users (api_key, oidc_sub, name, encryption_secret, key_salt)
+               VALUES ($1, $2, $3, $4, $5) RETURNING id""",
             api_key,
             oidc_sub,
             name,
             encryption_secret,
+            key_salt,
         )
         return {
             "id": row["id"],
@@ -96,6 +98,7 @@ async def create_user(
             "oidc_sub": oidc_sub,
             "name": name,
             "encryption_secret": encryption_secret,
+            "key_salt": key_salt,
         }
 
 

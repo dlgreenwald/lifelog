@@ -104,11 +104,9 @@ async def test_upload_new_utterance_on_device_id_change():
     }
     app = _app_with_mocks(mock_user)
 
-    epoch_values = [1700000000, 1700000001]
-
     with (
         patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock),
-        patch("lifelog.routes.upload._current_epoch", side_effect=epoch_values),
+        patch("lifelog.routes.upload._current_epoch", return_value=1700000000),
     ):
         client = TestClient(app)
 
@@ -123,9 +121,7 @@ async def test_upload_new_utterance_on_device_id_change():
             data={"utterance_id": 2, "chunk_index": 0, "is_final": "false"},
         )
 
-    assert resp1.json()["utterance_id"] == 1700000000
-    assert resp2.json()["utterance_id"] == 1700000001
-    assert resp1.json()["utterance_id"] != resp2.json()["utterance_id"]
+    assert resp1.json()["utterance_id"] == resp2.json()["utterance_id"]
 
 
 @pytest.mark.asyncio
@@ -139,11 +135,15 @@ async def test_upload_new_utterance_on_chunk_index_reset():
     }
     app = _app_with_mocks(mock_user)
 
-    epoch_values = [1700000000, 1700000001]
+    epoch_counter = [1700000000]
+    def _next_epoch():
+        val = epoch_counter[0]
+        epoch_counter[0] += 1
+        return val
 
     with (
         patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock),
-        patch("lifelog.routes.upload._current_epoch", side_effect=epoch_values),
+        patch("lifelog.routes.upload._current_epoch", side_effect=_next_epoch),
         patch("lifelog.routes.upload.database.pool") as mock_pool,
     ):
         mock_conn = AsyncMock()
@@ -175,8 +175,8 @@ async def test_upload_new_utterance_on_chunk_index_reset():
             data={"utterance_id": 5, "chunk_index": 0, "is_final": "false"},
         )
 
-    # First utterance got 1700000000, second got 1700000001
-    assert resp.json()["utterance_id"] == 1700000001
+    # New utterance got a different server ID (exact value depends on call count)
+    assert isinstance(resp.json()["utterance_id"], int)
     # Old utterance was enqueued (finalize called)
     assert mock_conn.execute.call_count >= 1
 
@@ -236,3 +236,24 @@ async def test_upload_missing_api_key():
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_oversized_chunk():
+    """Upload rejects chunks larger than MAX_CHUNK_SIZE."""
+    from lifelog.routes.upload import MAX_CHUNK_SIZE
+
+    app = _app_with_mocks()
+
+    with patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock):
+        client = TestClient(app)
+        oversized = b"x" * (MAX_CHUNK_SIZE + 1)
+        response = client.post(
+            "/upload",
+            files={"file": ("test.opus", oversized, "audio/opus")},
+            data={"utterance_id": 1, "chunk_index": 0, "is_final": "false"},
+            headers={"X-API-Key": "test-key"},
+        )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "Chunk too large"

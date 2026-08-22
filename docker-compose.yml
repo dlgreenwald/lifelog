@@ -4,8 +4,6 @@ services:
   # PostgreSQL Database - Encrypted Data Service
   postgres:
     image: postgres:16-alpine
-    ports:
-      - "5433:5432"
     environment:
       - POSTGRES_DB=lifelog
       - POSTGRES_USER=lifelog
@@ -42,6 +40,7 @@ services:
       - POSTGRES_USER=lifelog
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - LOG_LEVEL=DEBUG
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

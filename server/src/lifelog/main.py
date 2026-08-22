@@ -7,9 +7,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from lifelog.config import settings
 from lifelog.database import init_pool
+from lifelog.rate_limit import limiter
 from lifelog.routes import dashboard, speakers, upload
 from lifelog.worker import hourly_reprocess_loop, worker_loop
 
@@ -62,6 +65,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="LifeLog", lifespan=lifespan)
 
+# Rate limiting (shared instance from lifelog.rate_limit)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -79,9 +86,21 @@ async def log_requests(request: Request, call_next):
 
 
 @app.get("/health")
+@limiter.exempt
 async def health():
     return {"status": "ok"}
 
+
+# CORS — restrict origins to configured dashboard origin(s)
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+)
 
 app.include_router(upload.router, prefix="/api/v1", tags=["upload"])
 app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["dashboard"])

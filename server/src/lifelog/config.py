@@ -24,9 +24,17 @@ class Settings(BaseSettings):
     postgres_db: str = "lifelog"
     postgres_user: str = "lifelog"
     postgres_password: str = ""
+    postgres_ssl: str = "prefer"
 
     # Logging
     log_level: str = "INFO"
+
+    # CORS
+    cors_origins: str = "http://localhost:3000"
+
+    # Rate limiting
+    rate_limit_default: str = "100/minute"
+    rate_limit_upload: str = "10/minute"
 
     # Audio storage
     audio_storage_path: str = "/data/audio"

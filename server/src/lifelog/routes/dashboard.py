@@ -28,6 +28,7 @@ from lifelog.database import (
     update_recording_category,
     update_todo_completion,
 )
+from lifelog.models import CreateDecision, CreateTodo
 
 logger = logging.getLogger("lifelog.dashboard")
 
@@ -90,9 +91,12 @@ async def get_recording_detail(recording_id: int, user: dict = Depends(validate_
 async def get_audio(filename: str, user: dict = Depends(validate_oidc_token)):
     """Stream decrypted audio file."""
     logger.debug("Audio stream request: user=%d, file=%s", user["id"], filename)
-    audio_bytes = audio_crypto.decrypt_audio(
-        filename, user["id"], user["encryption_secret"]
-    )
+    try:
+        audio_bytes = audio_crypto.decrypt_audio(
+            filename, user["encryption_secret"], bytes(user["key_salt"])
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename")
     return StreamingResponse(
         iter([audio_bytes]),
         media_type="audio/opus",
@@ -109,18 +113,19 @@ async def get_todos_route(user: dict = Depends(validate_oidc_token)):
 
 
 @router.post("/todos")
-async def create_todo_route(body: dict, user: dict = Depends(validate_oidc_token)):
+async def create_todo_route(body: CreateTodo, user: dict = Depends(validate_oidc_token)):
     """Create a new todo. recording_id is optional (null for standalone)."""
-    task = body.get("task", "").strip()
-    if not task:
-        raise HTTPException(status_code=400, detail="task is required")
+    if body.recording_id is not None:
+        recording = await get_recording(user["id"], body.recording_id)
+        if not recording:
+            raise HTTPException(status_code=404, detail="Recording not found")
     todo_id = await create_todo(
         user_id=user["id"],
-        task=task,
-        owner=body.get("owner", "Me"),
-        due=body.get("due"),
-        priority=body.get("priority", "medium"),
-        recording_id=body.get("recording_id"),
+        task=body.task,
+        owner=body.owner,
+        due=body.due,
+        priority=body.priority,
+        recording_id=body.recording_id,
     )
     return {"id": todo_id}
 
@@ -186,18 +191,19 @@ async def get_decisions_route(
 
 
 @router.post("/decisions")
-async def create_decision_route(body: dict, user: dict = Depends(validate_oidc_token)):
+async def create_decision_route(body: CreateDecision, user: dict = Depends(validate_oidc_token)):
     """Create a new decision. recording_id is optional (null for standalone)."""
-    decision_text = body.get("decision", "").strip()
-    if not decision_text:
-        raise HTTPException(status_code=400, detail="decision is required")
+    if body.recording_id is not None:
+        recording = await get_recording(user["id"], body.recording_id)
+        if not recording:
+            raise HTTPException(status_code=404, detail="Recording not found")
     decision_id = await create_decision(
         user_id=user["id"],
-        decision=decision_text,
-        made_by=body.get("made_by", "Me"),
-        context=body.get("context"),
-        reason=body.get("reason"),
-        recording_id=body.get("recording_id"),
+        decision=body.decision,
+        made_by=body.made_by,
+        context=body.context,
+        reason=body.reason,
+        recording_id=body.recording_id,
     )
     return {"id": decision_id}
 

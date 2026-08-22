@@ -11,6 +11,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_jwk_cache():
+    """Reset the global JWKS client cache between tests."""
+    import lifelog.auth as auth_mod
+
+    auth_mod._jwk_client = None
+    yield
+    auth_mod._jwk_client = None
+
+
 @pytest.fixture
 def mock_pool():
     """Mock asyncpg connection pool."""

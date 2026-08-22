@@ -1,3 +1,4 @@
+import httpx
 import jwt as pyjwt
 from fastapi import Depends, Header, HTTPException
 from fastapi.security import HTTPBearer
@@ -12,14 +13,24 @@ _jwk_client = None
 
 def _get_jwk_client():
     global _jwk_client
-    if _jwk_client is None:
-        # Fetch the OpenID configuration to get the correct jwks_uri
-        import urllib.request
-        discovery_url = f"{settings.oidc_issuer_url.rstrip('/')}/.well-known/openid-configuration"
-        with urllib.request.urlopen(discovery_url) as resp:
-            discovery = __import__('json').load(resp)
-        jwks_url = discovery["jwks_uri"]
-        _jwk_client = pyjwt.PyJWKClient(jwks_url)
+    if _jwk_client is not None:
+        return _jwk_client
+
+    issuer = settings.oidc_issuer_url.rstrip("/")
+    if not issuer.startswith("https://"):
+        raise ValueError("OIDC issuer URL must use HTTPS")
+
+    discovery_url = f"{issuer}/.well-known/openid-configuration"
+    with httpx.Client(timeout=10, follow_redirects=False) as client:
+        resp = client.get(discovery_url)
+        resp.raise_for_status()
+        discovery = resp.json()
+
+    jwks_url = discovery["jwks_uri"]
+    if not jwks_url.startswith("https://"):
+        raise ValueError("JWKS URI must use HTTPS")
+
+    _jwk_client = pyjwt.PyJWKClient(jwks_url)
     return _jwk_client
 
 

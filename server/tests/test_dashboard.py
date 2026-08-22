@@ -321,13 +321,13 @@ async def test_create_todo():
 
 @pytest.mark.asyncio
 async def test_create_todo_missing_task():
-    """Create todo returns 400 when task is empty."""
+    """Create todo returns 422 when task is empty (Pydantic validation)."""
     app = _app_with_mocks()
 
     client = TestClient(app)
     response = client.post("/todos", json={"task": "", "owner": "Bob"})
 
-    assert response.status_code == 400
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -361,13 +361,13 @@ async def test_create_decision():
 
 @pytest.mark.asyncio
 async def test_create_decision_missing_text():
-    """Create decision returns 400 when decision is empty."""
+    """Create decision returns 422 when decision is empty (Pydantic validation)."""
     app = _app_with_mocks()
 
     client = TestClient(app)
     response = client.post("/decisions", json={"decision": "", "made_by": "Alice"})
 
-    assert response.status_code == 400
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio

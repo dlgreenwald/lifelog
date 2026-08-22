@@ -27,8 +27,8 @@ def extract_speaker_audio(recording: dict, speaker_id: str) -> bytes:
     # Decrypt the full audio
     audio_bytes = audio_crypto.decrypt_audio(
         recording["audio_filename"],
-        recording["user_id"],
         recording["encryption_secret"],
+        bytes(recording["key_salt"]),
     )
     return audio_bytes
 
@@ -92,8 +92,8 @@ async def rerun_identification(user: dict):
     for i, recording in enumerate(recordings):
         audio_bytes = audio_crypto.decrypt_audio(
             recording["audio_filename"],
-            user["id"],
             user["encryption_secret"],
+            bytes(user["key_salt"]),
         )
         speakers = recording["speakers"]
 

@@ -71,7 +71,7 @@ async def test_get_audio():
     """get_audio decrypts and streams audio file."""
     fake_audio = b"decrypted-opus-bytes"
 
-    app = _app_with_mocks({"id": 1, "name": "Test", "encryption_secret": "sec"})
+    app = _app_with_mocks({"id": 1, "name": "Test", "encryption_secret": "sec", "key_salt": b"test-salt"})
 
     with patch("lifelog.routes.dashboard.audio_crypto") as mock_crypto:
         mock_crypto.decrypt_audio.return_value = fake_audio
@@ -90,7 +90,7 @@ async def test_get_audio():
 @pytest.mark.asyncio
 async def test_rerun_identification_processes_all_unknowns():
     """rerun_identification decrypts audio and re-identifies speakers for each recording."""
-    user = {"id": 1, "encryption_secret": "sec-123"}
+    user = {"id": 1, "encryption_secret": "sec-123", "key_salt": b"test-salt"}
 
     fake_recordings = [
         {"id": 10, "audio_filename": "rec1.enc", "speakers": [{"name": "Unknown"}]},
@@ -112,8 +112,8 @@ async def test_rerun_identification_processes_all_unknowns():
     assert mock_identify.call_count == 2
     assert mock_update.call_count == 2
 
-    mock_crypto.decrypt_audio.assert_any_call("rec1.enc", 1, "sec-123")
-    mock_crypto.decrypt_audio.assert_any_call("rec2.enc", 1, "sec-123")
+    mock_crypto.decrypt_audio.assert_any_call("rec1.enc", "sec-123", b"test-salt")
+    mock_crypto.decrypt_audio.assert_any_call("rec2.enc", "sec-123", b"test-salt")
 
 
 @pytest.mark.asyncio

@@ -87,14 +87,14 @@ async def get_pending_utterances() -> list[dict]:
         return [dict(row) for row in rows]
 
 
-async def get_user_secret(user_id: int) -> str | None:
-    """Get user's encryption_secret for audio decryption."""
+async def get_user_secret(user_id: int) -> dict | None:
+    """Get user's encryption_secret and key_salt for audio encryption."""
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT encryption_secret FROM users WHERE id = $1",
+            "SELECT encryption_secret, key_salt FROM users WHERE id = $1",
             user_id,
         )
-        return row["encryption_secret"] if row else None
+        return dict(row) if row else None
 
 
 async def process_utterance(user_id: int, utterance_id: int):
@@ -114,10 +114,13 @@ async def process_utterance(user_id: int, utterance_id: int):
 
     logger.info("Utterance %d/%d: %d chunks", user_id, utterance_id, len(chunks))
 
-    encryption_secret = await get_user_secret(user_id)
-    if not encryption_secret:
+    user_secrets = await get_user_secret(user_id)
+    if not user_secrets:
         await fail_utterance(user_id, utterance_id, "user not found")
         return
+
+    encryption_secret = user_secrets["encryption_secret"]
+    key_salt = bytes(user_secrets["key_salt"])
 
     # Encrypt audio chunks for long-term storage
     audio_filenames = []
@@ -127,7 +130,7 @@ async def process_utterance(user_id: int, utterance_id: int):
 
         # Encrypt
         chunk_filename = audio_crypto.encrypt_audio(
-            chunk_audio, user_id, encryption_secret
+            chunk_audio, encryption_secret, key_salt
         )
         audio_filenames.append(chunk_filename)
 
@@ -336,10 +339,13 @@ async def transcribe_window(
         return {"all_named_segments": [], "full_transcript": {"segments": []}, "speaker_map": {}}
 
     # Get user's encryption secret
-    encryption_secret = await get_user_secret(user_id)
-    if not encryption_secret:
+    user_secrets = await get_user_secret(user_id)
+    if not user_secrets:
         logger.error("Session %d: user %d has no encryption secret", session_id, user_id)
         return {"all_named_segments": [], "full_transcript": {"segments": []}, "speaker_map": {}}
+
+    encryption_secret = user_secrets["encryption_secret"]
+    key_salt = bytes(user_secrets["key_salt"])
 
     # Decrypt audio for each utterance and collect timestamps
     audio_list: list[bytes] = []
@@ -350,7 +356,7 @@ async def transcribe_window(
             logger.warning("Session %d: utterance %d has no audio, skipping",
                           session_id, utt["utterance_id"])
             continue
-        decrypted = audio_crypto.decrypt_audio(audio_filename, user_id, encryption_secret)
+        decrypted = audio_crypto.decrypt_audio(audio_filename, encryption_secret, key_salt)
         audio_list.append(decrypted)
         timestamps.append(utt["created_at"])
 

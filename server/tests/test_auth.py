@@ -142,3 +142,34 @@ async def test_validate_oidc_token_user_not_found():
         result = await validate_oidc_token(token=mock_token)
         assert result == new_user
         mock_create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rejects_http_oidc_issuer():
+    """OIDC discovery rejects non-HTTPS issuer URLs."""
+    from lifelog.auth import _get_jwk_client
+
+    with patch("lifelog.auth.settings") as mock_settings:
+        mock_settings.oidc_issuer_url = "http://evil.example.com/issuer"
+        with pytest.raises(ValueError, match="HTTPS"):
+            _get_jwk_client()
+
+
+@pytest.mark.asyncio
+async def test_rejects_http_jwks_uri():
+    """OIDC discovery rejects non-HTTPS JWKS URIs in discovery response."""
+    from lifelog.auth import _get_jwk_client
+
+    fake_discovery = {"jwks_uri": "http://evil.example.com/jwks"}
+
+    with patch("lifelog.auth.settings") as mock_settings, \
+         patch("lifelog.auth.httpx.Client") as MockClient:
+        mock_settings.oidc_issuer_url = "https://auth.test.com"
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = fake_discovery
+        mock_resp.raise_for_status = MagicMock()
+        MockClient.return_value.__enter__ = MagicMock(return_value=MockClient.return_value)
+        MockClient.return_value.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value.get.return_value = mock_resp
+        with pytest.raises(ValueError, match="HTTPS"):
+            _get_jwk_client()

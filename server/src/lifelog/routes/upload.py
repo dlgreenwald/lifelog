@@ -1,7 +1,7 @@
 import logging
 import time
 
-from fastapi import APIRouter, Depends, Form, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
 from lifelog import database
 from lifelog.auth import validate_api_key
@@ -11,8 +11,27 @@ logger = logging.getLogger("lifelog.upload")
 
 router = APIRouter()
 
+# Maximum chunk size: 10 MB
+MAX_CHUNK_SIZE = 10 * 1024 * 1024
+
+# Utterance tracking TTL: evict entries older than this
+UTTERANCE_TTL = 1800  # 30 minutes
+
 # {user_id: {device_utterance_id: {"server_id": int, "last_chunk": int}}}
 _active_utterances: dict[int, dict[int, dict]] = {}
+
+
+def _evict_stale_utterances() -> None:
+    """Evict tracking entries older than UTTERANCE_TTL to prevent unbounded growth."""
+    now = _current_epoch()
+    for uid in list(_active_utterances):
+        for dev_id in list(_active_utterances[uid]):
+            entry = _active_utterances[uid][dev_id]
+            if now - entry.get("last_seen", now) > UTTERANCE_TTL:
+                logger.warning("Evicting stale utterance user=%d device=%d", uid, dev_id)
+                _active_utterances[uid].pop(dev_id)
+        if not _active_utterances[uid]:
+            del _active_utterances[uid]
 
 
 def _current_epoch() -> int:
@@ -51,7 +70,12 @@ async def upload_audio(
       - device ``utterance_id`` lower than any currently tracked (reboot)
     """
     audio_bytes = await file.read()
+    if len(audio_bytes) > MAX_CHUNK_SIZE:
+        raise HTTPException(status_code=413, detail="Chunk too large")
     user_id = user["id"]
+
+    # Evict stale utterance tracking entries
+    _evict_stale_utterances()
 
     logger.info(
         "Upload: user=%d, device_utt=%d, chunk=%d, final=%s, size=%d bytes",
@@ -72,7 +96,7 @@ async def upload_audio(
         # whether an existing entry for a DIFFERENT device id has chunks.
         # If chunk_index > 0 with no entry, firmware bug — still assign.
         server_utt_id = _current_epoch()
-        user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": chunk_index}
+        user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": chunk_index, "last_seen": _current_epoch()}
     else:
         entry = user_utterances[device_utt]
         # New utterance on same device id: chunk_index resets to 0 after
@@ -81,17 +105,18 @@ async def upload_audio(
             # Finalize old utterance
             await _finalize_utterance(user_id, entry["server_id"])
             server_utt_id = _current_epoch()
-            user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": 0}
+            user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": 0, "last_seen": _current_epoch()}
         elif chunk_index < entry["last_chunk"]:
             # Device restarted — lower chunk_index without reset to 0
             # shouldn't happen per firmware contract, but handle defensively
             await _finalize_utterance(user_id, entry["server_id"])
             server_utt_id = _current_epoch()
-            user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": chunk_index}
+            user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": chunk_index, "last_seen": _current_epoch()}
         else:
             # Continuation of same utterance
             server_utt_id = entry["server_id"]
             entry["last_chunk"] = chunk_index
+            entry["last_seen"] = _current_epoch()
 
     # Handle device reboot: utterance_id went backwards relative to max
     max_known = max(user_utterances.keys()) if user_utterances else None
@@ -104,7 +129,7 @@ async def upload_audio(
         # Re-assign for the rebooted device
         if device_utt not in user_utterances:
             server_utt_id = _current_epoch()
-            user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": 0}
+            user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": 0, "last_seen": _current_epoch()}
 
     # Store chunk
     await save_utterance_chunk(
