@@ -36,9 +36,9 @@
 
 LifeLog is a voice-activated life journal system composed of five components:
 
-1. **Wearable Recorder** — XIAO ESP32-S3 Sense + INMP441 microphone captures audio, compresses it with Opus, and uploads when WiFi is available
-2. **Server Orchestrator** — FastAPI service that coordinates transcription, diarization, speaker identification, and LLM summarization
-3. **Diarization Service** — pyannote.audio microservice that determines "who spoke when"
+1. **Wearable Recorder** — XIAO ESP32-S3 Sense with built-in PDM microphone captures audio, processes it through esp-sr AFE (noise suppression + VAD), compresses it with Opus/OGG, and uploads in chunks when WiFi is available
+2. **Server Orchestrator** — FastAPI service that receives audio chunks, groups them into utterances, and runs a background worker pipeline for transcription, speaker identification, and LLM summarization
+3. **Whisper ASR Service** — WhisperX microservice that handles both transcription and speaker diarization in one step (runs on GPU)
 4. **Speaker ID Service** — ECAPA-TDNN microservice that matches voice segments to known speakers
 5. **Web Dashboard** — React SPA for browsing recordings, TODOs, decisions, and labeling unknown speakers
 
@@ -53,33 +53,32 @@ Audio is encrypted at rest with per-user Fernet keys. All inter-service communic
 ```mermaid
 graph TB
     subgraph Wearable["Wearable Recorder (ESP32-S3)"]
-        MIC[INMP441 Mic] -->|I2S 16kHz| VAD[VAD Gate]
-        VAD -->|PCM| OPUS[Opus Encoder ~24kbps]
-        OPUS --> QUEUE{WiFi?}
-        QUEUE -->|Yes| UPLOAD[HTTPS Upload]
-        QUEUE -->|No| SD[SD Card Cache]
-        SD -->|On reconnect| UPLOAD
+        MIC[PDM Mic] -->|I2S 16kHz| AFE[esp-sr AFE<br/>NS + VAD]
+        AFE --> RING[Ring Buffer<br/>32 slots]
+        RING --> OPUS[Opus/OGG Encoder<br/>~24kbps]
+        OPUS --> SD[SD Card Queue]
+        SD --> UPLOAD[Chunked HTTPS Upload]
         UPLOAD -->|POST /api/v1/upload| SERVER
     end
 
     subgraph Server["Server Orchestrator (FastAPI :8443)"]
         API[API Router] --> AUTH{Auth Type}
-        AUTH -->|X-API-Key| UPLOAD_EP[Upload Endpoint]
+        AUTH -->|X-API-Key| UPLOAD_EP[Upload Endpoint<br/>Chunked]
         AUTH -->|Bearer OIDC| DASH_EP[Dashboard Endpoints]
-        UPLOAD_EP --> PIPELINE[Processing Pipeline]
+        UPLOAD_EP --> QUEUE[(Utterance Queue)]
+        WORKER[Background Worker<br/>Polls queue] --> QUEUE
     end
 
-    subgraph Pipeline["Processing Pipeline"]
-        PIPELINE -->|Wyoming TCP:10700| WHISPER[wyoming-faster-whisper]
-        PIPELINE -->|HTTPS POST| DIARIZATION_SVC[Diarization Service]
-        PIPELINE -->|HTTPS POST| SPEAKER_SVC[Speaker ID Service]
-        PIPELINE -->|OpenAI-compatible API| LLM[Local LLM Summarization]
-        PIPELINE -->|Write| DB[(PostgreSQL)]
+    subgraph Pipeline["Worker Pipeline (async)"]
+        WORKER -->|HTTPS POST| WHISPER[whisper-asr<br/>WhisperX GPU]
+        WORKER -->|HTTPS POST| SPEAKER_SVC[Speaker ID Service]
+        WORKER -->|OpenAI-compatible API| LLM[Local LLM Summarization]
+        WORKER -->|Write| DB[(PostgreSQL)]
     end
 
-    subgraph Services["Microservices (GPU)"]
-        DIARIZATION_SVC -->|pyannote.audio| DIAR_RESULT[Who Spoke When]
-        SPEAKER_SVC -->|ECAPA-TDNN| SPEAKER_RESULT[Named Speakers]
+    subgraph GPU["GPU Services"]
+        WHISPER -->|Transcription + Diarization| RESULT[Text + Speakers]
+        SPEAKER_SVC -->|ECAPA-TDNN| NAMED[Named Speakers]
     end
 
     subgraph Dashboard["Web Dashboard (React :3000)"]
@@ -92,12 +91,13 @@ graph TB
         DB --> USERS[(users)]
         DB --> RECORDINGS[(recordings)]
         DB --> VOICEPRINTS[(voiceprints)]
+        DB --> SESSIONS[(sessions)]
         AUDIO_FILES -->|/data/audio/*.enc| DISK[(Disk)]
     end
 
     style Server fill:#2c3e50,color:#fff
     style Wearable fill:#27ae60,color:#fff
-    style Services fill:#8e44ad,color:#fff
+    style GPU fill:#8e44ad,color:#fff
     style Dashboard fill:#2980b9,color:#fff
     style Storage fill:#7f8c8d,color:#fff
 ```
@@ -108,38 +108,44 @@ graph TB
 sequenceDiagram
     participant Device as Wearable
     participant Server as Orchestrator
-    participant Whisper as wyoming-faster-whisper
-    participant Diar as Diarization Svc
+    participant Worker as Background Worker
+    participant Whisper as whisper-asr (GPU)
     participant SID as Speaker ID Svc
     participant LLM as Local LLM (Ollama/llama.cpp)
     participant DB as PostgreSQL
 
-    Device->>Server: POST /api/v1/upload<br/>X-API-Key header<br/>Body: Opus audio bytes
-    Server->>Server: Validate API key → user
-    Server->>Server: Encrypt audio with user's Fernet key<br/>Save to /data/audio/<uuid>.enc
+    Device->>Server: POST /api/v1/upload<br/>X-API-Key + chunk data<br/>(utterance_id, chunk_index, is_final)
+    Server->>Server: Validate API key → user<br/>Assign server utterance ID
+    Server->>Server: Encrypt chunk with user's Fernet key<br/>Store on disk
 
-    par Parallel pipeline steps
-        Server->>Whisper: Wyoming protocol (TCP:10700)<br/>Transcribe audio
-        Whisper-->>Server: { text, segments[] }
-    and
-        Server->>Diar: POST /diarize<br/>File: audio.opus
-        Diar-->>Server: { segments[{speaker, start, end}] }
-    and
-        Note over Server: Step 3 waits for diarization
+    alt is_final = true
+        Server->>DB: INSERT INTO utterance_queue<br/>(user_id, utterance_id, status='pending')
+        Server-->>Device: 200 { status: "processed" }
+    else is_final = false
+        Server-->>Device: 200 { status: "chunk_received" }
     end
 
-    Server->>SID: POST /identify<br/>JSON: {segments, voiceprints, audio_format}
-    Note right of SID: Voiceprints fetched<br/>from DB by user_id
-    SID-->>Server: { speakers[{speaker, start, end, name}] }
+    Worker->>DB: Poll for pending utterances
+    Worker->>Worker: Claim utterance (atomic UPDATE)
 
-    Server->>Server: merge_speakers():<br/>Overlap transcript text<br/>with diarization timing<br/>and speaker names
+    par Pipeline steps
+        Worker->>Whisper: POST /transcribe<br/>Audio bytes
+        Whisper-->>Worker: { text, segments[]<br/>(transcription + diarization) }
+    and
+        Worker->>DB: Fetch user's voiceprints
+    end
 
-    Server->>LLM: Chat completion<br/>Transcript + speaker names
-    LLM-->>Server: { summary, todos, decisions,<br/>calendar, notes, conversation_changes }
+    Worker->>SID: POST /identify<br/>JSON: {segments, voiceprints}
+    SID-->>Worker: { speakers[{name, start, end}] }
 
-    Server->>DB: INSERT INTO recordings<br/>(user_id, transcript, speakers,<br/>summary, todos, calendar, notes,<br/>conversation_changes, audio_filename)
+    Worker->>Worker: merge_speakers():<br/>Overlap transcript text<br/>with speaker names
 
-    Server-->>Device: 200 { status: "processed", recording_id: N }
+    Worker->>LLM: Chat completion<br/>Transcript + speaker names
+    LLM-->>Worker: { summary, todos, decisions,<br/>calendar, notes, category }
+
+    Worker->>DB: INSERT INTO recordings<br/>(user_id, transcript, speakers,<br/>summary, todos, calendar, notes,<br/>category, audio_filename)
+
+    Worker->>DB: UPDATE utterance_queue<br/>SET status='done'
 ```
 
 ### Data Flow: Dashboard Access
@@ -220,65 +226,47 @@ sequenceDiagram
 
 ### Firmware (Wearable Recorder)
 
+See **[firmware-ota/](firmware-ota/)** for source code, **[firmware-ota/ARCHITECTURE.md](firmware-ota/ARCHITECTURE.md)** for FreeRTOS task model and PlantUML diagrams.
+
 #### Hardware
 
 | Component | Part | Connection |
 |-----------|------|------------|
-| MCU | XIAO ESP32-S3 Sense | — |
-| Microphone | INMP441 | I2S (WS=42, SCK=41, SD=43) |
-| SD Card | SPI mode | CS=2, MOSI=38, MISO=39, SCLK=40 |
-| Battery | 400mAh LiPo | ADC pin 3 |
-| LED | Built-in blue | GPIO 21 |
+| MCU | XIAO ESP32-S3 Sense | 8MB flash, 8MB PSRAM |
+| Microphone | Built-in PDM mic | CLK=42, DIN=41 |
+| SD Card | Built-in SPI slot | CS=21, MOSI=38, MISO=39, SCLK=40 |
+| Battery | 400mAh LiPo | — |
 
 #### FreeRTOS Task Architecture
 
-```mermaid
-graph LR
-    subgraph Core0["Core 0"]
-        AUDIO[audio_capture<br/>priority 5]
-        WIFI[wifi_manager<br/>priority 3]
-        UPLOAD_TSK[uploader<br/>priority 2]
-        BATT[battery_monitor<br/>priority 1]
-    end
-    subgraph Core1["Core 1"]
-        OPUS_TSK[opus_encode<br/>priority 4]
-    end
-
-    AUDIO -->|pcmQueue| OPUS_TSK
-    OPUS_TSK -->|opusQueue| UPLOAD_TSK
-    WIFI -.->|wifiEvent BIT0| UPLOAD_TSK
-    UPLOAD_TSK -.->|sdMutex| SD_CARD[SD Card]
-```
-
 | Task | Core | Priority | Stack | Purpose |
 |------|------|----------|-------|---------|
-| `audio_capture` | 0 | 5 (highest) | 4 KB | Reads I2S mic, computes RMS for VAD, sends PCM chunks |
-| `opus_encode` | 1 | 4 | 8 KB | Receives PCM, encodes to Opus at 24kbps, sends frames |
-| `uploader` | 0 | 2 | 4 KB | HTTPS POST to server, saves to SD on failure |
-| `battery_monitor` | 0 | 1 (lowest) | 2 KB | Reads ADC, blinks LED at low battery, deep sleep at critical |
+| `afeFeedTask` | 0 | 5 | 8 KB | Reads I2S PDM mic, feeds esp-sr AFE |
+| `afeFetchTask` | 1 | 5 | 8 KB | AFE fetch → VAD state machine → ring buffer |
+| `writerTask` | 1 | 5 | 48 KB | Ring buffer → Opus encode → OGG mux → SD file |
+| `uploadWorkerTask` | 1 | 1 | 8 KB | Background HTTP chunked uploads |
+| Arduino `loop()` | 1 | 1 | default | OTA updates, stats logging |
+
+**Core 0**: Only `afeFeedTask` — isolates I2S DMA from SD/WiFi contention.
+**Core 1**: Everything else — audio processing, file I/O, network operations.
 
 #### Audio Pipeline
 
 ```
-INMP441 → I2S (16kHz/16-bit mono) → VAD gate (RMS > 500)
-  → PCM chunks (30ms / 480 samples) → Opus encoder (24kbps, 60ms frames)
-  → HTTPS POST /api/v1/upload (X-API-Key header)
-  → Fallback: SD card /lifelog/YYYYMMDD_HHMMSS_NNNN.opus
+PDM Mic (GPIO42/41)
+  → I2S Driver (PDM, 16kHz, 16-bit mono, DMA: 4×1024)
+  → esp-sr AFE (NSNET2 noise suppression + WebRTC VAD)
+  → Ring buffer (32 slots × 512 samples = 32KB)
+  → Opus encoder (24kbps, 20ms frames) → OGG mux
+  → SD card (/lifelog/rec_*.opus)
+  → HTTP POST multipart chunks → server
 ```
 
-**VAD behavior**: Recording activates when RMS exceeds threshold. After 1.5 seconds of silence, an end-of-utterance marker flushes the Opus encoder buffer.
+**VAD behavior**: Recording activates when WebRTC VAD detects speech. Pre-trigger cache (8192 samples) preserves audio before VAD onset. Short utterances (<4KB) are discarded without touching SD.
+
+**Deferred SD open**: OGG pages buffer in PSRAM (16KB) before opening SD file, eliminating SD latency during voice onset.
 
 **WiFi reconnect**: Exponential backoff (1s → 30s max). On reconnect, the SD queue is flushed FIFO.
-
-#### Power Management
-
-| State | Voltage | Behavior |
-|-------|---------|----------|
-| Normal | > 3.3V | Full recording |
-| Low | ≤ 3.3V | Blue LED blinks at 1Hz |
-| Critical | ≤ 3.0V | Stop recording, flush pending uploads, deep sleep |
-
-Battery percentage is estimated from a non-linear voltage mapping: 4.1V=100%, 3.8V=70%, 3.6V=50%, 3.4V=30%, 3.3V=10%, 3.0V=5%.
 
 ---
 
@@ -362,29 +350,66 @@ All endpoints are prefixed with `/api/v1`.
 ##### `POST /api/v1/upload`
 
 **Auth**: `X-API-Key` header (required)
-**Content-Type**: `audio/opus` (binary body)
+**Content-Type**: `multipart/form-data`
 
-Accepts Opus audio from a wearable device and runs the full processing pipeline.
+Accepts Opus audio chunks from a wearable device. The device sends multiple chunks per utterance, with the final chunk marked `is_final=true`.
 
-**Pipeline steps** (executed sequentially):
+**Request fields**:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `chunk` | file | yes | Opus audio chunk |
+| `utterance_id` | int | yes | Device-assigned utterance ID |
+| `chunk_index` | int | yes | Chunk sequence number (0-based) |
+| `is_final` | bool | yes | True for the last chunk of an utterance |
+| `session_id` | int | no | Optional session grouping ID |
+
+**Behavior**:
+- Each chunk is encrypted and stored on disk
+- When `is_final=true`, the utterance is enqueued for background processing
+- The background worker picks up pending utterances and runs the full pipeline
+
+**Response** (chunk received):
+```json
+{ "status": "chunk_received", "utterance_id": 123 }
+```
+
+**Response** (utterance complete):
+```json
+{ "status": "processed", "utterance_id": 123 }
+```
+
+**Background pipeline** (executed asynchronously by worker):
 
 | Step | Service | Protocol | Description |
 |------|---------|----------|-------------|
-| 0 | Orchestrator | — | Validate API key → resolve user |
-| 1 | Orchestrator | — | Encrypt and save audio to disk |
-| 2 | wyoming-faster-whisper | TCP:10700 | Transcribe audio → `{text, segments[]}` |
-| 3 | Diarization service | HTTPS | Who spoke when → `[{speaker, start, end}]` |
-| 4 | Speaker ID service | HTTPS | Match segments to known speakers → `[{name, ...}]` |
-| 5 | Orchestrator | — | `merge_speakers()`: overlap transcript text with diarization timing and speaker names |
-| 6 | OpenAI-compatible API | HTTPS | Summarize → `{summary, todos, decisions, calendar, notes, conversation_changes}` |
-| 7 | PostgreSQL | SSL | Store all results linked to user |
+| 1 | Orchestrator | — | Concatenate chunks, encrypt audio |
+| 2 | whisper-asr | HTTPS | Transcribe + diarize → `{text, segments[]}` |
+| 3 | Speaker ID service | HTTPS | Match segments to known speakers → `[{name, ...}]` |
+| 4 | Orchestrator | — | `merge_speakers()`: overlap transcript text with speaker names |
+| 5 | OpenAI-compatible API | HTTPS | Summarize → `{summary, todos, decisions, calendar, notes, category}` |
+| 6 | PostgreSQL | SSL | Store recording, update daily summary |
+
+**Non-obvious behavior**: Steps 2 and the voiceprint fetch run in parallel. Step 3 waits for step 2 (needs diarized segments before identification). The worker groups utterances into sessions and runs hourly reprocessing to update live transcription windows.
+
+---
+
+##### `GET /api/v1/utterance/{utterance_id}/status`
+
+**Auth**: `X-API-Key` header (required)
+
+Check processing status of an utterance.
 
 **Response**:
 ```json
-{ "status": "processed", "recording_id": 42 }
+{
+  "utterance_id": 123,
+  "status": "processing",
+  "recording_id": null
+}
 ```
 
-**Non-obvious behavior**: Steps 2 and 3 run in parallel (transcription and diarization are independent). Step 4 waits for step 3 (needs diarization segments before identification). Step 5 merges outputs from steps 2, 3, and 4 using time-overlap matching — a transcript segment is assigned to a speaker if any part of its time range overlaps the speaker's segment.
+Status values: `pending`, `processing`, `done`, `failed`.
 
 ---
 
@@ -569,40 +594,40 @@ This means labeling one speaker can retroactively identify that speaker in all p
 
 ---
 
-### Diarization Service
+### Whisper ASR Service
 
-Standalone FastAPI microservice. Uses pyannote.audio for speaker diarization. No database access.
+Docker container running WhisperX for both transcription and speaker diarization. No database access.
 
-**GPU required**. Runs on CUDA by default.
+**GPU required**. Runs on CUDA by default. Uses `whisperx` which combines Whisper transcription with pyannote.audio diarization in a single step.
 
 ```mermaid
 graph LR
-    AUDIO[Opus Audio] --> CONVERT[opus_to_wav<br/>ffmpeg subprocess]
-    CONVERT --> PIPELINE[pyannote.audio<br/>speaker-diarization-3.1]
-    PIPELINE --> SEGMENTS[Segments<br/>speaker, start, end]
+    AUDIO[Audio Bytes] --> WHISPERX[WhisperX<br/>large-v3 + pyannote]
+    WHISPERX --> RESULT[Transcription<br/>+ Diarization]
 ```
 
-#### Diarization API Endpoints
+#### Whisper ASR API Endpoints
 
-##### `POST /diarize`
+##### `POST /transcribe`
 
-**Content-Type**: `multipart/form-data`
+**Content-Type**: `multipart/form-data` or raw bytes
 
-Performs speaker diarization on uploaded audio.
+Performs transcription and diarization on uploaded audio.
 
-**Request**: `file` — audio file (Opus format, converted to WAV internally via ffmpeg)
+**Request**: `file` — audio file (Opus format)
 
 **Response**:
 ```json
 {
+  "text": "Hello, how are you?",
   "segments": [
-    { "speaker": "SPEAKER_00", "start": 0.0, "end": 2.5 },
-    { "speaker": "SPEAKER_01", "start": 2.5, "end": 5.0 }
+    { "speaker": "SPEAKER_00", "start": 0.0, "end": 2.5, "text": "Hello" },
+    { "speaker": "SPEAKER_01", "start": 2.5, "end": 5.0, "text": "How are you?" }
   ]
 }
 ```
 
-**Non-obvious behavior**: The service converts Opus to 16kHz mono WAV using ffmpeg before feeding to pyannote. Speaker labels are opaque IDs (`SPEAKER_00`, etc.) — they are not meaningful names. The orchestrator uses the `start`/`end` timestamps to correlate with transcript segments and speaker identification results.
+**Non-obvious behavior**: Unlike the old separate diarization service, WhisperX handles both transcription and diarization in one step. Speaker labels are opaque IDs (`SPEAKER_00`, etc.) — they are not meaningful names. The orchestrator uses the `start`/`end` timestamps to correlate with speaker identification results. The service auto-unloads models after 300s of idle time to free GPU memory.
 
 ---
 
@@ -732,23 +757,20 @@ React + TypeScript SPA served as static files. Built with Vite.
 graph TB
     subgraph Docker["docker-compose up -d"]
         PG[postgres:16-alpine<br/>:5432<br/>SSL on]
-        SRV[server<br/>:8443<br/>HTTPS]
-        WYOM[rhasspy/wyoming-faster-whisper<br/>:10700<br/>GPU]
-        DIAR[diarization<br/>:8443→8444<br/>GPU]
-        SPK[speaker-id<br/>:8443→8445<br/>GPU]
-        DASH[dashboard<br/>:80→3000<br/>nginx]
+        SRV[server<br/>:8444→8443<br/>HTTPS]
+        WHISPER[whisper-asr<br/>:9000<br/>GPU]
+        SPK[speaker-id<br/>:8445→8443<br/>GPU]
+        DASH[dashboard<br/>:3000→80<br/>nginx]
     end
 
     SRV --> PG
-    SRV --> WYOM
-    SRV --> DIAR
+    SRV --> WHISPER
     SRV --> SPK
     DASH --> SRV
 
     style PG fill:#336791,color:#fff
     style SRV fill:#2c3e50,color:#fff
-    style WYOM fill:#e74c3c,color:#fff
-    style DIAR fill:#8e44ad,color:#fff
+    style WHISPER fill:#e74c3c,color:#fff
     style SPK fill:#8e44ad,color:#fff
     style DASH fill:#2980b9,color:#fff
 ```
@@ -756,9 +778,8 @@ graph TB
 | Service | External Port | Internal Port | GPU | Dependencies |
 |---------|--------------|---------------|-----|--------------|
 | postgres | 5432 | 5432 | No | — |
-| server | 8443 | 8443 | No | postgres (healthy), wyoming-whisper, diarization, speaker-id |
-| wyoming-whisper | 10700 | 10700 | Yes | — |
-| diarization | 8444 | 8443 | Yes | — |
+| server | 8444 | 8443 | No | postgres (healthy), whisper-asr, speaker-id |
+| whisper-asr | 9000 | 9000 | Yes | — |
 | speaker-id | 8445 | 8443 | Yes | — |
 | dashboard | 3000 | 80 | No | server |
 
@@ -769,31 +790,32 @@ Run `./scripts/generate-certs.sh` to create:
 1. A self-signed CA certificate (`ca.key`, `ca.crt`)
 2. Per-service server certificates signed by the CA:
    - `server/certs/server.{key,crt}`
-   - `diarization/certs/server.{key,crt}`
    - `speaker-id/certs/server.{key,crt}`
 
-Each service mounts its certs as read-only. The server also mounts the CA cert to verify diarization and speaker-id service identities.
+Each service mounts its certs as read-only. The server also mounts the CA cert to verify speaker-id service identity.
 
 ### Environment Variables
 
 | Variable | Required | Used By | Description |
 |----------|----------|---------|-------------|
 | `POSTGRES_PASSWORD` | Yes | server, postgres | Database password |
-| \`OPENAI_BASE_URL\` | Yes | server | Local LLM endpoint (Ollama, llama.cpp, etc.) |
-| `HF_TOKEN` | Yes | diarization | HuggingFace token for pyannote models |
+| `OPENAI_BASE_URL` | Yes | server | Local LLM endpoint (Ollama, llama.cpp, etc.) |
+| `OPENAI_API_KEY` | No (default: ollama) | server | LLM API key |
+| `OPENAI_MODEL` | No (default: qwen2.5:7b) | server | LLM model name |
+| `HF_TOKEN` | Yes | whisper-asr | HuggingFace token for pyannote models |
 | `OIDC_ISSUER_URL` | Yes | server | OIDC provider issuer URL |
 | `OIDC_CLIENT_ID` | Yes | server | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | Yes | server | OIDC client secret |
 | `OIDC_REDIRECT_URI` | Yes | server | OIDC redirect URI |
-| `WYOMING_HOST` | No (default: localhost) | server | Whisper host |
-| `WYOMING_PORT` | No (default: 10700) | server | Whisper port |
-| `DIARIZATION_URL` | No (default: https://localhost:8443) | server | Diarization service URL |
-| `SPEAKER_ID_URL` | No (default: https://localhost:8443) | server | Speaker ID service URL |
+| `WHISPER_ASR_URL` | No (default: http://whisper-asr:9000) | server | Whisper ASR service URL |
+| `SPEAKER_ID_URL` | No (default: http://speaker-id:8443) | server | Speaker ID service URL |
 | `AUDIO_STORAGE_PATH` | No (default: /data/audio) | server | Encrypted audio file storage |
 | `POSTGRES_HOST` | No (default: localhost) | server | Database host |
 | `POSTGRES_PORT` | No (default: 5432) | server | Database port |
 | `POSTGRES_DB` | No (default: lifelog) | server | Database name |
 | `POSTGRES_USER` | No (default: lifelog) | server | Database user |
+| `LOG_LEVEL` | No (default: INFO) | server | Python log level |
+| `CORS_ORIGINS` | No (default: http://localhost:3000) | server | Allowed CORS origins |
 
 ---
 
@@ -837,7 +859,7 @@ graph TB
 
 5. **API key ≠ OIDC identity**: Device uploads (API key) and dashboard access (OIDC) are independent auth mechanisms that map to the same user record. A compromised API key cannot access the dashboard, and vice versa.
 
-6. **GPU services are stateless**: The diarization and speaker-id services hold no persistent state. They receive audio + voiceprints, return results, and forget. Compromising them exposes neither the database nor stored audio.
+6. **GPU services are stateless**: The whisper-asr and speaker-id services hold no persistent state. They receive audio + voiceprints, return results, and forget. Compromising them exposes neither the database nor stored audio.
 
 ---
 
@@ -865,4 +887,4 @@ The admin token has **no** access to user data — it can only create and revoke
 
 **Why this matters**: Static API keys baked into firmware are revocable but not rotatable without reflashing. OAuth tokens can be refreshed and revoked independently. The TTS readout eliminates the need for a display on the device, keeping the hardware minimal and power-efficient.
 
-**Current state**: Not implemented. The static API key approach is sufficient for v1. See `firmware/src/config.h` for the current `API_KEY` configuration.
+**Current state**: Not implemented. The static API key approach is sufficient for v1. See `firmware-ota/src/config.h` for the current `API_KEY` configuration.

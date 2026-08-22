@@ -82,7 +82,7 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 | `src/commands.h` | Public: commandsInit(), processCommand() |
 | `src/afe_stubs.h` | Weak stubs for esp-dl/FFT symbols not in precompiled libs |
 | `test/mocks.h` | Complete ESP32/FreeRTOS/Arduino/Opus/OGG mock layer |
-| `test/test_all.cpp` | 68 Unity tests across 10 categories |
+| `test/test_all.cpp` | 108 Unity tests across 10 categories |
 | `partitions/partitions_ota.csv` | OTA partition table with model partition |
 
 ## Development Commands
@@ -132,7 +132,7 @@ esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
 
 ### Tests
 ```bash
-pio test -e test                  # Run all 68 native tests
+pio test -e test                  # Run all 108 native tests
 ```
 
 ### Serial Monitor
@@ -315,7 +315,7 @@ To fix this properly: restructure tests to `#include` the actual `.cpp` files (w
 
 ### Framework
 - **Unity** (throwtheswitch/Unity@^2.5.2) — native platform, no hardware needed
-- **68 tests** across 10 categories
+- **108 tests** across 10 categories
 
 ### Categories
 WAV header generation, Opus header generation, Opus frame encoding, OGG page structure, ring buffer operations, VAD state machine, file naming, upload request building, command parsing, config validation

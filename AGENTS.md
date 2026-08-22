@@ -100,7 +100,7 @@ npm run build        # Production build
 cd firmware-ota
 pio run                              # Build only
 pio run -t upload                    # Upload via OTA (requires WiFi)
-pio test -e test                     # Run native tests (68 tests)
+pio test -e test                     # Run native tests (108 tests)
 pio device monitor                   # Serial monitor (115200 baud)
 ```
 
@@ -123,15 +123,15 @@ docker-compose logs -f server  # Tail orchestrator logs
 ### All tests at once
 ```bash
 # Python services (each in its own venv)
-cd server && .venv/bin/python -m pytest tests/ -q        # 81 tests
+cd server && .venv/bin/python -m pytest tests/ -q        # 75 tests
 cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
 cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 15 tests
 
 # Dashboard
-cd dashboard && npx vitest run                            # 58 tests
+cd dashboard && npx vitest run                            # 83 tests
 
 # Firmware-OTA
-cd firmware-ota && pio test -e test                       # 68 tests
+cd firmware-ota && pio test -e test                       # 108 tests
 ```
 
 ## Code Conventions & Common Patterns
@@ -274,7 +274,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 
 ## Testing & QA
 
-**Total**: ~152 tests across 5 components (81 server + 8 diarization + 15 speaker-id + 58 dashboard + 68 firmware-ota)
+**Total**: ~289 tests across 5 components (75 server + 8 diarization + 15 speaker-id + 83 dashboard + 108 firmware-ota)
 
 ### Python test framework
 - **pytest** with `pytest-asyncio` (`asyncio_mode = "auto"`)
@@ -297,7 +297,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 | Dashboard components | 7 components | `vi.mock` API client, `render` + `screen` queries |
 | API client | 8 methods | `vi.stubGlobal('fetch')` with mock responses |
 | ML pipeline | 3 functions | `sys.modules` mocking for pyannote/torch/speechbrain |
-| Firmware-OTA | 68 tests | Native Unity tests with full ESP32/FreeRTOS mock layer |
+| Firmware-OTA | 108 tests | Native Unity tests with full ESP32/FreeRTOS mock layer |
 
 ### Key testing patterns
 - **FastAPI routes**: Always use `app.dependency_overrides[validate_oidc_token]` (not `patch`) — FastAPI captures dependency references at import time
@@ -364,11 +364,11 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | Script | Steps |
 |--------|-------|
 | `build.sh` | Runs all component builds, reports pass/fail |
-| `server/build.sh` | compile check → ruff lint → pytest (81 tests) |
+| `server/build.sh` | compile check → ruff lint → pytest (75 tests) |
 | `diarization/build.sh` | compile check → ruff lint → pytest (8 tests) |
 | `speaker-id/build.sh` | compile check → ruff lint → pytest (15 tests) |
-| `dashboard/build.sh` | tsc type check → vite build → vitest (58 tests) → bundle size |
-| `firmware-ota/build.sh` | pio compile check → native test (68 tests) |
+| `dashboard/build.sh` | tsc type check → vite build → vitest (83 tests) → bundle size |
+| `firmware-ota/build.sh` | pio compile check → native test (108 tests) |
 
 **Run everything:**
 ```bash

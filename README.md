@@ -1,6 +1,6 @@
 # LifeLog
 
-> **⚠️ Early Stage / Vibe Coded**
+> **Early Stage / Vibe Coded**
 > This project has been heavily AI-assisted ("vibe coded") and is in very early stages of development. It has not been tested on real hardware, the API may change without notice, and there are likely bugs. Use at your own risk — but contributions and issues are welcome.
 
 A **self-hosted, privacy-first** voice journal. Your recordings, transcriptions, and summaries never leave your own hardware. No cloud services, no third-party APIs, no telemetry — everything runs on machines you control.
@@ -18,15 +18,19 @@ Wear a small recorder, forget about it, and review your days through a web dashb
 - **Local LLM only** — Summarization runs on your own GPU via Ollama, llama.cpp, or any OpenAI-compatible endpoint
 
 **Recording & Processing**
-- **Wearable recording** — XIAO ESP32-S3 with INMP441 mic, VAD-gated capture, Opus compression, SD card offline queue
-- **Automatic transcription** — Whisper STT via Wyoming protocol (runs on your GPU)
-- **Speaker diarization** — pyannote.audio determines who spoke when (runs on your GPU)
+- **Wearable recording** — XIAO ESP32-S3 with built-in PDM mic, esp-sr AFE (noise suppression + VAD), Opus/OGG compression, SD card offline queue
+- **Chunked upload** — Device streams audio in chunks; server tracks utterances and processes on completion
+- **Background pipeline** — Worker polls for pending utterances and runs transcription, speaker identification, and summarization asynchronously
+- **Session grouping** — Utterances grouped into sessions with live transcription windows and hourly reprocessing
+- **Automatic transcription + diarization** — WhisperX handles both transcription and speaker diarization in one service (runs on your GPU)
 - **Speaker identification** — ECAPA-TDNN voiceprint matching with one-shot enrollment
 - **LLM summarization** — Extracts summaries, TODOs, decisions, calendar events, and notes from conversations
 
 **Dashboard & Review**
-- **Interactive calendar** — Browse recordings by day, week, month
+- **Interactive calendar** — Browse recordings by day, week, month; date persists in URL for back/forward navigation
 - **Audio playback** — Play recordings with color-coded speaker segments, click to seek
+- **Category filtering** — Filter recordings by work, personal, or other
+- **Daily summaries** — LLM-generated Work/Personal breakdowns per day
 - **Speaker labeling** — Label unknown speakers once, retroactively re-identifies across all past recordings
 - **TODO & decision tracking** — Automatically extracted from conversations
 - **Multi-service architecture** — Orchestrator + GPU services, scalable and distributable
@@ -41,7 +45,7 @@ LifeLog is designed so that **your voice data never touches the outside internet
 | **In transit** | HTTPS with mutual TLS between all services. No plaintext on the wire |
 | **Database** | PostgreSQL with SSL connections. Only the orchestrator has direct access — GPU services are stateless and hold no data |
 | **LLM** | Runs locally on your hardware via Ollama/llama.cpp. No audio or transcripts are sent to OpenAI, Anthropic, or any cloud provider |
-| **STT & Diarization** | Whisper and pyannote run on your own GPU machines. No audio leaves your network |
+| **STT & Diarization** | WhisperX runs on your own GPU machines. No audio leaves your network |
 | **Dashboard** | OIDC authentication against your own identity provider. No third-party analytics or tracking |
 | **API keys** | Device authentication via API keys stored in your database. No external auth service required for device uploads |
 
@@ -55,25 +59,22 @@ High-level:
 
 ```mermaid
 graph LR
-    ESP32[Wearable<br/>ESP32-S3] -->|HTTPS| ORCH[Orchestrator<br/>FastAPI]
-    ORCH -->|TCP| WHISPER[Whisper STT<br/>GPU machine]
-    ORCH -->|HTTPS| DIAR[Diarization<br/>GPU machine]
-    ORCH -->|HTTPS| SPK[Speaker ID<br/>GPU]
-    ORCH -->|OpenAI API| LLM[Local LLM<br/>Ollama/llama.cpp]
+    ESP32[Wearable<br/>ESP32-S3] -->|HTTPS + X-API-Key| ORCH[Orchestrator<br/>FastAPI :8443]
+    ORCH -->|HTTPS| WHISPER[whisper-asr<br/>whisperx GPU :9000]
+    ORCH -->|HTTPS| SPK[Speaker ID<br/>ECAPA-TDNN GPU :8443]
+    ORCH -->|OpenAI-compat API| LLM[Local LLM<br/>Ollama/llama.cpp]
     ORCH -->|SSL| PG[(PostgreSQL)]
-    DASH[Dashboard<br/>React] -->|OIDC| ORCH
+    DASH[Dashboard<br/>React :3000] -->|OIDC Bearer| ORCH
 ```
 
-GPU services (Whisper, diarization) run on dedicated machines. The orchestrator, speaker-id, database, and dashboard run in Docker on the main server. **Nothing runs in the cloud.**
+GPU services (whisper-asr, speaker-id) run on dedicated machines. The orchestrator, database, and dashboard run in Docker on the main server. **Nothing runs in the cloud.**
 
 ## Getting Started
 
 ### Prerequisites
 
 - **Docker** with Docker Compose v2+
-- **NVIDIA GPU** (for speaker-id service in the stack)
-- A machine running **wyoming-faster-whisper** (STT)
-- A machine running the **diarization service** (pyannote.audio)
+- **NVIDIA GPU** (for whisper-asr and speaker-id services)
 - A machine running an **OpenAI-compatible LLM** (Ollama, llama.cpp, vLLM)
 - An **OIDC provider** (Keycloak, Auth0, Authelia, etc.)
 - **Node.js 20+** (only for dashboard dev without Docker)
@@ -95,10 +96,8 @@ Edit `.env` and fill in:
 |----------|-------------|
 | `POSTGRES_PASSWORD` | Any strong password |
 | `OPENAI_BASE_URL` | Your LLM endpoint (e.g. `http://192.168.1.50:11434/v1`) |
-| `OPENAI_MODEL` | Model name (e.g. `llama3`) |
-| `WYOMING_HOST` | IP of your Whisper machine |
-| `WYOMING_PORT` | Whisper port (default `10700`) |
-| `DIARIZATION_URL` | URL of your diarization service (e.g. `https://192.168.1.50:8443`) |
+| `OPENAI_MODEL` | Model name (e.g. `qwen2.5:7b`) |
+| `WHISPER_ASR_URL` | URL of your whisper-asr service (e.g. `http://192.168.1.50:9000`) |
 | `OIDC_ISSUER_URL` | Your OIDC provider URL |
 | `OIDC_CLIENT_ID` | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | OIDC client secret |
@@ -110,7 +109,7 @@ Edit `.env` and fill in:
 ./scripts/generate-certs.sh
 ```
 
-This creates self-signed certs for the server, diarization, and speaker-id services.
+This creates self-signed certs for the server and speaker-id services.
 
 ### 3. Start the server stack
 
@@ -122,41 +121,20 @@ Services started:
 | Service | URL | Notes |
 |---------|-----|-------|
 | **Dashboard** | `http://localhost:3000` | React SPA |
-| **Orchestrator** | `https://localhost:8443` | FastAPI, HTTPS |
+| **Orchestrator** | `https://localhost:8444` | FastAPI, HTTPS |
+| **whisper-asr** | `http://localhost:9000` | WhisperX transcription + diarization, GPU |
 | **Speaker ID** | `https://localhost:8445` | ECAPA-TDNN, GPU |
 | **PostgreSQL** | `localhost:5432` | SSL enabled |
 
-Wyoming Whisper and diarization run on their own machines (configured in `.env`).
-
-### 4. Start GPU services (on your GPU machines)
-
-**Whisper STT:**
-```bash
-docker run -d --gpus all --name whisper \
-  -p 10700:10700 \
-  rhasspy/wyoming-faster-whisper:latest \
-  --model large-v3 --language en --dtype float16 --listen 0.0.0.0:10700
-```
-
-**Diarization:**
-```bash
-# On your GPU machine
-cp -r diarization/ /path/to/gpu-machine/diarization/
-cd /path/to/gpu-machine/diarization/
-./scripts/generate-certs.sh  # (copy script from main repo)
-# Create .env with HF_TOKEN (only needed for first run)
-docker-compose up -d diarization
-```
-
-### 5. Open the dashboard
+### 4. Open the dashboard
 
 Navigate to `http://localhost:3000` and log in via your OIDC provider.
 
-### 6. Create a user
+### 5. Create a user
 
 ```bash
 # Create a user with an API key for device uploads
-curl -k -X POST "https://localhost:8443/api/v1/users" \
+curl -k -X POST "https://localhost:8444/api/v1/users" \
   -H "Content-Type: application/json" \
   -d '{"api_key": "my-device-key", "oidc_sub": "your-oidc-subject", "name": "Your Name"}'
 ```
@@ -165,53 +143,31 @@ Use this API key when flashing the firmware.
 
 ## Firmware
 
+See **[firmware-ota/](firmware-ota/)** for the ESP32-S3 firmware source code and **[firmware-ota/ARCHITECTURE.md](firmware-ota/ARCHITECTURE.md)** for a deep-dive into the FreeRTOS task model, audio pipeline, and shared state.
+
 ### Hardware
 
 | Component | Part | Notes |
 |-----------|------|-------|
-| Board | [XIAO ESP32-S3 Sense](https://www.seeedstudio.com/XIAO-ESP32S3-Microcontroller-v2-0-p-5853.html) | 8MB PSRAM, built-in cam |
-| Microphone | [INMP441](https://www.adafruit.com/product/4694) | I2S digital mic |
-| SD Card | Any SPI SD card | For offline audio caching |
+| Board | [XIAO ESP32-S3 Sense](https://www.seeedstudio.com/XIAO-ESP32S3-Microcontroller-v2-0-p-5853.html) | 8MB PSRAM, built-in PDM mic + SD slot |
+| Microphone | Built-in PDM mic | GPIO 42 (CLK), GPIO 41 (DIN) |
+| SD Card | SPI mode | CS=GPIO 21, MOSI=GPIO 38, MISO=GPIO 39, SCLK=GPIO 40 |
 | Battery | 400mAh LiPo | ~11 hours with VAD |
-
-### Wiring
-
-| INMP441 Pin | ESP32-S3 Pin |
-|-------------|--------------|
-| WS | GPIO 42 |
-| SCK | GPIO 41 |
-| SD | GPIO 43 |
-| GND | GND |
-| VDD | 3.3V |
-
-| SD Card Pin | ESP32-S3 Pin |
-|-------------|--------------|
-| CS | GPIO 2 |
-| MOSI | GPIO 38 |
-| MISO | GPIO 39 |
-| SCK | GPIO 40 |
-| VCC | 3.3V |
-| GND | GND |
 
 ### Build and flash
 
 ```bash
-# Install PlatformIO if you haven't
-pip install platformio
-
-# Configure the firmware
-# Edit firmware/src/config.h:
-#   - Set WIFI_SSID and WIFI_PASSWORD
-#   - Set SERVER_HOST and SERVER_PORT
-#   - Set API_KEY (the one you created above)
-
-cd firmware
+cd firmware-ota
 
 # Build
 pio run
 
-# Flash via USB
+# Flash via OTA (requires WiFi)
 pio run -t upload
+
+# Flash via USB (when OTA unavailable)
+esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
+  write_flash 0x10000 .pio/build/xiao_esp32s3/firmware.bin
 
 # Monitor serial output
 pio device monitor
@@ -220,12 +176,12 @@ pio device monitor
 ### What the firmware does
 
 1. Connects to WiFi (auto-reconnect with exponential backoff)
-2. Reads audio from INMP441 mic at 16kHz/16-bit
-3. Gates recording on voice activity (RMS threshold)
-4. Encodes to Opus at ~24kbps
-5. Uploads via HTTPS POST to the server with API key
-6. If WiFi is unavailable, caches audio on SD card and flushes on reconnect
-7. Blinks LED when battery is low, deep sleeps when critical
+2. Reads audio from built-in PDM mic at 16kHz/16-bit
+3. Processes through esp-sr AFE (noise suppression + voice activity detection)
+4. Encodes to Opus/OGG at ~24kbps
+5. Stores on SD card (offline queue)
+6. Uploads chunks via HTTPS to the server with API key
+7. Server processes utterances in background (transcription → speaker ID → summarization)
 
 ## Development
 
@@ -251,28 +207,34 @@ npm test          # Run vitest
 
 ```bash
 # Python services
-cd server && .venv/bin/python -m pytest tests/ -q        # 53 tests
+cd server && .venv/bin/python -m pytest tests/ -q        # 75 tests
 cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
 cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 15 tests
 
 # Dashboard
-cd dashboard && npx vitest run                            # 58 tests
+cd dashboard && npx vitest run                            # 83 tests
+
+# Firmware (native tests, no hardware required)
+cd firmware-ota && pio test -e test                       # 108 tests
 ```
+
+**Total: ~289 tests** across 5 components.
 
 ## Project Structure
 
 ```
 lifelog/
-├── firmware/          ESP32-S3 FreeRTOS firmware (C++)
-├── server/            FastAPI orchestrator (Python)
-├── diarization/       pyannote.audio microservice (Python)
-├── speaker-id/        ECAPA-TDNN microservice (Python)
-├── dashboard/         React SPA (TypeScript)
-├── scripts/           TLS cert generation
-├── docker-compose.yml Service orchestration
-├── ARCHITECTURE.md    Full architecture documentation
-├── AGENTS.md          Repository guidelines for AI assistants
-├── .env.example       Environment variable template
+├── firmware-ota/       ESP32-S3 FreeRTOS firmware (C++/Arduino)
+├── server/             FastAPI orchestrator (Python)
+├── whisper-asr/        WhisperX ASR + diarization service (GPU)
+├── speaker-id/         ECAPA-TDNN microservice (Python)
+├── dashboard/          React SPA (TypeScript)
+├── diarization/        Legacy pyannote.audio microservice (Python)
+├── e2e/                End-to-end test suite
+├── scripts/            TLS cert generation
+├── docker-compose.yml  Service orchestration
+├── ARCHITECTURE.md     Full architecture documentation
+├── AGENTS.md           Repository guidelines for AI assistants
 └── .gitignore
 ```
 
