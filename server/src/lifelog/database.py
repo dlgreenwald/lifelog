@@ -372,9 +372,9 @@ async def get_todos(user_id: int) -> list[dict]:
             """
             SELECT t.id, t.task, t.owner, t.due, t.priority, t.completed,
                    t.completed_at, t.created_at, t.recording_id,
-                   r.timestamp AS recording_timestamp
+                   COALESCE(r.timestamp, t.created_at) AS recording_timestamp
             FROM todos t
-            JOIN recordings r ON r.id = t.recording_id
+            LEFT JOIN recordings r ON r.id = t.recording_id
             WHERE t.user_id = $1
             ORDER BY t.created_at ASC
             """,
@@ -394,11 +394,12 @@ async def get_todos_for_date(user_id: int, date: str) -> list[dict]:
             """
             SELECT t.id, t.task, t.owner, t.due, t.priority, t.completed,
                    t.completed_at, t.created_at, t.recording_id,
-                   r.timestamp AS recording_timestamp
+                   COALESCE(r.timestamp, t.created_at) AS recording_timestamp
             FROM todos t
-            JOIN recordings r ON r.id = t.recording_id
+            LEFT JOIN recordings r ON r.id = t.recording_id
             WHERE t.user_id = $1
-              AND DATE(r.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2
+              AND (t.recording_id IS NULL OR
+                   DATE(r.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2)
             ORDER BY t.created_at ASC
             """,
             user_id,
@@ -439,6 +440,19 @@ async def save_todos(recording_id: int, user_id: int, todos: list[dict]):
             )
 
 
+async def create_todo(
+    user_id: int, task: str, owner: str, due: str | None, priority: str, recording_id: int | None
+) -> int:
+    """Create a single todo. recording_id is None for standalone todos."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO todos (user_id, recording_id, task, owner, due, priority)
+               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
+            user_id, recording_id, task, owner, due, priority,
+        )
+        return row["id"]
+
+
 async def update_todo_completion(todo_id: int, completed: bool):
     """Mark a todo as completed or incomplete."""
     async with pool.acquire() as conn:
@@ -468,21 +482,98 @@ async def get_todo_owner(todo_id: int) -> int | None:
         return row["user_id"] if row else None
 
 
-async def get_decisions(user_id: int, limit: int = 20) -> list[dict]:
+async def save_decisions(recording_id: int, user_id: int, decisions: list[dict]):
+    """Insert decisions for a recording. Always overwrites existing decisions."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM decisions WHERE recording_id = $1", recording_id
+            )
+            for d in decisions:
+                await conn.execute(
+                    """INSERT INTO decisions (user_id, recording_id, decision, made_by, context, reason)
+                       VALUES ($1, $2, $3, $4, $5, $6)""",
+                    user_id,
+                    recording_id,
+                    d["decision"],
+                    d.get("made_by", "Unknown"),
+                    d.get("context"),
+                    d.get("reason"),
+                )
+
+
+async def create_decision(
+    user_id: int, decision: str, made_by: str, context: str | None, reason: str | None, recording_id: int | None
+) -> int:
+    """Create a single decision. recording_id is None for standalone decisions."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO decisions (user_id, recording_id, decision, made_by, context, reason)
+               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
+            user_id, recording_id, decision, made_by, context, reason,
+        )
+        return row["id"]
+
+
+async def get_decisions(
+    user_id: int, limit: int = 50, include_archived: bool = False
+) -> list[dict]:
     """Get recent decisions across all recordings."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, timestamp, summary
-            FROM recordings
-            WHERE user_id = $1
-            ORDER BY timestamp DESC
-            LIMIT $2
-        """,
+            SELECT d.id, d.decision, d.made_by, d.context, d.reason,
+                   d.archived, d.created_at, d.recording_id,
+                   COALESCE(r.timestamp, d.created_at) AS recording_timestamp
+            FROM decisions d
+            LEFT JOIN recordings r ON r.id = d.recording_id
+            WHERE d.user_id = $1
+              AND ($2 OR d.archived = FALSE)
+            ORDER BY d.created_at DESC
+            LIMIT $3
+            """,
             user_id,
+            include_archived,
             limit,
         )
         return [dict(row) for row in rows]
+
+
+async def get_decisions_for_recording(recording_id: int) -> list[dict]:
+    """Get all decisions for a specific recording."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, decision, made_by, context, reason, archived, created_at
+            FROM decisions WHERE recording_id = $1
+            ORDER BY created_at ASC
+            """,
+            recording_id,
+        )
+        return [dict(row) for row in rows]
+
+
+async def update_decision_archive(decision_id: int, archived: bool) -> None:
+    """Update the archived status of a decision."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE decisions SET archived = $1 WHERE id = $2", archived, decision_id
+        )
+
+
+async def delete_decision(decision_id: int) -> None:
+    """Delete a decision."""
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM decisions WHERE id = $1", decision_id)
+
+
+async def get_decision_owner(decision_id: int) -> int | None:
+    """Get the user_id that owns a decision. Returns None if not found."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT user_id FROM decisions WHERE id = $1", decision_id
+        )
+        return row["user_id"] if row else None
 
 
 async def save_utterance_chunk(

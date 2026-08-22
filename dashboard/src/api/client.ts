@@ -74,7 +74,30 @@ export const api = {
     }),
   deleteTodo: (todoId: number) =>
     fetchApi(`/dashboard/todos/${todoId}`, { method: 'DELETE' }),
-  getDecisions: () => fetchApi('/dashboard/decisions'),
+  createTodo: (data: { task: string; owner?: string; due?: string; priority?: string; recording_id?: number }) =>
+    fetchApi('/dashboard/todos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
+  getDecisions: (includeArchived = false) =>
+    fetchApi(`/dashboard/decisions?include_archived=${includeArchived}`),
+  getDecisionsForRecording: (recordingId: string) =>
+    fetchApi(`/dashboard/recording/${recordingId}/decisions`),
+  archiveDecision: (decisionId: number, archived: boolean) =>
+    fetchApi(`/dashboard/decisions/${decisionId}/archive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived }),
+    }),
+  deleteDecision: (decisionId: number) =>
+    fetchApi(`/dashboard/decisions/${decisionId}`, { method: 'DELETE' }),
+  createDecision: (data: { decision: string; made_by?: string; context?: string; reason?: string; recording_id?: number }) =>
+    fetchApi('/dashboard/decisions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
   getUnknownSpeakers: () => fetchApi('/dashboard/unknown-speakers'),
   deleteRecording: (id: string) =>
     fetchApi(`/dashboard/recording/${id}`, { method: 'DELETE' }),

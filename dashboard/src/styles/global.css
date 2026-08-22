@@ -370,7 +370,6 @@ header nav a:hover {
 }
 
 .todo-list,
-.decisions-list,
 .speaker-label {
   background: white;
   padding: 20px;
@@ -378,15 +377,41 @@ header nav a:hover {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
+.decisions-list {
+  background: #f8f9fa;
+  padding: 16px;
+  border-radius: 8px;
+}
+
 .todo-list ul,
 .decisions-list ul {
   list-style: none;
 }
 
-.todo-list li,
-.decisions-list li {
+.todo-list li {
   padding: 10px;
   border-bottom: 1px solid #ecf0f1;
+}
+
+.decisions-list ul {
+  margin: 0;
+  padding: 0;
+}
+
+.decisions-list li {
+  padding: 10px;
+  background: white;
+  border-radius: 4px;
+  border-left: 4px solid #3498db;
+  margin-bottom: 8px;
+}
+
+.decisions-list li:last-child {
+  margin-bottom: 0;
+}
+
+.clickable {
+  cursor: pointer;
 }
 
 .todo-list li.priority-high {
@@ -401,8 +426,71 @@ header nav a:hover {
   border-left: 4px solid #27ae60;
 }
 
+.decision-archived {
+  opacity: 0.5;
+}
+
+.decision-archive-badge {
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  background: #95a5a6;
+  color: white;
+}
+
+.decision-reason {
+  margin-top: 4px;
+  color: #7f8c8d;
+  font-size: 0.9rem;
+}
+
+.toggle-archived {
+  margin-bottom: 12px;
+  padding: 6px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  color: #555;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.toggle-archived:hover {
+  background: #f0f0f0;
+}
+
 .todo-list li.completed,
 .day-todos li.completed,
+.recording-detail .todos,
+.recording-detail .decisions {
+  background: #f8f9fa;
+  padding: 16px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.recording-detail .todos ul,
+.recording-detail .decisions ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.recording-detail .todos li,
+.recording-detail .decisions li {
+  padding: 10px;
+  background: white;
+  border-radius: 4px;
+  border-left: 4px solid #3498db;
+  margin-bottom: 8px;
+}
+
+.recording-detail .todos li:last-child,
+.recording-detail .decisions li:last-child {
+  margin-bottom: 0;
+}
+
 .recording-detail .todos li.completed {
   text-decoration: line-through;
   opacity: 0.6;
@@ -536,4 +624,58 @@ header nav a:hover {
 .label-form button:disabled {
   background: #bdc3c7;
   cursor: not-allowed;
+}
+
+.add-button {
+  margin-bottom: 12px;
+  padding: 6px 14px;
+  border: 1px solid #3498db;
+  border-radius: 4px;
+  background: white;
+  color: #3498db;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.add-button:hover {
+  background: #3498db;
+  color: white;
+}
+
+.create-form {
+  margin-bottom: 16px;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.create-form input,
+.create-form textarea,
+.create-form select {
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+
+.create-form textarea {
+  resize: vertical;
+}
+
+.create-form button[type="submit"] {
+  padding: 8px 16px;
+  background: #27ae60;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.create-form button[type="submit"]:hover {
+  background: #219a52;
 }

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { formatDateTime } from '../utils/format';
 import AudioPlayer from './AudioPlayer';
-import type { Recording, Todo } from '../types';
+import type { Recording, Todo, Decision } from '../types';
 
 export default function RecordingDetail() {
   const { id } = useParams<{ id: string }>();
@@ -11,8 +11,22 @@ export default function RecordingDetail() {
   const [recording, setRecording] = useState<Recording | null>(null);
   const [audioUrls, setAudioUrls] = useState<string[]>([]);
   const [recordingTodos, setRecordingTodos] = useState<Todo[]>([]);
+  const [recordingDecisions, setRecordingDecisions] = useState<Decision[]>([]);
+
+  const [showTodoForm, setShowTodoForm] = useState(false);
+  const [todoFormTask, setTodoFormTask] = useState('');
+  const [todoFormOwner, setTodoFormOwner] = useState('Me');
+  const [todoFormDue, setTodoFormDue] = useState(() => new Date().toISOString().slice(0, 10));
+  const [todoFormPriority, setTodoFormPriority] = useState('medium');
+
+  const [showDecisionForm, setShowDecisionForm] = useState(false);
+  const [decisionFormText, setDecisionFormText] = useState('');
+  const [decisionFormMadeBy, setDecisionFormMadeBy] = useState('Me');
+  const [decisionFormContext, setDecisionFormContext] = useState('');
+  const [decisionFormReason, setDecisionFormReason] = useState('');
 
   const isLive = id?.startsWith('active-');
+  const numericRecordingId = id && !isLive ? Number(id) : undefined;
 
   const loadRecording = useCallback(() => {
     if (!id) return;
@@ -57,6 +71,15 @@ export default function RecordingDetail() {
     }
   }, [recording, isLive, id]);
 
+  // Fetch decisions for this recording
+  useEffect(() => {
+    if (recording && !isLive && id) {
+      api.getDecisionsForRecording(id).then((data: { decisions: Decision[] }) => {
+        setRecordingDecisions(data.decisions);
+      }).catch(() => setRecordingDecisions([]));
+    }
+  }, [recording, isLive, id]);
+
   const handleTodoToggle = async (todo: Todo) => {
     const newCompleted = !todo.completed;
     await api.completeTodo(todo.id, newCompleted);
@@ -72,6 +95,77 @@ export default function RecordingDetail() {
   const handleTodoDelete = async (todoId: number) => {
     await api.deleteTodo(todoId);
     setRecordingTodos(prev => prev.filter(t => t.id !== todoId));
+  };
+
+  const handleCreateTodo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!todoFormTask.trim()) return;
+    const result: unknown = await api.createTodo({
+      task: todoFormTask.trim(),
+      owner: todoFormOwner || 'Me',
+      due: todoFormDue || undefined,
+      priority: todoFormPriority,
+      recording_id: numericRecordingId,
+    });
+    const todoId =
+      result && typeof result === 'object' && 'id' in result && typeof result.id === 'number'
+        ? result.id
+        : Date.now();
+    setRecordingTodos(prev => [
+      {
+        id: todoId,
+        task: todoFormTask.trim(),
+        owner: todoFormOwner || 'Me',
+        due: todoFormDue || null,
+        priority: todoFormPriority as 'high' | 'medium' | 'low',
+        completed: false,
+        completed_at: null,
+        recording_id: numericRecordingId ?? null,
+        recording_timestamp: null,
+        created_at: new Date().toISOString(),
+      },
+      ...prev,
+    ]);
+    setTodoFormTask('');
+    setTodoFormOwner('Me');
+    setTodoFormDue(new Date().toISOString().slice(0, 10));
+    setTodoFormPriority('medium');
+    setShowTodoForm(false);
+  };
+
+  const handleCreateDecision = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!decisionFormText.trim()) return;
+    const result: unknown = await api.createDecision({
+      decision: decisionFormText.trim(),
+      made_by: decisionFormMadeBy || 'Me',
+      context: decisionFormContext || undefined,
+      reason: decisionFormReason || undefined,
+      recording_id: numericRecordingId,
+    });
+    const decisionId =
+      result && typeof result === 'object' && 'id' in result && typeof result.id === 'number'
+        ? result.id
+        : Date.now();
+    setRecordingDecisions(prev => [
+      {
+        id: decisionId,
+        decision: decisionFormText.trim(),
+        made_by: decisionFormMadeBy || 'Me',
+        context: decisionFormContext || null,
+        reason: decisionFormReason || null,
+        archived: false,
+        recording_id: numericRecordingId ?? null,
+        recording_timestamp: null,
+        created_at: new Date().toISOString(),
+      },
+      ...prev,
+    ]);
+    setDecisionFormText('');
+    setDecisionFormMadeBy('Me');
+    setDecisionFormContext('');
+    setDecisionFormReason('');
+    setShowDecisionForm(false);
   };
 
   const handleDelete = async () => {
@@ -167,23 +261,115 @@ export default function RecordingDetail() {
         </div>
       )}
 
-      {recording.decisions && recording.decisions.length > 0 && (
-        <div className="decisions">
-          <h3>Decisions</h3>
+      <div className="decisions">
+        <h3>Decisions</h3>
+        {!isLive && (
+          <button className="add-button" onClick={() => setShowDecisionForm(!showDecisionForm)}>
+            {showDecisionForm ? 'Cancel' : '+ Add Decision'}
+          </button>
+        )}
+        {showDecisionForm && (
+          <form className="create-form" onSubmit={handleCreateDecision}>
+            <input
+              type="text"
+              placeholder="Decision *"
+              value={decisionFormText}
+              onChange={e => setDecisionFormText(e.target.value)}
+              required
+            />
+            <input
+              type="text"
+              placeholder="Made by"
+              value={decisionFormMadeBy}
+              onChange={e => setDecisionFormMadeBy(e.target.value)}
+            />
+            <textarea
+              placeholder="Context (optional)"
+              value={decisionFormContext}
+              onChange={e => setDecisionFormContext(e.target.value)}
+              rows={2}
+            />
+            <textarea
+              placeholder="Reason (optional)"
+              value={decisionFormReason}
+              onChange={e => setDecisionFormReason(e.target.value)}
+              rows={2}
+            />
+            <button type="submit">Create</button>
+          </form>
+        )}
+        {recordingDecisions.length > 0 ? (
           <ul>
-            {recording.decisions.map((decision, i) => (
-              <li key={i}>
+            {recordingDecisions.map(decision => (
+              <li key={decision.id} className={decision.archived ? 'decision-archived' : ''}>
                 <strong>{decision.decision}</strong>
                 <span> - {decision.made_by}</span>
+                {decision.archived && (
+                  <span className="decision-archive-badge">Archived</span>
+                )}
+                {decision.context && <p className="context">{decision.context}</p>}
+                {decision.reason && <p className="decision-reason">{decision.reason}</p>}
+                <div>
+                  <button onClick={async () => {
+                    await api.archiveDecision(decision.id, !decision.archived);
+                    setRecordingDecisions(prev =>
+                      prev.map(d => d.id === decision.id ? { ...d, archived: !d.archived } : d)
+                    );
+                  }}>
+                    {decision.archived ? 'Unarchive' : 'Archive'}
+                  </button>
+                  <button className="todo-delete" onClick={async () => {
+                    await api.deleteDecision(decision.id);
+                    setRecordingDecisions(prev => prev.filter(d => d.id !== decision.id));
+                  }}>
+                    Delete
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
-        </div>
-      )}
+        ) : (
+          !showDecisionForm && <p>No decisions found</p>
+        )}
+      </div>
 
-      {recordingTodos.length > 0 && (
-        <div className="todos">
-          <h3>TODOs</h3>
+      <div className="todos">
+        <h3>TODOs</h3>
+        {!isLive && (
+          <button className="add-button" onClick={() => setShowTodoForm(!showTodoForm)}>
+            {showTodoForm ? 'Cancel' : '+ Add Todo'}
+          </button>
+        )}
+        {showTodoForm && (
+          <form className="create-form" onSubmit={handleCreateTodo}>
+            <input
+              type="text"
+              placeholder="Task *"
+              value={todoFormTask}
+              onChange={e => setTodoFormTask(e.target.value)}
+              required
+            />
+            <input
+              type="text"
+              placeholder="Owner"
+              value={todoFormOwner}
+              onChange={e => setTodoFormOwner(e.target.value)}
+            />
+            <input
+              type="date"
+              placeholder="Due date"
+              value={todoFormDue}
+              onChange={e => setTodoFormDue(e.target.value)}
+            />
+            <select value={todoFormPriority} onChange={e => setTodoFormPriority(e.target.value)}>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+            <button type="submit">Create</button>
+          </form>
+        )}
+        {recordingTodos.length > 0 ? (
           <ul>
             {recordingTodos.map(todo => (
               <li
@@ -210,8 +396,10 @@ export default function RecordingDetail() {
               </li>
             ))}
           </ul>
-        </div>
-      )}
+        ) : (
+          !showTodoForm && <p>No TODOs found</p>
+        )}
+      </div>
     </div>
   );
 

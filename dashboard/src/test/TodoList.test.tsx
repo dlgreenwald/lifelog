@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import TodoList from '../components/TodoList';
 import { api } from '../api/client';
@@ -10,6 +11,7 @@ vi.mock('../api/client', () => ({
     getTodos: vi.fn(),
     completeTodo: vi.fn(),
     deleteTodo: vi.fn(),
+    createTodo: vi.fn(),
   },
 }));
 
@@ -45,7 +47,7 @@ describe('TodoList', () => {
   it('renders todos after loading', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       expect(screen.getByText('Buy groceries')).toBeInTheDocument();
@@ -57,7 +59,7 @@ describe('TodoList', () => {
   it('shows "No TODOs found" when empty', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: [] });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       expect(screen.getByText('No TODOs found')).toBeInTheDocument();
@@ -67,7 +69,7 @@ describe('TodoList', () => {
   it('displays todo owners', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       expect(screen.getByText(/Bob/)).toBeInTheDocument();
@@ -78,7 +80,7 @@ describe('TodoList', () => {
   it('displays due dates when present', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       expect(screen.getByText(/2024-01-20/)).toBeInTheDocument();
@@ -88,7 +90,7 @@ describe('TodoList', () => {
   it('hides due date when null', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       expect(screen.getByText('Fix critical bug')).toBeInTheDocument();
@@ -101,7 +103,7 @@ describe('TodoList', () => {
   it('applies priority class names', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       expect(screen.getByText('Buy groceries').closest('li')).toHaveClass('priority-low');
@@ -112,7 +114,7 @@ describe('TodoList', () => {
   it('shows priority badges', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       const badges = screen.getAllByText(/^(high|medium|low)$/);
@@ -123,7 +125,7 @@ describe('TodoList', () => {
   it('calls getTodos on mount', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: [] });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     expect(mockApi.getTodos).toHaveBeenCalledTimes(1);
   });
@@ -131,7 +133,7 @@ describe('TodoList', () => {
   it('renders checkboxes for each todo', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       const checkboxes = screen.getAllByRole('checkbox');
@@ -143,7 +145,7 @@ describe('TodoList', () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
     mockApi.completeTodo.mockResolvedValue({ ok: true });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       expect(screen.getByText('Buy groceries')).toBeInTheDocument();
@@ -158,7 +160,7 @@ describe('TodoList', () => {
   it('renders delete buttons for each todo', async () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       const deleteButtons = screen.getAllByRole('button', { name: /Delete todo/ });
@@ -170,7 +172,7 @@ describe('TodoList', () => {
     mockApi.getTodos.mockResolvedValue({ todos: mockTodos });
     mockApi.deleteTodo.mockResolvedValue({ ok: true });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       expect(screen.getByText('Buy groceries')).toBeInTheDocument();
@@ -201,7 +203,7 @@ describe('TodoList', () => {
     });
     mockApi.getTodos.mockResolvedValue({ todos: [oldCompleted, recentCompleted] });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       expect(screen.getByText('Recent completed task')).toBeInTheDocument();
@@ -218,7 +220,7 @@ describe('TodoList', () => {
     });
     mockApi.getTodos.mockResolvedValue({ todos: [oldCompleted] });
 
-    render(<TodoList />);
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
 
     await waitFor(() => {
       expect(screen.queryByText('Old completed task')).not.toBeInTheDocument();
@@ -229,6 +231,59 @@ describe('TodoList', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Old completed task')).toBeInTheDocument();
+    });
+  });
+
+  it('shows create form when add button clicked', async () => {
+    mockApi.getTodos.mockResolvedValue({ todos: [] });
+
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
+
+    await waitFor(() => {
+      expect(screen.getByText('No TODOs found')).toBeInTheDocument();
+    });
+
+    const addBtn = screen.getByText('+ Add Todo');
+    await userEvent.click(addBtn);
+
+    expect(screen.getByPlaceholderText('Task *')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Owner')).toBeInTheDocument();
+    expect(screen.getByText('Create')).toBeInTheDocument();
+  });
+
+  it('creates todo and prepends to list', async () => {
+    mockApi.getTodos.mockResolvedValue({ todos: [] });
+    mockApi.createTodo.mockResolvedValue({ id: 100 });
+
+    render(<MemoryRouter><TodoList /></MemoryRouter>);
+
+    await waitFor(() => {
+      expect(screen.getByText('No TODOs found')).toBeInTheDocument();
+    });
+
+    // Open form
+    await userEvent.click(screen.getByText('+ Add Todo'));
+
+    // Fill form
+    await userEvent.type(screen.getByPlaceholderText('Task *'), 'New task');
+    const ownerInput = screen.getByPlaceholderText('Owner');
+    await userEvent.clear(ownerInput);
+    await userEvent.type(ownerInput, 'Alice');
+    await userEvent.click(screen.getByText('Create'));
+
+    await waitFor(() => {
+      expect(mockApi.createTodo).toHaveBeenCalledWith({
+        task: 'New task',
+        owner: 'Alice',
+        due: new Date().toISOString().slice(0, 10),
+        priority: 'medium',
+      });
+    });
+
+    // Todo should appear in the list
+    await waitFor(() => {
+      expect(screen.getByText('New task')).toBeInTheDocument();
+      expect(screen.getByText(/Alice/)).toBeInTheDocument();
     });
   });
 });

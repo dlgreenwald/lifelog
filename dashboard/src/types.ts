@@ -31,8 +31,8 @@ export interface Todo {
   priority: 'high' | 'medium' | 'low';
   completed: boolean;
   completed_at: string | null;
-  recording_id: number;
-  recording_timestamp: string;
+  recording_id: number | null;
+  recording_timestamp: string | null;
   created_at: string;
 }
 
@@ -50,9 +50,15 @@ export interface ConversationChange {
 }
 
 export interface Decision {
+  id: number;
   decision: string;
   made_by: string;
-  context: string;
+  context: string | null;
+  reason: string | null;
+  archived: boolean;
+  recording_id: number | null;
+  recording_timestamp: string | null;
+  created_at: string;
 }
 
 export interface CalendarDay {

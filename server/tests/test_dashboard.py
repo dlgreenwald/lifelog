@@ -212,7 +212,17 @@ async def test_get_recording_todos():
 async def test_get_decisions():
     """Decisions endpoint returns recent decisions."""
     fake_decisions = [
-        {"id": 1, "timestamp": "2024-01-15", "summary": "Decided to launch v2"},
+        {
+            "id": 1,
+            "decision": "Launch v2",
+            "made_by": "Alice",
+            "context": "Team agreed",
+            "reason": "Deadline pressure",
+            "archived": False,
+            "created_at": "2024-01-15T10:00:00",
+            "recording_id": 10,
+            "recording_timestamp": "2024-01-15T10:00:00",
+        },
     ]
 
     app = _app_with_mocks()
@@ -223,6 +233,60 @@ async def test_get_decisions():
 
     assert response.status_code == 200
     assert len(response.json()["decisions"]) == 1
+    assert response.json()["decisions"][0]["decision"] == "Launch v2"
+
+
+@pytest.mark.asyncio
+async def test_get_recording_decisions():
+    """Per-recording decisions endpoint returns decisions."""
+    fake_recording = {"id": 10, "timestamp": "2024-01-15"}
+    fake_decisions = [
+        {"id": 1, "decision": "Go with A", "made_by": "Bob", "context": None, "reason": None, "archived": False, "created_at": "2024-01-15"},
+    ]
+
+    app = _app_with_mocks()
+
+    with (
+        patch("lifelog.routes.dashboard.get_recording", new_callable=AsyncMock, return_value=fake_recording),
+        patch("lifelog.routes.dashboard.get_decisions_for_recording", new_callable=AsyncMock, return_value=fake_decisions),
+    ):
+        client = TestClient(app)
+        response = client.get("/recording/10/decisions")
+
+    assert response.status_code == 200
+    assert len(response.json()["decisions"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_archive_decision():
+    """Archive decision endpoint returns 200."""
+    app = _app_with_mocks()
+
+    with (
+        patch("lifelog.routes.dashboard.get_decision_owner", new_callable=AsyncMock, return_value=1),
+        patch("lifelog.routes.dashboard.update_decision_archive", new_callable=AsyncMock),
+    ):
+        client = TestClient(app)
+        response = client.post("/decisions/1/archive", json={"archived": True})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_delete_decision_endpoint():
+    """Delete decision endpoint returns 200."""
+    app = _app_with_mocks()
+
+    with (
+        patch("lifelog.routes.dashboard.get_decision_owner", new_callable=AsyncMock, return_value=1),
+        patch("lifelog.routes.dashboard.delete_decision", new_callable=AsyncMock),
+    ):
+        client = TestClient(app)
+        response = client.delete("/decisions/1")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
 
 
 @pytest.mark.asyncio
@@ -240,3 +304,83 @@ async def test_get_unknown_speakers():
 
     assert response.status_code == 200
     assert len(response.json()["recordings"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_todo():
+    """Create todo endpoint returns id."""
+    app = _app_with_mocks()
+
+    with patch("lifelog.routes.dashboard.create_todo", new_callable=AsyncMock, return_value=42):
+        client = TestClient(app)
+        response = client.post("/todos", json={"task": "Buy milk", "owner": "Bob", "priority": "high"})
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_create_todo_missing_task():
+    """Create todo returns 400 when task is empty."""
+    app = _app_with_mocks()
+
+    client = TestClient(app)
+    response = client.post("/todos", json={"task": "", "owner": "Bob"})
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_todo_standalone():
+    """Create todo without recording_id creates standalone todo."""
+    app = _app_with_mocks()
+
+    with patch("lifelog.routes.dashboard.create_todo", new_callable=AsyncMock, return_value=99) as mock_create:
+        client = TestClient(app)
+        response = client.post("/todos", json={"task": "Standalone task"})
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 99
+    mock_create.assert_called_once()
+    call_kwargs = mock_create.call_args
+    assert call_kwargs.kwargs["recording_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_decision():
+    """Create decision endpoint returns id."""
+    app = _app_with_mocks()
+
+    with patch("lifelog.routes.dashboard.create_decision", new_callable=AsyncMock, return_value=7):
+        client = TestClient(app)
+        response = client.post("/decisions", json={"decision": "Use PostgreSQL", "made_by": "Alice"})
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_create_decision_missing_text():
+    """Create decision returns 400 when decision is empty."""
+    app = _app_with_mocks()
+
+    client = TestClient(app)
+    response = client.post("/decisions", json={"decision": "", "made_by": "Alice"})
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_decision_standalone():
+    """Create decision without recording_id creates standalone decision."""
+    app = _app_with_mocks()
+
+    with patch("lifelog.routes.dashboard.create_decision", new_callable=AsyncMock, return_value=88) as mock_create:
+        client = TestClient(app)
+        response = client.post("/decisions", json={"decision": "Use React"})
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 88
+    mock_create.assert_called_once()
+    call_kwargs = mock_create.call_args
+    assert call_kwargs.kwargs["recording_id"] is None

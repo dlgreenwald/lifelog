@@ -6,11 +6,16 @@ from fastapi.responses import StreamingResponse
 from lifelog.auth import validate_oidc_token
 from lifelog.crypto import audio_crypto
 from lifelog.database import (
+    create_decision,
+    create_todo,
+    delete_decision,
     delete_recording,
     delete_todo,
     get_active_session_recording,
     get_daily_summary,
+    get_decision_owner,
     get_decisions,
+    get_decisions_for_recording,
     get_recording,
     get_recordings_by_date,
     get_todo_owner,
@@ -19,6 +24,7 @@ from lifelog.database import (
     get_todos_for_recording,
     get_unknown_speakers,
     reset_session_for_reprocessing,
+    update_decision_archive,
     update_recording_category,
     update_todo_completion,
 )
@@ -102,6 +108,23 @@ async def get_todos_route(user: dict = Depends(validate_oidc_token)):
     return {"todos": todos}
 
 
+@router.post("/todos")
+async def create_todo_route(body: dict, user: dict = Depends(validate_oidc_token)):
+    """Create a new todo. recording_id is optional (null for standalone)."""
+    task = body.get("task", "").strip()
+    if not task:
+        raise HTTPException(status_code=400, detail="task is required")
+    todo_id = await create_todo(
+        user_id=user["id"],
+        task=task,
+        owner=body.get("owner", "Me"),
+        due=body.get("due"),
+        priority=body.get("priority", "medium"),
+        recording_id=body.get("recording_id"),
+    )
+    return {"id": todo_id}
+
+
 @router.get("/todos/{date}")
 async def get_todos_for_date_route(date: str, user: dict = Depends(validate_oidc_token)):
     """Get todos from recordings on a specific date (YYYY-MM-DD)."""
@@ -151,11 +174,72 @@ async def delete_todo_route(
 
 
 @router.get("/decisions")
-async def get_decisions_route(user: dict = Depends(validate_oidc_token), limit: int = 20):
+async def get_decisions_route(
+    user: dict = Depends(validate_oidc_token),
+    limit: int = 50,
+    include_archived: bool = False,
+):
     """Get recent decisions across all recordings."""
-    decisions = await get_decisions(user["id"], limit)
+    decisions = await get_decisions(user["id"], limit, include_archived)
     logger.debug("Decisions request: user=%d, found=%d", user["id"], len(decisions))
     return {"decisions": decisions}
+
+
+@router.post("/decisions")
+async def create_decision_route(body: dict, user: dict = Depends(validate_oidc_token)):
+    """Create a new decision. recording_id is optional (null for standalone)."""
+    decision_text = body.get("decision", "").strip()
+    if not decision_text:
+        raise HTTPException(status_code=400, detail="decision is required")
+    decision_id = await create_decision(
+        user_id=user["id"],
+        decision=decision_text,
+        made_by=body.get("made_by", "Me"),
+        context=body.get("context"),
+        reason=body.get("reason"),
+        recording_id=body.get("recording_id"),
+    )
+    return {"id": decision_id}
+
+
+@router.get("/recording/{recording_id}/decisions")
+async def get_recording_decisions_route(
+    recording_id: int, user: dict = Depends(validate_oidc_token)
+):
+    """Get all decisions for a specific recording."""
+    recording = await get_recording(user["id"], recording_id)
+    if not recording:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    decisions = await get_decisions_for_recording(recording_id)
+    return {"decisions": decisions}
+
+
+@router.post("/decisions/{decision_id}/archive")
+async def archive_decision_route(
+    decision_id: int, body: dict, user: dict = Depends(validate_oidc_token)
+):
+    """Archive or unarchive a decision."""
+    owner = await get_decision_owner(decision_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    if owner != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    await update_decision_archive(decision_id, body.get("archived", False))
+    return {"ok": True}
+
+
+@router.delete("/decisions/{decision_id}")
+async def delete_decision_route(
+    decision_id: int, user: dict = Depends(validate_oidc_token)
+):
+    """Delete a decision."""
+    owner = await get_decision_owner(decision_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    if owner != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    await delete_decision(decision_id)
+    return {"ok": True}
 
 
 @router.get("/unknown-speakers")
