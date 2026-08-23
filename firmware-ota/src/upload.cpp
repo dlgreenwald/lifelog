@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <SD.h>
 #include "config.h"
+#include "settings.h"
 #include "audio.h"
 
 bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool final) {
@@ -54,14 +55,14 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
 
     // Connect to server — no SD access, may take seconds
     WiFiClient client;
-    if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+    if (!client.connect(deviceSettings.serverHost, deviceSettings.serverPort)) {
         LOG_UPLOAD(LOG_ERROR, "Connection failed");
         return false;
     }
 
-    String headers = "POST " + String(SERVER_PATH) + " HTTP/1.1\r\n";
-    headers += "Host: " + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "\r\n";
-    headers += "X-API-Key: " + String(API_KEY) + "\r\n";
+    String headers = "POST " + String(deviceSettings.serverPath) + " HTTP/1.1\r\n";
+    headers += "Host: " + String(deviceSettings.serverHost) + ":" + String(deviceSettings.serverPort) + "\r\n";
+    headers += "X-API-Key: " + String(deviceSettings.apiKey) + "\r\n";
     headers += "Content-Type: " + contentType + "\r\n";
 
     uint32_t prefixLen = body.length();

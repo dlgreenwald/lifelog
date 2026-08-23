@@ -6,6 +6,7 @@
 #include <cmath>
 #include <vector>
 #include <string>
+#include <map>
 
 // ── ESP32 types ────────────────────────────────────────────────────
 
@@ -21,6 +22,12 @@ typedef void* SemaphoreHandle_t;
 #define ESP_INTR_FLAG_LEVEL1 0
 #define ESP_ERR_TIMEOUT -1
 
+// ── millis stub ────────────────────────────────────────────────────
+
+static uint32_t mock_millis_value = 10000;
+inline uint32_t millis() { return mock_millis_value; }
+inline void delay(uint32_t ms) { mock_millis_value += ms; }
+
 // ── FreeRTOS stubs ─────────────────────────────────────────────────
 
 #define pdMS_TO_TICKS(x) ((x))
@@ -28,8 +35,7 @@ typedef void* SemaphoreHandle_t;
 #define pdTRUE 1
 #define pdFALSE 0
 
-inline void vTaskDelay(TickType_t ticks) {}
-inline void delay(uint32_t ms) {}
+inline void vTaskDelay(TickType_t ticks) { mock_millis_value += ticks; }
 inline BaseType_t xTaskNotifyTake(BaseType_t clear, TickType_t timeout) { return pdTRUE; }
 inline void xTaskNotifyGive(TaskHandle_t handle) {}
 
@@ -80,11 +86,12 @@ inline esp_err_t i2s_read(int, void*, size_t, size_t*, TickType_t) { return ESP_
 
 class String {
     std::string s_;
+    size_t read_pos_ = 0;
 public:
     String() = default;
-    String(const char* c) : s_(c ? c : "") {}
-    String(const std::string& s) : s_(s) {}
-    String(int v) : s_(std::to_string(v)) {}
+    String(const char* c) : s_(c ? c : ""), read_pos_(0) {}
+    String(const std::string& s) : s_(s), read_pos_(0) {}
+    String(int v) : s_(std::to_string(v)), read_pos_(0) {}
     String& operator+=(const String& o) { s_ += o.s_; return *this; }
     friend String operator+(const String& a, const String& b) { return String(a.s_ + b.s_); }
     const char* c_str() const { return s_.c_str(); }
@@ -111,6 +118,16 @@ public:
     bool operator==(const char* c) const { return s_ == c; }
     bool operator!=(const char* c) const { return s_ != c; }
     operator bool() const { return !s_.empty(); }
+    // ArduinoJson compatibility
+    size_t write(uint8_t c) { s_ += (char)c; return 1; }
+    size_t write(const uint8_t* data, size_t len) { s_.append((const char*)data, len); return len; }
+    int read() {
+        if (read_pos_ >= s_.size()) return -1;
+        return (unsigned char)s_[read_pos_++];
+    }
+    size_t available() const { return s_.size() - read_pos_; }
+    String& operator+=(char c) { s_ += c; return *this; }
+    String& operator+=(const char* c) { s_ += c ? c : ""; return *this; }
 };
 
 // ── Serial stub ────────────────────────────────────────────────────
@@ -124,11 +141,6 @@ struct MockSerial {
 };
 static MockSerial Serial;
 
-// ── millis stub ────────────────────────────────────────────────────
-
-static uint32_t mock_millis_value = 10000;
-inline uint32_t millis() { return mock_millis_value; }
-
 // ── ps_malloc stub ─────────────────────────────────────────────────
 
 inline void* ps_malloc(size_t size) { return malloc(size); }
@@ -140,10 +152,29 @@ inline uint32_t esp_random() { return 12345; }
 // ── WiFi stub ──────────────────────────────────────────────────────
 
 #define WL_CONNECTED 3
+typedef int arduino_event_id_t;
+#define ARDUINO_EVENT_WIFI_STA_CONNECTED 4
+#define ARDUINO_EVENT_WIFI_STA_DISCONNECTED 5
 
 static int mock_wifi_status = 0;  // 0 = disconnected by default
+static String mock_wifi_ssid = "MockSSID";
+static String mock_wifi_ip = "192.168.1.100";
+static int mock_wifi_rssi = -50;
+static void (*mock_wifi_event_handler)(arduino_event_id_t) = nullptr;
+
+struct IPAddress {
+    String toString() { return mock_wifi_ip; }
+};
+
 struct MockWiFi {
     int status() { return mock_wifi_status; }
+    void begin(const char* ssid) {}
+    void begin(const char* ssid, const char* pass) {}
+    void disconnect() {}
+    IPAddress localIP() { return IPAddress(); }
+    String SSID() { return mock_wifi_ssid; }
+    int RSSI() { return mock_wifi_rssi; }
+    void onEvent(void (*handler)(arduino_event_id_t)) { mock_wifi_event_handler = handler; }
 };
 static MockWiFi WiFi;
 
@@ -224,12 +255,35 @@ inline bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, 
 
 // ── Preferences stub ───────────────────────────────────────────────
 
+static std::map<std::string, std::string> mock_prefs_strings;
+static std::map<std::string, uint16_t> mock_prefs_ushorts;
+static std::map<std::string, uint32_t> mock_prefs_uints;
+static std::map<std::string, bool> mock_prefs_bools;
+static std::map<std::string, uint8_t> mock_prefs_uchars;
+
 struct Preferences {
     void begin(const char*, bool = false) {}
-    void putUInt(const char*, uint32_t) {}
-    uint32_t getUInt(const char*, uint32_t def = 0) { return def; }
-    void putBool(const char*, bool) {}
-    bool getBool(const char*, bool def = false) { return def; }
+    void putUInt(const char* k, uint32_t v) { mock_prefs_uints[k] = v; }
+    uint32_t getUInt(const char* k, uint32_t def = 0) {
+        auto it = mock_prefs_uints.find(k); return it != mock_prefs_uints.end() ? it->second : def;
+    }
+    void putUChar(const char* k, uint8_t v) { mock_prefs_uchars[k] = v; }
+    uint8_t getUChar(const char* k, uint8_t def = 0) {
+        auto it = mock_prefs_uchars.find(k); return it != mock_prefs_uchars.end() ? it->second : def;
+    }
+    void putBool(const char* k, bool v) { mock_prefs_bools[k] = v; }
+    bool getBool(const char* k, bool def = false) {
+        auto it = mock_prefs_bools.find(k); return it != mock_prefs_bools.end() ? it->second : def;
+    }
+    void putString(const char* k, const char* v) { mock_prefs_strings[k] = v; }
+    void putString(const char* k, const String& v) { mock_prefs_strings[k] = v.c_str(); }
+    String getString(const char* k, const char* def = "") {
+        auto it = mock_prefs_strings.find(k); return it != mock_prefs_strings.end() ? String(it->second) : String(def);
+    }
+    void putUShort(const char* k, uint16_t v) { mock_prefs_ushorts[k] = v; }
+    uint16_t getUShort(const char* k, uint16_t def = 0) {
+        auto it = mock_prefs_ushorts.find(k); return it != mock_prefs_ushorts.end() ? it->second : def;
+    }
     void end() {}
 };
 
@@ -243,8 +297,38 @@ static ArduinoOTAClass ArduinoOTA;  // NOLINT — intentional global
 
 // ── WiFiManager stub ───────────────────────────────────────────────
 
+typedef void (*WiFiManagerSaveCallback)();
+
+static String mock_wm_ssid = "TestSSID";
+static String mock_wm_pass = "testpass";
+static WiFiManagerSaveCallback mock_wm_save_cb = nullptr;
+static std::vector<String> mock_wm_params;
+static bool mock_wm_portal_should_connect = true;
+
+struct WiFiManagerParameter {
+    const char* _id;
+    const char* _label;
+    char _value[256];
+    int _length;
+    WiFiManagerParameter() : _id(""), _label(""), _length(0) { _value[0] = '\0'; }
+    WiFiManagerParameter(const char* id, const char* label, const char* value, int length)
+        : _id(id), _label(label), _length(length) {
+        strlcpy(_value, value ? value : "", sizeof(_value));
+    }
+    const char* getValue() { return _value; }
+    void setValue(const char* v) { strlcpy(_value, v, sizeof(_value)); }
+};
+
 struct WiFiManager {
     void autoConnect(const char*) {}
+    void setConfigPortalTimeout(uint32_t) {}
+    void setTitle(const char*) {}
+    void setSaveParamsCallback(WiFiManagerSaveCallback cb) { mock_wm_save_cb = cb; }
+    void addParameter(WiFiManagerParameter*) {}
+    bool startConfigPortal(const char*, const char* = nullptr) { return mock_wm_portal_should_connect; }
+    String getWiFiSSID() { return mock_wm_ssid; }
+    String getWiFiPass() { return mock_wm_pass; }
+    void setAPPassword(const char*) {}
     String ssid() { return "MockSSID"; }
     String psk() { return "mockpass"; }
 };
@@ -255,6 +339,52 @@ struct RemoteDebug {
     void begin(const char*) {}
     void handle() {}
 };
+
+// ── ESPmDNS stub ───────────────────────────────────────────────────
+
+struct MockMDNS {
+    bool begin(const char*) { return true; }
+    void addService(const char*, const char*, uint16_t) {}
+};
+static MockMDNS MDNS;
+
+// ── ESPUI stub ─────────────────────────────────────────────────────
+
+enum class Verbosity { Quiet = 0, SomeJSON = 1, VerboseJSON = 2 };
+
+enum class ControlColor {
+    Turquoise, Emerald, Peterriver, Wetasphalt, Sunflower, Carrot, Alizarin, Dark,
+    None = 0xFF
+};
+
+struct MockControl {
+    String value;
+};
+
+struct MockESPUI {
+    std::vector<MockControl> controls;
+    void setVerbosity(Verbosity) {}
+    void begin(const char*) {}
+    void begin(const char*, const char*, const char*) {}
+    void separator(const char*) {}
+    uint16_t label(const char*, ControlColor, const String& val = "") {
+        controls.push_back({val}); return controls.size() - 1;
+    }
+    uint16_t text(const char*, void*, ControlColor, const String& val = "") {
+        controls.push_back({val}); return controls.size() - 1;
+    }
+    uint16_t button(const char*, void*, ControlColor, const char*) {
+        controls.push_back({""}); return controls.size() - 1;
+    }
+    MockControl* getControl(uint16_t id) {
+        if (id < controls.size()) return &controls[id];
+        return nullptr;
+    }
+    void updateLabel(uint16_t id, const String& val) {
+        if (id < controls.size()) controls[id].value = val;
+    }
+};
+static MockESPUI ESPUI;
 
 // ── Opus stubs ─────────────────────────────────────────────────────
 

@@ -7,6 +7,7 @@
 
 // Pull in mocks before anything else
 #include "mocks.h"
+#include <ArduinoJson.h>
 
 // ── Config values under test ────────────────────────────────────────
 // We define these to match config.h since we can't include it directly
@@ -20,6 +21,33 @@
 #define AUDIO_OPUS_FRAME_MS   20
 #define AUDIO_OPUS_BITRATE    24000
 #define AUDIO_OPUS_COMPLEXITY 5
+
+// ── Settings values (match settings.h) ──────────────────────────────
+#define DEFAULT_HOSTNAME    "lifelog"
+#define DEFAULT_SERVER_HOST "192.168.68.190"
+#define DEFAULT_SERVER_PORT 8444
+#define DEFAULT_SERVER_PATH "/api/v1/upload"
+#define MAX_KNOWN_NETWORKS  5
+#define WIFI_CONNECT_TIMEOUT_MS 10000
+#define API_KEY             "07a12a33ae0f36b02e1a54ff158402efafeac9832b013592bd8e5f5061c7eb31"
+
+struct KnownNetwork {
+    char ssid[33];
+    char password[65];
+};
+
+struct DeviceSettings {
+    char hostname[32];
+    char serverHost[64];
+    uint16_t serverPort;
+    char serverPath[64];
+    char apiKey[128];
+    char devicePassword[64];
+};
+
+static DeviceSettings deviceSettings;
+static KnownNetwork knownNetworks[MAX_KNOWN_NETWORKS];
+static int knownNetworkCount = 0;
 
 // ── Functions under test (re-implemented from audio.cpp) ───────────
 // These match the source exactly. Tests verify correctness of the
@@ -929,6 +957,268 @@ void test_write_opus_file_multiple_frames() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Device Settings Tests — NVS load/save
+// ═══════════════════════════════════════════════════════════════════
+
+// Re-implement loadDeviceSettings() from main.cpp for testing
+static void test_loadDeviceSettings() {
+    // Empty NVS → defaults
+    memset(&deviceSettings, 0, sizeof(deviceSettings));
+    knownNetworkCount = 0;
+
+    Preferences p;
+    p.begin("device", true);
+    strlcpy(deviceSettings.hostname, p.getString("hostname", DEFAULT_HOSTNAME).c_str(), sizeof(deviceSettings.hostname));
+    strlcpy(deviceSettings.serverHost, p.getString("server_host", DEFAULT_SERVER_HOST).c_str(), sizeof(deviceSettings.serverHost));
+    deviceSettings.serverPort = p.getUShort("server_port", DEFAULT_SERVER_PORT);
+    strlcpy(deviceSettings.serverPath, p.getString("server_path", DEFAULT_SERVER_PATH).c_str(), sizeof(deviceSettings.serverPath));
+    strlcpy(deviceSettings.apiKey, p.getString("api_key", API_KEY).c_str(), sizeof(deviceSettings.apiKey));
+    strlcpy(deviceSettings.devicePassword, p.getString("device_pw", "").c_str(), sizeof(deviceSettings.devicePassword));
+    knownNetworkCount = 0;
+    String netsJson = p.getString("known_nets", "[]");
+    p.end();
+    JsonDocument doc;
+    if (!deserializeJson(doc, netsJson) && doc.is<JsonArray>()) {
+        for (JsonObject net : doc.as<JsonArray>()) {
+            if (knownNetworkCount >= MAX_KNOWN_NETWORKS) break;
+            strlcpy(knownNetworks[knownNetworkCount].ssid, net["ssid"] | "", 33);
+            strlcpy(knownNetworks[knownNetworkCount].password, net["pw"] | "", 65);
+            knownNetworkCount++;
+        }
+    }
+
+    // Verify defaults
+    TEST_ASSERT_EQUAL_STRING(DEFAULT_HOSTNAME, deviceSettings.hostname);
+    TEST_ASSERT_EQUAL_STRING(DEFAULT_SERVER_HOST, deviceSettings.serverHost);
+    TEST_ASSERT_EQUAL_INT(DEFAULT_SERVER_PORT, deviceSettings.serverPort);
+    TEST_ASSERT_EQUAL_STRING(DEFAULT_SERVER_PATH, deviceSettings.serverPath);
+    TEST_ASSERT_EQUAL_STRING(API_KEY, deviceSettings.apiKey);
+    TEST_ASSERT_EQUAL_STRING("", deviceSettings.devicePassword);
+    TEST_ASSERT_EQUAL_INT(0, knownNetworkCount);
+}
+
+static void test_loadDeviceSettings_saved() {
+    // Save custom values first
+    mock_prefs_strings["hostname"] = "mydevice";
+    mock_prefs_strings["server_host"] = "10.0.0.1";
+    mock_prefs_ushorts["server_port"] = 9999;
+    mock_prefs_strings["server_path"] = "/api/upload";
+    mock_prefs_strings["api_key"] = "custom_key";
+    mock_prefs_strings["device_pw"] = "secret123";
+    mock_prefs_strings["known_nets"] = "[{\"ssid\":\"Home\",\"pw\":\"pass1\"},{\"ssid\":\"Office\",\"pw\":\"pass2\"}]";
+
+    // Load
+    Preferences p;
+    p.begin("device", true);
+    strlcpy(deviceSettings.hostname, p.getString("hostname", DEFAULT_HOSTNAME).c_str(), sizeof(deviceSettings.hostname));
+    strlcpy(deviceSettings.serverHost, p.getString("server_host", DEFAULT_SERVER_HOST).c_str(), sizeof(deviceSettings.serverHost));
+    deviceSettings.serverPort = p.getUShort("server_port", DEFAULT_SERVER_PORT);
+    strlcpy(deviceSettings.serverPath, p.getString("server_path", DEFAULT_SERVER_PATH).c_str(), sizeof(deviceSettings.serverPath));
+    strlcpy(deviceSettings.apiKey, p.getString("api_key", API_KEY).c_str(), sizeof(deviceSettings.apiKey));
+    strlcpy(deviceSettings.devicePassword, p.getString("device_pw", "").c_str(), sizeof(deviceSettings.devicePassword));
+    knownNetworkCount = 0;
+    String netsJson = p.getString("known_nets", "[]");
+    p.end();
+    JsonDocument doc;
+    if (!deserializeJson(doc, netsJson) && doc.is<JsonArray>()) {
+        for (JsonObject net : doc.as<JsonArray>()) {
+            if (knownNetworkCount >= MAX_KNOWN_NETWORKS) break;
+            strlcpy(knownNetworks[knownNetworkCount].ssid, net["ssid"] | "", 33);
+            strlcpy(knownNetworks[knownNetworkCount].password, net["pw"] | "", 65);
+            knownNetworkCount++;
+        }
+    }
+
+    TEST_ASSERT_EQUAL_STRING("mydevice", deviceSettings.hostname);
+    TEST_ASSERT_EQUAL_STRING("10.0.0.1", deviceSettings.serverHost);
+    TEST_ASSERT_EQUAL_INT(9999, deviceSettings.serverPort);
+    TEST_ASSERT_EQUAL_STRING("/api/upload", deviceSettings.serverPath);
+    TEST_ASSERT_EQUAL_STRING("custom_key", deviceSettings.apiKey);
+    TEST_ASSERT_EQUAL_STRING("secret123", deviceSettings.devicePassword);
+    TEST_ASSERT_EQUAL_INT(2, knownNetworkCount);
+    TEST_ASSERT_EQUAL_STRING("Home", knownNetworks[0].ssid);
+    TEST_ASSERT_EQUAL_STRING("pass1", knownNetworks[0].password);
+    TEST_ASSERT_EQUAL_STRING("Office", knownNetworks[1].ssid);
+    TEST_ASSERT_EQUAL_STRING("pass2", knownNetworks[1].password);
+}
+
+static void test_saveDeviceSettings() {
+    strlcpy(deviceSettings.hostname, "test-host", sizeof(deviceSettings.hostname));
+    strlcpy(deviceSettings.serverHost, "10.0.0.5", sizeof(deviceSettings.serverHost));
+    deviceSettings.serverPort = 7777;
+    strlcpy(deviceSettings.serverPath, "/upload", sizeof(deviceSettings.serverPath));
+    strlcpy(deviceSettings.apiKey, "my-key", sizeof(deviceSettings.apiKey));
+    strlcpy(deviceSettings.devicePassword, "pw123", sizeof(deviceSettings.devicePassword));
+    knownNetworkCount = 2;
+    strlcpy(knownNetworks[0].ssid, "Net1", sizeof(knownNetworks[0].ssid));
+    strlcpy(knownNetworks[0].password, "pw1", sizeof(knownNetworks[0].password));
+    strlcpy(knownNetworks[1].ssid, "Net2", sizeof(knownNetworks[1].ssid));
+    strlcpy(knownNetworks[1].password, "pw2", sizeof(knownNetworks[1].password));
+
+    Preferences p;
+    p.begin("device", false);
+    p.putString("hostname", deviceSettings.hostname);
+    p.putString("server_host", deviceSettings.serverHost);
+    p.putUShort("server_port", deviceSettings.serverPort);
+    p.putString("server_path", deviceSettings.serverPath);
+    p.putString("api_key", deviceSettings.apiKey);
+    p.putString("device_pw", deviceSettings.devicePassword);
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    for (int i = 0; i < knownNetworkCount; i++) {
+        JsonObject net = arr.add<JsonObject>();
+        net["ssid"] = knownNetworks[i].ssid;
+        net["pw"] = knownNetworks[i].password;
+    }
+    String netsJson;
+    serializeJson(doc, netsJson);
+    p.putString("known_nets", netsJson);
+    p.end();
+
+    TEST_ASSERT_EQUAL_STRING("test-host", mock_prefs_strings["hostname"].c_str());
+    TEST_ASSERT_EQUAL_STRING("10.0.0.5", mock_prefs_strings["server_host"].c_str());
+    TEST_ASSERT_EQUAL_INT(7777, mock_prefs_ushorts["server_port"]);
+    TEST_ASSERT_EQUAL_STRING("/upload", mock_prefs_strings["server_path"].c_str());
+    TEST_ASSERT_EQUAL_STRING("my-key", mock_prefs_strings["api_key"].c_str());
+    TEST_ASSERT_EQUAL_STRING("pw123", mock_prefs_strings["device_pw"].c_str());
+    TEST_ASSERT_TRUE(mock_prefs_strings.find("known_nets") != mock_prefs_strings.end());
+    std::string nets = mock_prefs_strings["known_nets"];
+    TEST_ASSERT_TRUE(nets.find("Net1") != std::string::npos);
+    TEST_ASSERT_TRUE(nets.find("Net2") != std::string::npos);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// addKnownNetwork Tests
+// ═══════════════════════════════════════════════════════════════════
+
+static void addKnownNetwork_local(const char* ssid, const char* password) {
+    for (int i = 0; i < knownNetworkCount; i++) {
+        if (strcmp(knownNetworks[i].ssid, ssid) == 0) {
+            strlcpy(knownNetworks[i].password, password, 65);
+            return;
+        }
+    }
+    if (knownNetworkCount < MAX_KNOWN_NETWORKS) {
+        strlcpy(knownNetworks[knownNetworkCount].ssid, ssid, 33);
+        strlcpy(knownNetworks[knownNetworkCount].password, password, 65);
+        knownNetworkCount++;
+    }
+}
+
+static void test_addKnownNetwork_new() {
+    knownNetworkCount = 0;
+    addKnownNetwork_local("HomeWiFi", "homepass");
+    TEST_ASSERT_EQUAL_INT(1, knownNetworkCount);
+    TEST_ASSERT_EQUAL_STRING("HomeWiFi", knownNetworks[0].ssid);
+    TEST_ASSERT_EQUAL_STRING("homepass", knownNetworks[0].password);
+}
+
+static void test_addKnownNetwork_update_existing() {
+    knownNetworkCount = 1;
+    strlcpy(knownNetworks[0].ssid, "HomeWiFi", 33);
+    strlcpy(knownNetworks[0].password, "oldpass", 65);
+    addKnownNetwork_local("HomeWiFi", "newpass");
+    TEST_ASSERT_EQUAL_INT(1, knownNetworkCount);
+    TEST_ASSERT_EQUAL_STRING("newpass", knownNetworks[0].password);
+}
+
+static void test_addKnownNetwork_max_limit() {
+    knownNetworkCount = MAX_KNOWN_NETWORKS;
+    addKnownNetwork_local("ExtraNet", "extrapass");
+    TEST_ASSERT_EQUAL_INT(MAX_KNOWN_NETWORKS, knownNetworkCount);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// tryConnectNetwork Tests
+// ═══════════════════════════════════════════════════════════════════
+
+static bool tryConnectNetwork_local(const char* ssid, const char* password, uint32_t timeoutMs) {
+    WiFi.disconnect();
+    delay(100);
+    if (password[0]) { WiFi.begin(ssid, password); }
+    else { WiFi.begin(ssid); }
+    uint32_t start = millis();
+    while (millis() - start < timeoutMs) {
+        if (WiFi.status() == WL_CONNECTED) { return true; }
+        delay(100);
+    }
+    WiFi.disconnect();
+    return false;
+}
+
+static void test_tryConnectNetwork_success() {
+    mock_wifi_status = WL_CONNECTED;
+    TEST_ASSERT_TRUE(tryConnectNetwork_local("TestSSID", "testpass", WIFI_CONNECT_TIMEOUT_MS));
+}
+
+static void test_tryConnectNetwork_fail() {
+    mock_wifi_status = 0;
+    TEST_ASSERT_FALSE(tryConnectNetwork_local("BadSSID", "badpass", 100));
+}
+
+static void test_tryConnectNetwork_open_network() {
+    mock_wifi_status = WL_CONNECTED;
+    TEST_ASSERT_TRUE(tryConnectNetwork_local("OpenNet", "", WIFI_CONNECT_TIMEOUT_MS));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// WiFi Mode Tests
+// ═══════════════════════════════════════════════════════════════════
+
+static void test_firstBoot_detected() {
+    knownNetworkCount = 0;
+    strlcpy(deviceSettings.devicePassword, "", sizeof(deviceSettings.devicePassword));
+    bool isFirstBoot = (knownNetworkCount == 0 && deviceSettings.devicePassword[0] == '\0');
+    TEST_ASSERT_TRUE(isFirstBoot);
+}
+
+static void test_runMode_detected() {
+    knownNetworkCount = 1;
+    strlcpy(knownNetworks[0].ssid, "Home", 33);
+    strlcpy(knownNetworks[0].password, "pass", 65);
+    strlcpy(deviceSettings.devicePassword, "secret", sizeof(deviceSettings.devicePassword));
+    bool isFirstBoot = (knownNetworkCount == 0 && deviceSettings.devicePassword[0] == '\0');
+    TEST_ASSERT_FALSE(isFirstBoot);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ESPUI Status Page Tests
+// ═══════════════════════════════════════════════════════════════════
+
+static void test_espui_creates_widgets() {
+    ESPUI.controls.clear();
+    ESPUI.separator("Settings");
+    uint16_t h = ESPUI.text("Hostname", NULL, ControlColor::Dark, "lifelog");
+    uint16_t s = ESPUI.text("Server Host", NULL, ControlColor::Dark, "192.168.1.1");
+    uint16_t pt = ESPUI.text("Server Port", NULL, ControlColor::Dark, "8444");
+    uint16_t btn = ESPUI.button("Save", NULL, ControlColor::None, "Save");
+    uint16_t lbl = ESPUI.label("IP", ControlColor::Dark, "192.168.1.100");
+    TEST_ASSERT_EQUAL_INT(5, ESPUI.controls.size());
+    TEST_ASSERT_EQUAL_STRING("lifelog", ESPUI.controls[h].value.c_str());
+    TEST_ASSERT_EQUAL_STRING("192.168.1.1", ESPUI.controls[s].value.c_str());
+    TEST_ASSERT_EQUAL_STRING("8444", ESPUI.controls[pt].value.c_str());
+    TEST_ASSERT_EQUAL_STRING("192.168.1.100", ESPUI.controls[lbl].value.c_str());
+}
+
+static void test_espui_update_label() {
+    ESPUI.controls.clear();
+    uint16_t lbl = ESPUI.label("Test", ControlColor::Dark, "initial");
+    ESPUI.updateLabel(lbl, "updated");
+    TEST_ASSERT_EQUAL_STRING("updated", ESPUI.controls[lbl].value.c_str());
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// mDNS Test
+// ═══════════════════════════════════════════════════════════════════
+
+static void test_mdns_setup() {
+    bool result = MDNS.begin("lifelog");
+    TEST_ASSERT_TRUE(result);
+    MDNS.addService("http", "tcp", 80);
+    TEST_PASS();
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Run All Tests
 // ═══════════════════════════════════════════════════════════════════
 
@@ -940,6 +1230,24 @@ void setUp() {
     mock_sd_open_should_fail = false;
     mock_ogg_streams.clear();
     mock_ogg_stream_idx = 0;
+    // Reset settings state
+    memset(&deviceSettings, 0, sizeof(deviceSettings));
+    knownNetworkCount = 0;
+    mock_prefs_strings.clear();
+    mock_prefs_ushorts.clear();
+    mock_prefs_uints.clear();
+    mock_prefs_bools.clear();
+    mock_prefs_uchars.clear();
+    mock_wm_ssid = "TestSSID";
+    mock_wm_pass = "testpass";
+    mock_wm_save_cb = nullptr;
+    mock_wm_portal_should_connect = true;
+    mock_wifi_ssid = "MockSSID";
+    mock_wifi_ip = "192.168.1.100";
+    mock_wifi_rssi = -50;
+    mock_wifi_event_handler = nullptr;
+    ESPUI.controls.clear();
+    mock_millis_value = 10000;
 }
 void tearDown() {}
 
@@ -1048,6 +1356,32 @@ int main() {
     RUN_TEST(test_write_opus_file_has_encoded_data);
     RUN_TEST(test_write_opus_file_open_failure);
     RUN_TEST(test_write_opus_file_multiple_frames);
+
+    // ── Device Settings ──
+    RUN_TEST(test_loadDeviceSettings);
+    RUN_TEST(test_loadDeviceSettings_saved);
+    RUN_TEST(test_saveDeviceSettings);
+
+    // ── addKnownNetwork ──
+    RUN_TEST(test_addKnownNetwork_new);
+    RUN_TEST(test_addKnownNetwork_update_existing);
+    RUN_TEST(test_addKnownNetwork_max_limit);
+
+    // ── tryConnectNetwork ──
+    RUN_TEST(test_tryConnectNetwork_success);
+    RUN_TEST(test_tryConnectNetwork_fail);
+    RUN_TEST(test_tryConnectNetwork_open_network);
+
+    // ── WiFi Mode ──
+    RUN_TEST(test_firstBoot_detected);
+    RUN_TEST(test_runMode_detected);
+
+    // ── ESPUI Status Page ──
+    RUN_TEST(test_espui_creates_widgets);
+    RUN_TEST(test_espui_update_label);
+
+    // ── mDNS ──
+    RUN_TEST(test_mdns_setup);
 
     UNITY_END();
     return 0;

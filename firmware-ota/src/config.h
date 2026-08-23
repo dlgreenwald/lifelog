@@ -11,10 +11,7 @@
 #define I2S_MIC_CLK  42
 #define I2S_MIC_DIN  41
 
-// Server
-#define SERVER_HOST    "192.168.68.190"
-#define SERVER_PORT    8444
-#define SERVER_PATH    "/api/v1/upload"
+// Server — API_KEY kept as fallback for deviceSettings.apiKey
 #define API_KEY        "07a12a33ae0f36b02e1a54ff158402efafeac9832b013592bd8e5f5061c7eb31"
 
 // ── Compile-time log levels ────────────────────────────────────────
