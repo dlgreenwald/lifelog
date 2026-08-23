@@ -162,16 +162,71 @@ cd firmware-ota
 # Build
 pio run
 
-# Flash via OTA (requires WiFi)
+# Flash via OTA (requires WiFi, and device already configured)
 pio run -t upload
 
-# Flash via USB (when OTA unavailable)
+# Flash via USB (first flash, or when OTA unavailable)
+# Full clean flash — bootloader + partitions + firmware + models:
+esptool.py --chip esp32s3 --port /dev/ttyACM1 erase_flash
 esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
-  write_flash 0x10000 .pio/build/xiao_esp32s3/firmware.bin
+  write_flash \
+    0x0 .pio/build/xiao_esp32s3/bootloader.bin \
+    0x8000 .pio/build/xiao_esp32s3/partitions.bin \
+    0x10000 .pio/build/xiao_esp32s3/firmware.bin
 
+# Pack and flash esp-sr models (see firmware-ota/README.md#model-partition)
+python3 -c "
+import struct, os
+MODEL_DIR = '.pio/libdeps/xiao_esp32s3/esp-sr/model'
+STR_LEN = 32
+def pack_string(s):
+    b = s.encode('utf-8')[:STR_LEN]
+    return b + b'\x00' * (STR_LEN - len(b))
+needed = {
+    'nsnet2': os.path.join(MODEL_DIR, 'nsnet_model/nsnet2'),
+    'mn4q8_cn': os.path.join(MODEL_DIR, 'multinet_model/mn4q8_cn'),
+}
+models = {}
+for name, path in needed.items():
+    files = {}
+    for f in sorted(os.listdir(path)):
+        fp = os.path.join(path, f)
+        if os.path.isfile(fp):
+            with open(fp, 'rb') as fh:
+                files[f] = fh.read()
+    if files: models[name] = files
+file_count = sum(len(v) for v in models.values())
+header_size = 4 + len(models) * (STR_LEN + 4) + file_count * (STR_LEN + 4 + 4)
+data_offsets = {}
+current_offset = header_size
+for name in sorted(models.keys()):
+    for fname in sorted(models[name].keys()):
+        data_offsets[(name, fname)] = current_offset
+        current_offset += len(models[name][fname])
+out = struct.pack('I', len(models))
+for name in sorted(models.keys()):
+    out += pack_string(name)
+    out += struct.pack('I', len(models[name]))
+    for fname in sorted(models[name].keys()):
+        out += pack_string(fname)
+        out += struct.pack('I', data_offsets[(name, fname)])
+        out += struct.pack('I', len(models[name][fname]))
+for name in sorted(models.keys()):
+    for fname in sorted(models[name].keys()):
+        out += models[name][fname]
+with open(os.path.join(MODEL_DIR, 'srmodels.bin'), 'wb') as f:
+    f.write(out)
+print(f'Packed {len(out)/1024:.0f} KB ({len(out)} bytes)')
+"
+esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
+  write_flash 0x610000 .pio/libdeps/xiao_esp32s3/esp-sr/model/srmodels.bin
+
+# Reset device — WiFi config portal appears on first boot
 # Monitor serial output
 pio device monitor
 ```
+
+For firmware-only updates (models already on device), see [firmware-ota/README.md](firmware-ota/README.md).
 
 ### What the firmware does
 
