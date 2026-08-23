@@ -1,11 +1,10 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
-#include <WiFiManager.h>
-#include <ArduinoOTA.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
-#include <ESPUI.h>
+#include <RisalUI.h>
+#include <WiFi.h>
 #include <esp_ota_ops.h>
 #include <esp_task_wdt.h>
 #include <esp_freertos_hooks.h>
@@ -19,6 +18,7 @@
 #include "commands.h"
 
 #define MAX_BOOT 3
+#define HOSTNAME "LifeLog"
 
 static Preferences prefs;
 static const char* NS = "ota";
@@ -125,136 +125,103 @@ static void addKnownNetwork(const char* ssid, const char* password) {
     }
 }
 
-// ── WiFi ───────────────────────────────────────────────────────────
+// ── RisalDash ──────────────────────────────────────────────────────
 
-#define CAPTIVE_PORTAL_STACK 8192
-#define RECONNECT_SCAN_INTERVAL_MS (15 * 60 * 1000)  // 15 minutes
-#define OTA_STACK 4096
+static RisalUI dash(HOSTNAME);
 
 // Task priorities (higher = more important)
-#define PRIO_OTA            7
 #define PRIO_AUDIO          5
-#define PRIO_CAPTIVE        4
-#define PRIO_LOOP           2
-#define PRIO_BACKGROUND     1
 
-static volatile bool wifiConnected = false;
-static TaskHandle_t captivePortalTaskHandle = NULL;
+// ── Dashboard widget state (bound by pointer) ──────────────────────
+// Settings (editable)
+static String cfgHostname;
+static String cfgServerHost;
+static String cfgServerPort;
+static String cfgServerPath;
+static String cfgApiKey;
+static String cfgDevicePw;
 
-static void onWiFiEvent(arduino_event_id_t event) {
-    if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) { wifiConnected = true; }
-    else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) { wifiConnected = false; }
-}
+// Status (read-only, updated in loop)
+static String statusWiFi;
+static String statusSignal;
+static String statusIP;
+static String statusUptime;
+static String statusSDStatus;
+static String statusSDFree;
+static String statusSDFiles;
+static String statusRecording;
+static String statusVAD;
+static String statusUploadQueue;
+static String statusFlushDrops;
 
-static bool tryConnectNetwork(const char* ssid, const char* password, uint32_t timeoutMs) {
-    LOG_WIFI(LOG_INFO, "Trying network: %s", ssid);
-    WiFi.disconnect();
-    delay(100);
-    if (password[0]) { WiFi.begin(ssid, password); }
-    else { WiFi.begin(ssid); }
-    uint32_t start = millis();
-    while (millis() - start < timeoutMs) {
-        if (WiFi.status() == WL_CONNECTED) {
-            LOG_WIFI(LOG_INFO, "Connected to %s: %s (RSSI %d dBm)",
-                     ssid, WiFi.localIP().toString().c_str(), WiFi.RSSI());
-            return true;
-        }
-        delay(100);
-    }
-    WiFi.disconnect();
-    return false;
-}
+// WiFi reconnection interval
+#define WIFI_RECONNECT_INTERVAL_MS (15 * 60 * 1000)
 
-// WiFiManager params and save callback
-static void saveParamsCallback() {
-    // Read from the WiFiManager params that were added to the portal
-    // WiFiManager populates the param values when the user submits the form
-    // We read them back via a separate mechanism — the portal params are
-    // set up in captivePortalTask with current values, and saveParamsCallback
-    // is called after the portal form is submitted.
-    //
-    // Note: WiFiManager.getWiFiSSID()/getWiFiPass() return the WiFi credentials
-    // from the portal form, not the custom params. The custom params are read
-    // via param.getValue() which WiFiManager calls the save callback after
-    // populating. Since we can't access the local params from here, we rely
-    // on the fact that captivePortalTask reads them after saveParamsCallback.
-    LOG_WIFI(LOG_INFO, "WiFiManager params saved");
-}
+// ── Dashboard setup ───────────────────────────────────────────────
 
-static void captivePortalTask(void* pvParameters) {
-    LOG_WIFI(LOG_INFO, "Starting captive portal (non-blocking)");
-    WiFiManager wm;
-    wm.setConfigPortalTimeout(0);
-    wm.setTitle("LifeLog Setup");
-    wm.setSaveParamsCallback(saveParamsCallback);
+static void setupDashboard() {
+    // Load saved settings into String variables
+    cfgHostname = deviceSettings.hostname;
+    cfgServerHost = deviceSettings.serverHost;
+    cfgServerPort = String(deviceSettings.serverPort);
+    cfgServerPath = deviceSettings.serverPath;
+    cfgApiKey = deviceSettings.apiKey;
+    cfgDevicePw = deviceSettings.devicePassword;
 
-    // Add custom parameters
-    WiFiManagerParameter h("hostname", "Device hostname (.local)", deviceSettings.hostname, 32);
-    WiFiManagerParameter sh("server_host", "Server host", deviceSettings.serverHost, 64);
-    String portStr = String(deviceSettings.serverPort);
-    WiFiManagerParameter sp("server_port", "Server port", portStr.c_str(), 6);
-    WiFiManagerParameter sp2("server_path", "Server path", deviceSettings.serverPath, 64);
-    WiFiManagerParameter ak("api_key", "API key", deviceSettings.apiKey, 128);
-    WiFiManagerParameter dp("device_pw", "Device password", deviceSettings.devicePassword, 64);
-    wm.addParameter(&h); wm.addParameter(&sh); wm.addParameter(&sp);
-    wm.addParameter(&sp2); wm.addParameter(&ak); wm.addParameter(&dp);
+    // ── OTA ──
+    dash.enableOTA();
 
-    // Set AP password if configured
-    const char* apPw = deviceSettings.devicePassword[0] ? deviceSettings.devicePassword : nullptr;
-    wm.startConfigPortal("LifeLog-Setup", apPw);  // Blocks in this task — audio continues on other cores
+    // ── Settings (editable) ──
+    dash.separator("Settings");
+    dash.text("Hostname (.local)", &cfgHostname, [](const String& v) {
+        strlcpy(deviceSettings.hostname, v.c_str(), sizeof(deviceSettings.hostname));
+    });
+    dash.text("Server Host", &cfgServerHost, [](const String& v) {
+        strlcpy(deviceSettings.serverHost, v.c_str(), sizeof(deviceSettings.serverHost));
+    });
+    dash.text("Server Port", &cfgServerPort, [](const String& v) {
+        deviceSettings.serverPort = atoi(v.c_str());
+    });
+    dash.text("Server Path", &cfgServerPath, [](const String& v) {
+        strlcpy(deviceSettings.serverPath, v.c_str(), sizeof(deviceSettings.serverPath));
+    });
+    dash.text("API Key", &cfgApiKey, [](const String& v) {
+        strlcpy(deviceSettings.apiKey, v.c_str(), sizeof(deviceSettings.apiKey));
+    });
+    dash.text("Device Password", &cfgDevicePw, [](const String& v) {
+        strlcpy(deviceSettings.devicePassword, v.c_str(), sizeof(deviceSettings.devicePassword));
+    });
+    dash.button("Save & Restart", "Save", []() {
+        saveDeviceSettings();
+        delay(500);
+        ESP.restart();
+    });
+    dash.button("Reconfigure WiFi", "Reconfigure", []() {
+        dash.forgetWiFi();
+    });
 
-    // Portal closed — read back the params
-    strlcpy(deviceSettings.hostname, h.getValue(), sizeof(deviceSettings.hostname));
-    strlcpy(deviceSettings.serverHost, sh.getValue(), sizeof(deviceSettings.serverHost));
-    deviceSettings.serverPort = atoi(sp.getValue());
-    strlcpy(deviceSettings.serverPath, sp2.getValue(), sizeof(deviceSettings.serverPath));
-    strlcpy(deviceSettings.apiKey, ak.getValue(), sizeof(deviceSettings.apiKey));
-    strlcpy(deviceSettings.devicePassword, dp.getValue(), sizeof(deviceSettings.devicePassword));
+    // ── WiFi Status ──
+    dash.separator("WiFi");
+    dash.label("Network", &statusWiFi);
+    dash.label("Signal", &statusSignal);
+    dash.label("IP Address", &statusIP);
 
-    // Add WiFi network from portal to known list
-    String newSSID = wm.getWiFiSSID();
-    String newPass = wm.getWiFiPass();
-    if (newSSID.length() > 0) {
-        addKnownNetwork(newSSID.c_str(), newPass.c_str());
-    }
-    saveDeviceSettings();
-    LOG_WIFI(LOG_INFO, "Settings saved: hostname=%s server=%s:%d networks=%d",
-             deviceSettings.hostname, deviceSettings.serverHost, deviceSettings.serverPort, knownNetworkCount);
+    // ── Device Status ──
+    dash.separator("Device Status");
+    dash.label("Uptime", &statusUptime);
 
-    LOG_WIFI(LOG_WARN, "Captive portal ended, restarting...");
-    delay(1000);
-    ESP.restart();
-    vTaskDelete(NULL);
-}
+    // ── SD Card ──
+    dash.separator("SD Card");
+    dash.label("Status", &statusSDStatus);
+    dash.label("Free Space", &statusSDFree);
+    dash.label("Files in /lifelog", &statusSDFiles);
 
-static void setupWiFi() {
-    WiFi.onEvent(onWiFiEvent);
-
-    // Check reconfig flag
-    Preferences p;
-    p.begin("device", true);
-    bool reconfig = p.getBool("reconfig", false);
-    p.end();
-    if (reconfig) {
-        Preferences pw;
-        pw.begin("device", false);
-        pw.putBool("reconfig", false);
-        pw.end();
-        LOG_WIFI(LOG_INFO, "Reconfiguration mode — starting captive portal");
-        xTaskCreatePinnedToCore(captivePortalTask, "captive", CAPTIVE_PORTAL_STACK, NULL, PRIO_CAPTIVE, &captivePortalTaskHandle, 1);
-        return;
-    }
-
-    // Try each known network
-    for (int i = 0; i < knownNetworkCount; i++) {
-        if (tryConnectNetwork(knownNetworks[i].ssid, knownNetworks[i].password, WIFI_CONNECT_TIMEOUT_MS)) {
-            return;  // Connected
-        }
-    }
-
-    // No network available — start captive portal in background
-    LOG_WIFI(LOG_WARN, "No known network in range, starting captive portal");
-    xTaskCreatePinnedToCore(captivePortalTask, "captive", CAPTIVE_PORTAL_STACK, NULL, PRIO_CAPTIVE, &captivePortalTaskHandle, 1);
+    // ── Audio ──
+    dash.separator("Audio");
+    dash.label("Recording", &statusRecording);
+    dash.label("VAD Mode", &statusVAD);
+    dash.label("Upload Queue", &statusUploadQueue);
+    dash.label("Flush Drops", &statusFlushDrops);
 }
 
 // ── mDNS ───────────────────────────────────────────────────────────
@@ -268,151 +235,6 @@ static void setupMDNS() {
     }
 }
 
-// ── OTA ────────────────────────────────────────────────────────────
-
-static void setupOTA() {
-    ArduinoOTA.setHostname(deviceSettings.hostname);
-    ArduinoOTA.onStart([]() {
-        LOG_OTA(LOG_INFO, "Start");
-        prefs.begin(NS, false);
-        prefs.putUChar("confirmed", 0);
-        prefs.putUChar("boots", 0);
-        prefs.end();
-    });
-    ArduinoOTA.onEnd([]() { LOG_OTA(LOG_INFO, "Done. Rebooting..."); });
-    ArduinoOTA.onProgress([](unsigned int p, unsigned int t) {
-        LOG_OTA(LOG_DEBUG, "%u%%", (p / (t / 100)));
-    });
-    ArduinoOTA.onError([](ota_error_t e) { LOG_OTA(LOG_ERROR, "Error %d", e); });
-    ArduinoOTA.begin();
-    LOG_OTA(LOG_INFO, "ArduinoOTA ready");
-}
-
-// ── OTA task (Core 1, priority 7 — highest) ───────────────────────
-
-static void otaTask(void* pvParameters) {
-    for (;;) {
-        ArduinoOTA.handle();
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-}
-
-// ── Auto-reconnect task (Core 1, priority 1) ──────────────────────
-
-static void autoReconnectTask(void* pvParameters) {
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(RECONNECT_SCAN_INTERVAL_MS));
-        if (WiFi.status() == WL_CONNECTED) continue;
-        LOG_WIFI(LOG_INFO, "Auto-reconnect: scanning for known networks...");
-        for (int i = 0; i < knownNetworkCount; i++) {
-            if (tryConnectNetwork(knownNetworks[i].ssid, knownNetworks[i].password, WIFI_CONNECT_TIMEOUT_MS)) {
-                LOG_WIFI(LOG_INFO, "Auto-reconnect: connected to %s", knownNetworks[i].ssid);
-                delay(2000);  // Let captive portal notice the disconnect
-                ESP.restart();
-                return;
-            }
-        }
-    }
-}
-
-// ── ESPUI status page ──────────────────────────────────────────────
-
-static uint16_t inpHostname, inpServerHost, inpServerPort, inpServerPath, inpApiKey, inpDevicePw;
-static uint16_t btnSave, btnReconfig;
-static uint16_t lblIP, lblWiFi, lblSignal, lblUptime;
-static uint16_t lblSDStatus, lblSDFree, lblSDFiles;
-static uint16_t lblRecording, lblVAD, lblUploadQueue, lblFlushDrops;
-
-static void saveSettingsCallback(Control* sender, int type) {
-    strlcpy(deviceSettings.hostname, ESPUI.getControl(inpHostname)->value.c_str(), sizeof(deviceSettings.hostname));
-    strlcpy(deviceSettings.serverHost, ESPUI.getControl(inpServerHost)->value.c_str(), sizeof(deviceSettings.serverHost));
-    deviceSettings.serverPort = atoi(ESPUI.getControl(inpServerPort)->value.c_str());
-    strlcpy(deviceSettings.serverPath, ESPUI.getControl(inpServerPath)->value.c_str(), sizeof(deviceSettings.serverPath));
-    strlcpy(deviceSettings.apiKey, ESPUI.getControl(inpApiKey)->value.c_str(), sizeof(deviceSettings.apiKey));
-    strlcpy(deviceSettings.devicePassword, ESPUI.getControl(inpDevicePw)->value.c_str(), sizeof(deviceSettings.devicePassword));
-    saveDeviceSettings();
-    delay(500);
-    ESP.restart();
-}
-
-static void reconfigWifiCallback(Control* sender, int type) {
-    Preferences p;
-    p.begin("device", false);
-    p.putBool("reconfig", true);
-    p.end();
-    delay(500);
-    ESP.restart();
-}
-
-static void setupStatusPage() {
-    ESPUI.setVerbosity(Verbosity::Quiet);
-    if (deviceSettings.devicePassword[0]) {
-        ESPUI.begin(deviceSettings.hostname, "admin", deviceSettings.devicePassword);
-    } else {
-        ESPUI.begin(deviceSettings.hostname);
-    }
-
-    ESPUI.separator("Settings");
-    inpHostname = ESPUI.text("Hostname (.local)", NULL, ControlColor::Dark, deviceSettings.hostname);
-    inpServerHost = ESPUI.text("Server Host", NULL, ControlColor::Dark, deviceSettings.serverHost);
-    inpServerPort = ESPUI.text("Server Port", NULL, ControlColor::Dark, String(deviceSettings.serverPort));
-    inpServerPath = ESPUI.text("Server Path", NULL, ControlColor::Dark, deviceSettings.serverPath);
-    inpApiKey = ESPUI.text("API Key", NULL, ControlColor::Dark, deviceSettings.apiKey);
-    inpDevicePw = ESPUI.text("Device Password (blank = no auth)", NULL, ControlColor::Dark, deviceSettings.devicePassword);
-    btnSave = ESPUI.button("Save & Restart", saveSettingsCallback, ControlColor::None, "Save");
-    btnReconfig = ESPUI.button("Reconfigure WiFi", reconfigWifiCallback, ControlColor::None, "Reconfigure");
-
-    ESPUI.separator("Device Status");
-    lblIP = ESPUI.label("IP Address", ControlColor::Dark, WiFi.localIP().toString());
-    lblWiFi = ESPUI.label("WiFi Network", ControlColor::Dark, WiFi.SSID());
-    lblSignal = ESPUI.label("Signal", ControlColor::Dark, String(WiFi.RSSI()) + " dBm");
-    lblUptime = ESPUI.label("Uptime", ControlColor::Dark, "0h 0m");
-
-    ESPUI.separator("SD Card");
-    lblSDStatus = ESPUI.label("Status", ControlColor::Dark, "Checking...");
-    lblSDFree = ESPUI.label("Free Space", ControlColor::Dark, "...");
-    lblSDFiles = ESPUI.label("Files in /lifelog", ControlColor::Dark, "...");
-
-    ESPUI.separator("Audio");
-    lblRecording = ESPUI.label("Recording", ControlColor::Dark, "Idle");
-    lblVAD = ESPUI.label("VAD Mode", ControlColor::Dark, "Off");
-    lblUploadQueue = ESPUI.label("Upload Queue", ControlColor::Dark, "0");
-    lblFlushDrops = ESPUI.label("Flush Drops", ControlColor::Dark, "0");
-}
-
-static void updateStatusPage() {
-    static uint32_t lastUpdate = 0;
-    if (millis() - lastUpdate < 5000) return;
-    lastUpdate = millis();
-
-    unsigned long sec = millis() / 1000;
-    ESPUI.updateLabel(lblUptime, String(sec/3600) + "h " + String((sec%3600)/60) + "m " + String(sec%60) + "s");
-    ESPUI.updateLabel(lblSignal, String(WiFi.RSSI()) + " dBm");
-
-    if (SD.cardType() != CARD_NONE) {
-        uint64_t freeBytes = SD.totalBytes() - SD.usedBytes();
-        ESPUI.updateLabel(lblSDStatus, "OK");
-        ESPUI.updateLabel(lblSDFree, String(freeBytes/1024) + " KB / " + String(SD.totalBytes()/(1024*1024)) + " MB");
-        int fileCount = 0;
-        File root = SD.open("/lifelog");
-        if (root && root.isDirectory()) {
-            File f = root.openNextFile();
-            while (f) { fileCount++; f = root.openNextFile(); }
-            root.close();
-        }
-        ESPUI.updateLabel(lblSDFiles, String(fileCount));
-    } else {
-        ESPUI.updateLabel(lblSDStatus, "No card");
-        ESPUI.updateLabel(lblSDFree, "N/A");
-        ESPUI.updateLabel(lblSDFiles, "N/A");
-    }
-
-    ESPUI.updateLabel(lblRecording, recording ? "Active" : "Idle");
-    ESPUI.updateLabel(lblVAD, vadMode ? "On" : "Off");
-    ESPUI.updateLabel(lblUploadQueue, String(getUploadQueueDepth()));
-    ESPUI.updateLabel(lblFlushDrops, String(getFlushDropCount()));
-}
-
 // ── SD Card ────────────────────────────────────────────────────────
 
 static void setupSD() {
@@ -421,16 +243,16 @@ static void setupSD() {
         LOG_SD(LOG_ERROR, "Mount failed");
         return;
     }
-    
+
     uint8_t t = SD.cardType();
     if (t == CARD_NONE) {
         LOG_SD(LOG_WARN, "No card detected");
         return;
     }
-    
+
     const char* names[] = {"UNKNOWN","MMC","SD","SDHC"};
     LOG_SD(LOG_INFO, "Mounted: %s %llu MB @ 25MHz", names[t], SD.cardSize()/(1024*1024));
-    
+
     if (!SD.exists("lifelog")) {
         SD.mkdir("lifelog");
         LOG_SD(LOG_INFO, "Created /lifelog");
@@ -451,40 +273,24 @@ void setup() {
     bootInit();
     loadDeviceSettings();
 
-    bool isFirstBoot = (knownNetworkCount == 0 && deviceSettings.devicePassword[0] == '\0');
+    setupSD();
+    setupDashboard();
 
-    setupWiFi();
+    // dash.begin() handles WiFi:
+    // - First boot (no saved creds) → captive portal AP, blocks until configured
+    // - Saved creds → STA mode, connects to known network
+    dash.begin();
 
-    if (isFirstBoot) {
-        // Initial Setup Mode — only SD for config storage, NO audio capture
-        setupSD();
-        LOG_SYSTEM(LOG_INFO, "Initial setup — connect to LifeLog-Setup AP to configure device");
-    } else {
-        // Run Mode — full functionality
-        setupSD();
-        audioInit();
+    setupMDNS();
+    audioInit();
 
-        // Start OTA task (runs in both WiFi-connected and captive portal modes)
-        setupOTA();
-        xTaskCreatePinnedToCore(otaTask, "ota", OTA_STACK, NULL, PRIO_OTA, NULL, 1);
-
-        if (WiFi.status() == WL_CONNECTED) {
-            setupMDNS();
-            commandsInit();
-            setupStatusPage();
-        } else {
-            // Captive portal running — start auto-reconnect scanner
-            xTaskCreatePinnedToCore(autoReconnectTask, "reconnect", 4096, NULL, PRIO_BACKGROUND, NULL, 1);
-        }
-
-        // Audio tasks — Core 0 gets I2S only, Core 1 gets processing
-        xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, PRIO_AUDIO, NULL, 0);
-        xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, &audioTaskHandle, 1);
-        xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, PRIO_AUDIO, &writerTaskHandle, 1);
-        setWriterTaskHandle(writerTaskHandle);
-        esp_task_wdt_delete(NULL);
-        esp_task_wdt_delete(xTaskGetHandle("idle"));
-    }
+    // Audio tasks — Core 0 gets I2S only, Core 1 gets processing
+    xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, PRIO_AUDIO, NULL, 0);
+    xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, &audioTaskHandle, 1);
+    xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, PRIO_AUDIO, &writerTaskHandle, 1);
+    setWriterTaskHandle(writerTaskHandle);
+    esp_task_wdt_delete(NULL);
+    esp_task_wdt_delete(xTaskGetHandle("idle"));
 
     bootConfirm();
 }
@@ -548,11 +354,14 @@ static void logStats() {
 }
 
 void loop() {
-    // loop() runs at low priority (2) — ESPUI stats update, log stats.
-    // OTA is handled by dedicated otaTask at priority 7.
-    // Audio tasks at priority 5 always preempt this.
-    if (WiFi.status() == WL_CONNECTED) {
-        updateStatusPage();
+    // WiFi reconnection: if disconnected, try reconnecting periodically
+    static uint32_t lastReconnectAttempt = 0;
+    if (WiFi.status() != WL_CONNECTED && millis() - lastReconnectAttempt > WIFI_RECONNECT_INTERVAL_MS) {
+        lastReconnectAttempt = millis();
+        LOG_WIFI(LOG_INFO, "WiFi disconnected — reconnecting...");
+        WiFi.reconnect();
     }
+
+    dash.update();  // Pushes changed widget values to browser via WebSocket
     logStats();
 }
