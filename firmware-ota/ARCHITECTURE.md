@@ -254,7 +254,7 @@ flowchart TB
     K --> L
     L --> M["esp_task_wdt_delete(NULL)<br/>Remove loop + idle from WDT"]
     M --> N["bootConfirm()<br/>NVS: confirmed=1, boots=0"]
-    N --> O['Log "Ready! AFE active"']
+    N --> O["Log Ready! AFE active"]
 ```
 
 ## Opus/OGG Encoding
