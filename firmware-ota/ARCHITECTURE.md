@@ -6,68 +6,56 @@ This document describes the architecture of the ESP32-S3 firmware for the LifeLo
 
 The firmware runs on a Seeed XIAO ESP32-S3 Sense (dual-core 240MHz, 8MB PSRAM, 8MB flash). Audio is captured from the built-in PDM microphone, processed through esp-sr for noise suppression and voice activity detection, encoded to Opus, stored on the SD card, and uploaded to the LifeLog server over WiFi.
 
-```plantuml
-@startuml
-skinparam backgroundColor white
-skinparam componentStyle rectangle
+```mermaid
+graph TB
+    subgraph Hardware["Hardware"]
+        mic["PDM Mic<br/>(GPIO 42/41)"]
+        sd["SD Card<br/>(GPIO 21, SPI 25MHz)"]
+        wifi["WiFi<br/>(ESP32-S3)"]
+    end
 
-rectangle "Hardware" {
-  component "PDM Mic\n(GPIO 42/41)" as mic
-  component "SD Card\n(GPIO 21, SPI 25MHz)" as sd
-  component "WiFi\n(ESP32-S3)" as wifi
-}
+    subgraph Core0["Core 0"]
+        feed["afeFeedTask<br/>8KB stack, pri=5"]
+    end
 
-rectangle "Core 0" {
-  component "afeFeedTask\n8KB stack, pri=5" as feed
-}
+    subgraph Core1["Core 1"]
+        fetch["afeFetchTask<br/>8KB stack, pri=5"]
+        writer["writerTask<br/>48KB stack, pri=5"]
+        uploader["uploadWorkerTask<br/>8KB stack, pri=1"]
+        loop["Arduino loop<br/>(OTA + stats)"]
+    end
 
-rectangle "Core 1" {
-  component "afeFetchTask\n8KB stack, pri=5" as fetch
-  component "writerTask\n48KB stack, pri=5" as writer
-  component "uploadWorkerTask\n8KB stack, pri=1" as uploader
-  component "Arduino loop\n(OTA + stats)" as loop
-}
+    subgraph Shared["Shared"]
+        ring["Ring Buffer<br/>32 slots × 512 samples"]
+        queue["Upload Queue<br/>8 slots"]
+        mutex["sdMutex<br/>(Recursive)"]
+    end
 
-rectangle "Shared" {
-  component "Ring Buffer\n32 slots × 512 samples" as ring
-  component "Upload Queue\n8 slots" as queue
-  component "sdMutex\n(Recursive)" as mutex
-}
+    afe["esp-sr AFE<br/>(NSNET2 + WebRTC VAD)"]
+    opus["Opus Encoder<br/>(24kbps, 20ms frames)"]
+    server["Server<br/>192.168.68.190:8444"]
 
-cloud "esp-sr AFE\n(NSNET2 + WebRTC VAD)" as afe
-cloud "Opus Encoder\n(24kbps, 20ms frames)" as opus
-cloud "Server\n192.168.68.190:8444" as server
+    mic -->|"I2S DMA<br/>4×1024 samples"| feed
+    feed -->|"afe_handle->feed()"| afe
+    afe -->|"afe_handle->fetch()<br/>NS-cleaned audio + VAD state"| fetch
+    fetch -->|"Ring buffer write"| ring
+    ring -->|"Ring buffer read"| writer
+    writer -->|"PCM frames"| opus
+    opus -->|"Opus/OGG files<br/>(/lifelog/rec_*.opus)"| sd
+    writer -->|"UploadRequest<br/>(on voice end)"| queue
+    queue -->|"xQueueReceive"| uploader
+    uploader -->|"Read file<br/>(sdMutex held)"| sd
+    uploader -->|"HTTP POST"| wifi
+    wifi -->|"multipart upload"| server
 
-mic -down-> feed : I2S DMA\n4×1024 samples
-feed -right-> afe : afe_handle->feed()
-afe -down-> fetch : afe_handle->fetch()\nNS-cleaned audio + VAD state
-fetch -down-> ring : Ring buffer write
-ring -down-> writer : Ring buffer read
-writer -right-> opus : PCM frames
-opus -down-> sd : Opus/OGG files\n(/lifelog/rec_*.opus)
-writer -right-> queue : UploadRequest\n(on voice end)
-queue -down-> uploader : xQueueReceive
-uploader -right-> sd : Read file\n(sdMutex held)
-uploader -right-> wifi : HTTP POST
-wifi -right-> server : multipart upload
-
-feed -[hidden]right-> fetch
-fetch -[hidden]right-> writer
-writer -[hidden]right-> uploader
-
-note right of feed
-  **Core 0** — isolated I2S reads
-  Keeps DMA off core 1 where
-  SD and WiFi run
-end note
-
-note right of writer
-  **Core 1** — all processing + I/O
-  Largest stack (48KB) for
-  Opus encode + OGG mux
-end note
-@enduml
+    style Core0 fill:#e8f5e9
+    style Core1 fill:#e3f2fd
+    style Shared fill:#fff3e0
+    style Hardware fill:#fce4ec
 ```
+
+> **Core 0** — isolated I2S reads. Keeps DMA off core 1 where SD and WiFi run.
+> **Core 1** — all processing + I/O. Largest stack (48KB) for Opus encode + OGG mux.
 
 ## Core Assignment
 
@@ -78,194 +66,131 @@ The dual-core ESP32-S3 is split deliberately:
 | **Core 0** | `afeFeedTask` only | Isolates I2S DMA reads from SD/WiFi contention. DMA and FSPI share internal bus resources — keeping DMA on a separate core prevents bus conflicts. |
 | **Core 1** | `afeFetchTask`, `writerTask`, `uploadWorkerTask`, Arduino `loop()` | All audio processing, file I/O, and network operations run here. Tasks yield via timeouts, mutexes, and queue operations so the scheduler can interleave them. |
 
-```plantuml
-@startuml
-skinparam backgroundColor white
+```mermaid
+graph TB
+    subgraph Core0["Core 0 (CPU0)"]
+        feed["afeFeedTask<br/>Priority: 5<br/>Stack: 8KB"]
+    end
 
-rectangle "Core 0 (CPU0)" as c0 {
-  rectangle "afeFeedTask\nPriority: 5\nStack: 8KB" as feed
-  note bottom of feed
-    Reads I2S PDM mic (100ms timeout)
-    Feeds raw audio into AFE pipeline
-    Yields to WDT via i2s_read timeout
-  end note
-}
+    subgraph Core1["Core 1 (CPU1)"]
+        fetch["afeFetchTask<br/>Priority: 5<br/>Stack: 8KB"]
+        writer["writerTask<br/>Priority: 5<br/>Stack: 48KB"]
+        uploader["uploadWorkerTask<br/>Priority: 1<br/>Stack: 8KB"]
+        loop["Arduino loop()<br/>Priority: 1<br/>Stack: default"]
+    end
 
-rectangle "Core 1 (CPU1)" as c1 {
-  rectangle "afeFetchTask\nPriority: 5\nStack: 8KB" as fetch
-  rectangle "writerTask\nPriority: 5\nStack: 48KB" as writer
-  rectangle "uploadWorkerTask\nPriority: 1\nStack: 8KB" as uploader
-  rectangle "Arduino loop()\nPriority: 1\nStack: default" as loop
-}
+    feed -->|"raw audio<br/>(AFE pipeline)"| fetch
+    fetch -->|"ring buffer<br/>notification"| writer
+    writer -->|"upload queue"| uploader
 
-feed -right-> fetch : raw audio\n(AFE pipeline)
-fetch -down-> writer : ring buffer\nnotification
-writer -down-> uploader : upload queue
-
-note bottom of c0
-  **Why separate cores?**
-  I2S DMA and FSPI (SD card) share
-  internal bus resources on ESP32-S3.
-  Running DMA on core 0 prevents
-  bus contention with SD writes.
-end note
-
-note bottom of c1
-  **Why core 1 for everything else?**
-  - afeFetch needs fast access to ring buffer
-  - writer needs Opus encode + SD write
-  - uploader is low-priority background work
-  - OTA runs in Arduino loop
-end note
-@enduml
+    style Core0 fill:#e8f5e9
+    style Core1 fill:#e3f2fd
 ```
+
+> **Why separate cores?** I2S DMA and FSPI (SD card) share internal bus resources on ESP32-S3. Running DMA on core 0 prevents bus contention with SD writes.
+>
+> **Why core 1 for everything else?** afeFetch needs fast access to ring buffer; writer needs Opus encode + SD write; uploader is low-priority background work; OTA runs in Arduino loop.
 
 ## Audio Pipeline
 
 The audio pipeline transforms raw PDM microphone samples into Opus-encoded OGG files on the SD card. OGG pages are first buffered in PSRAM (≥4KB) before opening the SD file, eliminating SD latency during voice onset. Short utterances (<4KB) are discarded without touching SD.
 
-```plantuml
-@startuml
-skinparam backgroundColor white
-skinparam activityFontSize 12
+```mermaid
+flowchart TB
+    subgraph Core0["Core 0"]
+        A["afeFeedTask"] --> B["i2s_read() — 100ms timeout<br/>512 samples × 2 bytes<br/>DMA: 4×1024 buffers"]
+        B --> C["afe_handle->feed(raw_audio)<br/>esp-sr AFE pipeline processes in-place"]
+    end
 
-|Core 0|
-start
-:afeFeedTask;
-:i2s_read() — 100ms timeout;
-note right: 512 samples × 2 bytes\nDMA: 4×1024 buffers
-:afe_handle->feed(raw_audio);
-note right: esp-sr AFE pipeline\nprocesses in-place
+    subgraph Core1["Core 1"]
+        D["afeFetchTask"] --> E["afe_handle->fetch()<br/>Returns: NS-cleaned audio,<br/>VAD state, wake word (disabled)"]
 
-|Core 1|
-:afeFetchTask;
-:afe_handle->fetch();
-note right
-  Returns:
-  - NS-cleaned audio (noise suppression)
-  - VAD state (voice/none)
-  - Wake word detection (disabled)
-end note
+        E --> F{VAD state<br/>changed?}
 
-if (VAD state changed?) then (voice start)
-  :Set recording = true;
-  :Prepend VAD cache\n(8192 samples pre-trigger);
-  :Init OGG stream in memory\n(copy pre-generated headers);
-  :xTaskNotifyGive(writerTask);
-elseif (voice continued) then
-  :Write 512 samples to ring buffer;
-  :xTaskNotifyGive(writerTask);
-elseif (voice end) then
-  :Set recording = false;
-  :Write EOS marker to ring buffer;
-  :xTaskNotifyGive(writerTask);
-else (no change)
-endif
+        F -->|"voice start"| G["Set recording = true<br/>Prepend VAD cache (8192 samples)<br/>Init OGG stream in memory<br/>xTaskNotifyGive(writerTask)"]
+        F -->|"voice continued"| H["Write 512 samples to ring buffer<br/>xTaskNotifyGive(writerTask)"]
+        F -->|"voice end"| I["Set recording = false<br/>Write EOS marker to ring buffer<br/>xTaskNotifyGive(writerTask)"]
+        F -->|"no change"| J[skip]
 
-:writerTask;
-if (ring buffer has data?) then (yes)
-  :Read 512 samples from ring buffer;
-  :Accumulate into pcm_buf (8KB);
-  while (pcm_buf has ≥320 samples?) do (Opus frame)
-    :Encode 20ms frame (320 samples);
-    :Drain OGG pages to buffer or SD;
-    note right
-      Before 4KB: buffer in PSRAM
-      ≥4KB: open SD file, flush buffer
-      After flush: write directly to SD
-    end note
-  endwhile
-else (empty)
-  :Wait for ring buffer notification;
-endif
+        K["writerTask"] --> L{Ring buffer<br/>has data?}
 
-if (recording ended?) then (yes)
-  if (pages_flushed?) then (yes)
-    :Write EOS page;
-    :Flush + close file;
-    :Queue upload request;
-  else (short utterance)
-    :Discard buffered pages;
-    note right: No SD write for\nutterances <4KB
-  endif
-else (no)
-endif
+        L -->|"yes"| M["Read 512 samples from ring buffer<br/>Accumulate into pcm_buf (8KB)"]
+        M --> N{pcm_buf ≥<br/>320 samples?}
+        N -->|"yes"| O["Encode 20ms frame (320 samples)<br/>Drain OGG pages to buffer or SD<br/>Before 4KB: buffer in PSRAM<br/>≥4KB: open SD file, flush buffer"]
+        O --> N
+        N -->|"no"| K
+        L -->|"empty"| K
 
-:uploadWorkerTask;
-if (upload queue has request?) then (yes)
-  :Read file from SD;
-  note right: 4KB chunks\nsdMutex yield between chunks
-  :HTTP POST multipart/form-data;
-  if (success?) then
-    :Delete file from SD;
-  else (fail)
-    :Log warning, keep file;
-  endif
-else (empty)
-  :vTaskDelay(100ms);
-endif
+        G --> K
+        H --> K
+        I --> K
 
-stop
-@enduml
+        K --> P{Recording<br/>ended?}
+        P -->|"yes"| Q{Pages<br/>flushed?}
+        Q -->|"yes"| R["Write EOS page<br/>Flush + close file<br/>Queue upload request"]
+        Q -->|"no (short utterance)"| S["Discard buffered pages<br/>No SD write for utterances <4KB"]
+        P -->|"no"| K
+
+        T["uploadWorkerTask"] --> U{Upload queue<br/>has request?}
+        U -->|"yes"| V["Read file from SD<br/>4KB chunks, sdMutex yield between chunks"]
+        V --> W["HTTP POST multipart/form-data"]
+        W --> X{Success?}
+        X -->|"yes"| Y["Delete file from SD"]
+        X -->|"no"| Z["Log warning, keep file"]
+        U -->|"empty"| AA["vTaskDelay(100ms)"]
+    end
+
+    C --> D
+
+    style Core0 fill:#e8f5e9
+    style Core1 fill:#e3f2fd
 ```
 
 ## Shared State and Synchronization
 
 All shared state between tasks is protected by mutexes or FreeRTOS primitives.
 
-```plantuml
-@startuml
-skinparam backgroundColor white
-skinparam componentStyle rectangle
+```mermaid
+graph TB
+    subgraph SharedState["Shared State"]
+        sd_mutex["sdMutex<br/>(Recursive Mutex)"]
+        ring_mutex["ring_mutex<br/>(Mutex)"]
+        upload_q["uploadQueue<br/>(FreeRTOS Queue, depth 8)"]
+        head["ring_head<br/>volatile uint32_t"]
+        tail["ring_tail<br/>volatile uint32_t"]
+        used["ring_used[32]<br/>volatile bool[]"]
+        recording["recording<br/>volatile bool"]
+        utt_id["utteranceId<br/>volatile uint32_t"]
+        chunk_idx["chunkIndex<br/>volatile uint32_t"]
+        is_final["isFinal<br/>volatile bool"]
+        ogg_buf["ogg_buf<br/>PSRAM 16KB"]
+        flushed["pages_flushed<br/>volatile bool"]
+    end
 
-rectangle "Shared State" {
-  rectangle "sdMutex\n(Recursive Mutex)" as sd_mutex
-  rectangle "ring_mutex\n(Mutex)" as ring_mutex
-  rectangle "uploadQueue\n(FreeRTOS Queue, depth 8)" as upload_q
+    fetch["afeFetchTask"]
+    writer["writerTask"]
+    uploader["uploadWorkerTask"]
 
-  rectangle "ring_head\nvolatile uint32_t" as head
-  rectangle "ring_tail\nvolatile uint32_t" as tail
-  rectangle "ring_used[32]\nvolatile bool[]" as used
-  rectangle "recording\nvolatile bool" as recording
-  rectangle "utteranceId\nvolatile uint32_t" as utt_id
-  rectangle "chunkIndex\nvolatile uint32_t" as chunk_idx
-  rectangle "isFinal\nvolatile bool" as is_final
-  rectangle "ogg_buf\nPSRAM 16KB" as ogg_buf
-  rectangle "pages_flushed\nvolatile bool" as flushed
-}
+    fetch -->|"acquires to write ring buffer"| ring_mutex
+    fetch -->|"writes VAD state"| recording
+    fetch -->|"writes"| utt_id
+    fetch -->|"writes"| chunk_idx
+    fetch -->|"writes"| is_final
 
-rectangle "afeFetchTask" as fetch
-rectangle "writerTask" as writer
-rectangle "uploadWorkerTask" as uploader
+    writer -->|"acquires to read ring buffer"| ring_mutex
+    writer -->|"reads VAD state"| recording
+    writer -->|"acquires for SD writes"| sd_mutex
+    writer -->|"xQueueSend"| upload_q
 
-fetch -right-> ring_mutex : acquires to\nwrite ring buffer
-fetch -right-> recording : writes\nVAD state
-fetch -right-> utt_id : writes
-fetch -right-> chunk_idx : writes
-fetch -right-> is_final : writes
+    uploader -->|"acquires for SD reads"| sd_mutex
+    uploader -->|"xQueueReceive"| upload_q
 
-writer -down-> ring_mutex : acquires to\nread ring buffer
-writer -down-> recording : reads\nVAD state
-writer -down-> sd_mutex : acquires for\nSD writes
-writer -right-> upload_q : xQueueSend
-
-uploader -left-> sd_mutex : acquires for\nSD reads
-uploader -left-> upload_q : xQueueReceive
-
-note bottom of sd_mutex
-  **sdMutex** is recursive — allows
-  nested locking from upload stream
-  chunks (4KB read → release → re-acquire)
-end note
-
-note bottom of ring_mutex
-  **ring_mutex** guards ring buffer
-  head/tail/used[] between
-  afeFetchTask (producer) and
-  writerTask (consumer)
-end note
-@enduml
+    style SharedState fill:#fff3e0
 ```
+
+> **sdMutex** is recursive — allows nested locking from upload stream chunks (4KB read → release → re-acquire).
+>
+> **ring_mutex** guards ring buffer head/tail/used[] between afeFetchTask (producer) and writerTask (consumer).
 
 ### Ring Buffer Detail
 
@@ -282,106 +207,54 @@ The ring buffer decouples the real-time audio capture from the variable-latency 
 | Consumer | `writerTask` (reads `ring_tail`) |
 | Overflow | Oldest slot dropped, `flushDropCount++` |
 
-```plantuml
-@startuml
-skinparam backgroundColor white
+```mermaid
+graph TB
+    subgraph RingBuffer["Ring Buffer (32 slots)"]
+        s0["slot 0"]
+        s1["slot 1"]
+        s2["slot 2"]
+        s3["..."]
+        s15["slot 31"]
+    end
 
-rectangle "Ring Buffer (32 slots)" {
-  collections "slot 0" as s0
-  collections "slot 1" as s1
-  collections "slot 2" as s2
-  collections "..." as s3
-  collections "slot 31" as s15
+    producer["afeFetchTask<br/>(Producer)"]
+    consumer["writerTask<br/>(Consumer)"]
 
-  s0 -[hidden]right-> s1
-  s1 -[hidden]right-> s2
-  s2 -[hidden]right-> s3
-  s3 -[hidden]right-> s15
-}
+    producer -->|"advances"| ring_head["ring_head"]
+    consumer -->|"advances"| ring_tail["ring_tail"]
 
-rectangle "afeFetchTask\n(Producer)" as producer
-rectangle "writerTask\n(Consumer)" as consumer
-
-producer -down-> ring_head : advances
-consumer -down-> ring_tail : advances
-
-note as n1
-  **Flow:**
-  1. afeFetchTask writes to ring_used[ring_head]
-  2. Advances ring_head = (ring_head + 1) % 32
-  3. Notifies writerTask via xTaskNotifyGive
-  4. writerTask reads from ring_used[ring_tail]
-  5. Advances ring_tail = (ring_tail + 1) % 32
-
-  **Overflow:**
-  If ring_used[next_head] is true (slot not consumed),
-  oldest slot is dropped and ring_tail advances.
-end note
-@enduml
+    style RingBuffer fill:#e3f2fd
 ```
+
+> **Flow:**
+> 1. afeFetchTask writes to ring_used[ring_head]
+> 2. Advances ring_head = (ring_head + 1) % 32
+> 3. Notifies writerTask via xTaskNotifyGive
+> 4. writerTask reads from ring_used[ring_tail]
+> 5. Advances ring_tail = (ring_tail + 1) % 32
+>
+> **Overflow:** If ring_used[next_head] is true (slot not consumed), oldest slot is dropped and ring_tail advances.
 
 ## Startup Sequence
 
-```plantuml
-@startuml
-skinparam backgroundColor white
-
-start
-:Serial.begin(115200);
-:Delay 1000ms;
-
-:bootInit();
-note right: Check NVS boot counter\nand confirmed flag
-
-:setupWiFi();
-note right
-  WiFiManager captive portal
-  AP: LifeLog-Setup
-  Timeout: 120s
-end note
-
-:setupSD();
-note right
-  SD.begin(SD_CS_PIN, SPI, 25000000)
-  25MHz SPI clock
-  Creates /lifelog/ if missing
-end note
-
-:audioInit();
-note right
-  - Init I2S PDM (16kHz, mono)
-  - Init esp-sr AFE (NSNET2 + WebRTC VAD)
-  - Init Opus encoder (24kbps, 20ms frames)
-  - Init OGG mux
-  - Create ring buffer
-  - Create upload queue (depth 8)
-end note
-
-:setupOTA();
-note right: ArduinoOTA init\nHostname: lifelog
-
-:commandsInit();
-note right: Serial command parser
-
-fork
-  :xTaskCreatePinnedToCore\nafe_feed → Core 0;
-fork again
-  :xTaskCreatePinnedToCore\nafe_fetch → Core 1;
-fork again
-  :xTaskCreatePinnedToCore\nwriter → Core 1;
-end fork
-
-:setWriterTaskHandle();
-
-:esp_task_wdt_delete(NULL);
-note right: Remove loop + idle from WDT
-
-:bootConfirm();
-note right: NVS: confirmed=1, boots=0
-
-:Log "Ready! AFE active";
-stop
-@enduml
+```mermaid
+flowchart TB
+    A["Serial.begin(115200)"] --> B["Delay 1000ms"]
+    B --> C["bootInit()<br/>Check NVS boot counter<br/>and confirmed flag"]
+    C --> D["setupWiFi()<br/>WiFiManager captive portal<br/>AP: LifeLog-Setup<br/>Timeout: 120s"]
+    D --> E["setupSD()<br/>SD.begin(SD_CS_PIN, SPI, 25000000)<br/>25MHz SPI clock<br/>Creates /lifelog/ if missing"]
+    E --> F["audioInit()<br/>Init I2S PDM (16kHz, mono)<br/>Init esp-sr AFE (NSNET2 + WebRTC VAD)<br/>Init Opus encoder (24kbps, 20ms frames)<br/>Init OGG mux<br/>Create ring buffer<br/>Create upload queue (depth 8)"]
+    F --> G["setupOTA()<br/>ArduinoOTA init<br/>Hostname: lifelog"]
+    G --> H["commandsInit()<br/>Serial command parser"]
+    H --> I["xTaskCreatePinnedToCore<br/>afe_feed → Core 0"]
+    H --> J["xTaskCreatePinnedToCore<br/>afe_fetch → Core 1"]
+    H --> K["xTaskCreatePinnedToCore<br/>writer → Core 1"]
+    I --> L["setWriterTaskHandle()"]
+    J --> L
+    K --> L
+    L --> M["esp_task_wdt_delete(NULL)<br/>Remove loop + idle from WDT"]
+    M --> N["bootConfirm()<br/>NVS: confirmed=1, boots=0"]
+    N --> O['Log "Ready! AFE active"']
 ```
 
 ## Opus/OGG Encoding
@@ -410,76 +283,46 @@ granulepos += frame_size * 48000 / 16000  // = frame_size * 3
 
 ## Error Handling
 
-```plantuml
-@startuml
-skinparam backgroundColor white
-skinparam activityFontSize 11
+```mermaid
+flowchart TB
+    Start(["start"])
 
-start
+    Start --> BR{NVS boots > MAX_BOOT<br/>AND not confirmed?}
+    BR -->|"yes"| BR1["Stay in current state<br/>Don't run setup()"]
+    BR -->|"no"| BR2["Proceed with setup()"]
+    BR1 -.->|"Prevents boot loop<br/>after bad OTA"| AFE
 
-partition "Boot Rollback" {
-  if (NVS boots > MAX_BOOT (3) AND not confirmed?) then (yes)
-    :Stay in current state;
-    :Don't run setup();
-    note right: Prevents boot loop\nafter bad OTA
-  else (no)
-    :Proceed with setup();
-  endif
-}
+    BR2 --> AFE
+    AFE{Model partition<br/>missing or empty?}
+    AFE -->|"yes"| AFE1["Log error 'AFE disabled'<br/>afeFeedTask + afeFetchTask<br/>self-delete"]
+    AFE -->|"no"| AFE2["Initialize AFE pipeline"]
+    AFE1 -.->|"Device still boots<br/>but no audio processing"| RBO
+    AFE2 --> RBO
 
-partition "AFE Failure" {
-  if (model partition missing or empty?) then (yes)
-    :Log error "AFE disabled";
-    :afeFeedTask + afeFetchTask\nself-delete;
-    note right: Device still boots\nbut no audio processing
-  else (no)
-    :Initialize AFE pipeline;
-  endif
-}
+    RBO{ring_used next_head<br/>is true?}
+    RBO -->|"yes"| RBO1["Drop oldest slot<br/>flushDropCount++<br/>Advance ring_tail"]
+    RBO -->|"no"| RBO2["Write to ring buffer"]
+    RBO1 -.->|"Graceful degradation<br/>lose old audio, keep new"| SD
+    RBO2 --> SD
 
-partition "Ring Buffer Overflow" {
-  if (ring_used[next_head] is true?) then (yes)
-    :Drop oldest slot;
-    :flushDropCount++;
-    :Advance ring_tail;
-    note right: Graceful degradation\n— lose old audio, keep new
-  else (no)
-    :Write to ring buffer;
-  endif
-}
+    SD{SD.begin<br/>fails?}
+    SD -->|"yes"| SD1["Log error<br/>SD unavailable"]
+    SD -->|"no"| SD2["SD ready"]
+    SD1 -.->|"No retry — device<br/>continues without storage"| UP
+    SD2 --> UP
 
-partition "SD Failure" {
-  if (SD.begin() fails?) then (yes)
-    :Log error;
-    :SD unavailable;
-    note right: No retry — device\ncontinues without storage
-  else (no)
-    :SD ready;
-  endif
-}
+    UP{HTTP POST<br/>fails?}
+    UP -->|"yes"| UP1["Log warning<br/>File stays on SD"]
+    UP -->|"no"| UP2["Delete file from SD"]
+    UP1 -.->|"Single attempt<br/>No retry — file preserved<br/>for later upload"| WD
+    UP2 --> WD
 
-partition "Upload Failure" {
-  if (HTTP POST fails?) then (yes)
-    :Log warning;
-    :File stays on SD;
-    note right: Single attempt\nNo retry — file preserved\nfor later upload
-  else (no)
-    :Delete file from SD;
-  endif
-}
+    WD["Watchdog<br/>After setup():<br/>- Loop task removed from WDT<br/>- Idle task removed from WDT<br/>- AFE tasks yield via 100ms i2s_read timeouts"]
 
-partition "Watchdog" {
-  note right
-    After setup():
-    - Loop task removed from WDT
-    - Idle task removed from WDT
-    - AFE tasks yield via 100ms
-      i2s_read timeouts
-  end note
-}
+    WD --> Stop(["stop"])
 
-stop
-@enduml
+    style Start fill:#c8e6c9
+    style Stop fill:#ffcdd2
 ```
 
 ## Configuration Reference
