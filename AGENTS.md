@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## ⚠️ Commit Rule
+
+**NEVER commit changes without explicit user instruction.** Always ask before running `git commit`. The user decides when changes are ready to commit. **REMIND the user to commit** when a task appears to be working and changes are stable — don't let working changes sit uncommitted.
+
 ## ⚠️ Documentation Sync Rule
 
 **When making changes to any aspect documented in this file (architecture, services, APIs, test counts, build commands, file lists, etc.), you MUST update this AGENTS.md to reflect the change.** Stale docs cause agents to make wrong assumptions. Treat this file as code — if it's wrong, fix it in the same change.
@@ -100,9 +104,12 @@ npm run build        # Production build
 ```bash
 cd firmware-ota
 pio run                              # Build only
-pio run -t upload                    # Upload via OTA (requires WiFi)
 pio test -e test                     # Run native tests (38 tests)
 pio device monitor                   # Serial monitor (115200 baud)
+
+# OTA update (HTTP, not ArduinoOTA):
+curl -X POST -F "firmware=@.pio/build/xiao_esp32s3/firmware.bin" \
+  http://<device-ip>/update
 ```
 
 **⚠️ XIAO ESP32-S3 Sense hardware gotchas:**

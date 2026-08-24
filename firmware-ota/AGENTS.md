@@ -91,9 +91,21 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 ```bash
 cd firmware-ota
 pio run -e xiao_esp32s3          # Build only
-pio run -t upload                 # Upload via OTA (requires WiFi)
-pio run -t upload --upload-port /dev/ttyACM1  # Upload via USB (needs esptool protocol override)
 ```
+
+### OTA Update (HTTP, preferred)
+The device serves an OTA endpoint at `/update`. **Do not use `pio run -t upload`** — the device runs HTTP OTA, not ArduinoOTA.
+```bash
+# Build first, then upload via curl:
+pio run -e xiao_esp32s3
+curl -X POST -F "firmware=@.pio/build/xiao_esp32s3/firmware.bin" \
+  http://<device-ip>/update
+```
+- Device IP: resolve via `avahi-resolve -n LifeLog.local` or check serial log
+- Response: `OK, rebooting` on success
+- The handler suspends audio tasks during flash write, reboots via a 500ms one-shot timer (not `delay()`) so the HTTP response flushes before restart
+
+### USB Flash (when OTA unavailable)
 
 ### USB Flash (when OTA unavailable)
 
