@@ -20,6 +20,8 @@
 #include <ogg/ogg.h>
 #endif
 
+#include "lifelog_core/codec.h"
+
 // WAV header size
 #define WAV_HEADER_SIZE 44
 #define SAMPLE_BITS 16
@@ -55,32 +57,21 @@ uint32_t getFlushDropCount() { return flushDropCount; }
 uint32_t getTotalSamplesCaptured() { return totalSamplesCaptured; }
 uint32_t getTotalSamplesWritten() { return totalSamplesWritten; }
 
-// ── WAV header (from Seeed Studio guide) ───────────────────────────
+// ── Dashboard stats (cached by writerTask) ─────────────────────────
+static DashboardStats dashStats = {};
 
-#ifdef AUDIO_FORMAT_WAV_ACTIVE
-static void generate_wav_header(uint8_t *wav_header, uint32_t wav_size, uint32_t sample_rate) {
-    uint32_t file_size = wav_size + WAV_HEADER_SIZE - 8;
-    uint32_t byte_rate = SAMPLE_RATE * SAMPLE_BITS / 8;
-
-    const uint8_t set_wav_header[] = {
-        'R', 'I', 'F', 'F', // ChunkID
-        file_size, file_size >> 8, file_size >> 16, file_size >> 24, // ChunkSize
-        'W', 'A', 'V', 'E', // Format
-        'f', 'm', 't', ' ', // Subchunk1ID
-        0x10, 0, 0, 0, // Subchunk1Size (16 for PCM)
-        0x01, 0, // AudioFormat (PCM)
-        0x01, 0, // NumChannels (mono)
-        sample_rate, sample_rate >> 8, sample_rate >> 16, sample_rate >> 24, // SampleRate
-        byte_rate, byte_rate >> 8, byte_rate >> 16, byte_rate >> 24, // ByteRate
-        0x02, 0, // BlockAlign
-        0x10, 0, // BitsPerSample
-        'd', 'a', 't', 'a', // Subchunk2ID
-        wav_size, wav_size >> 8, wav_size >> 16, wav_size >> 24 // Subchunk2Size
-    };
-
-    memcpy(wav_header, set_wav_header, WAV_HEADER_SIZE);
+const DashboardStats& getDashboardStats() {
+    return dashStats;
 }
-#endif // AUDIO_FORMAT_WAV_ACTIVE
+
+static void updateDashStats() {
+    dashStats.uploadQueueDepth = uploadQueue ? uxQueueMessagesWaiting(uploadQueue) : 0;
+    dashStats.flushDrops = flushDropCount;
+    dashStats.recording = recording;
+    dashStats.vadMode = vadMode;
+}
+
+// ── WAV header — delegated to lib/lifelog_core/codec.h ─────────────
 
 // ── Forward declarations ──────────────────────────────────────────
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
@@ -217,7 +208,7 @@ static void afeInit() {
 
     // Enable AGC — default is off, audio too faint without it
     afe_config->agc_init = true;
-    afe_config->agc_compression_gain_db = 9;   // compression gain (default)
+    afe_config->agc_compression_gain_db = 6;   // compression gain (lower = less noise amplification)
     afe_config->agc_target_level_dbfs = 3;     // target -3 dBFS envelope
     afe_config->afe_linear_gain = 3.0;         // output multiplier (default 1.0)
 
@@ -275,55 +266,7 @@ static uint8_t *ogg_buf = NULL;       // PSRAM buffer for accumulated OGG pages
 static uint32_t ogg_buf_pos = 0;      // write position in ogg_buf
 static bool pages_flushed = false;    // true after first SD write
 
-// Build OpusHead identification header (RFC 7845)
-static void generate_opus_head_packet() {
-    uint8_t header[19] = {0};
-    // Magic bytes
-    header[0] = 'O'; header[1] = 'p'; header[2] = 'u'; header[3] = 's';
-    header[4] = 'H'; header[5] = 'e'; header[6] = 'a'; header[7] = 'd';
-    header[8] = 1;            // Version
-    header[9] = 1;            // Channel count (mono)
-    header[10] = 0; header[11] = 15; // Pre-skip: 3840 samples (80ms at 48kHz) little-endian
-    header[12] = (uint8_t)(SAMPLE_RATE);
-    header[13] = (uint8_t)(SAMPLE_RATE >> 8);
-    header[14] = (uint8_t)(SAMPLE_RATE >> 16);
-    header[15] = (uint8_t)(SAMPLE_RATE >> 24);
-    header[16] = 0; header[17] = 0; // Output gain: 0
-    header[18] = 0;            // Channel mapping family: 0
-
-    memset(&ogg_opus_head, 0, sizeof(ogg_opus_head));
-    ogg_opus_head.packet = (unsigned char*)malloc(19);
-    memcpy(ogg_opus_head.packet, header, 19);
-    ogg_opus_head.bytes = 19;
-}
-
-// Build OpusTags comment header (RFC 7845)
-static void generate_opus_tags_packet() {
-    const char *vendor = "LifeLog ESP32";
-    uint32_t vendor_len = strlen(vendor);
-    uint32_t tag_data_len = 8 + 4 + vendor_len + 4; // magic + vendor_len + vendor + tag_count(0)
-    uint8_t *tag_buf = (uint8_t*)malloc(tag_data_len);
-
-    // "OpusTags" magic
-    tag_buf[0] = 'O'; tag_buf[1] = 'p'; tag_buf[2] = 'u'; tag_buf[3] = 's';
-    tag_buf[4] = 'T'; tag_buf[5] = 'a'; tag_buf[6] = 'g'; tag_buf[7] = 's';
-    // Vendor string length (little-endian)
-    tag_buf[8]  = (uint8_t)(vendor_len);
-    tag_buf[9]  = (uint8_t)(vendor_len >> 8);
-    tag_buf[10] = (uint8_t)(vendor_len >> 16);
-    tag_buf[11] = (uint8_t)(vendor_len >> 24);
-    // Vendor string
-    memcpy(tag_buf + 12, vendor, vendor_len);
-    // Tag count = 0
-    tag_buf[12 + vendor_len] = 0;
-    tag_buf[12 + vendor_len + 1] = 0;
-    tag_buf[12 + vendor_len + 2] = 0;
-    tag_buf[12 + vendor_len + 3] = 0;
-
-    memset(&ogg_opus_tags, 0, sizeof(ogg_opus_tags));
-    ogg_opus_tags.packet = tag_buf;
-    ogg_opus_tags.bytes = tag_data_len;
-}
+// OpusHead/OpusTags generation — delegated to lib/lifelog_core/codec.h
 
 // Flush one OGG page to SD file
 static void ogg_write_page(File &file) {
@@ -351,9 +294,9 @@ static void opus_init() {
     ogg_serialno = (long)esp_random();
     ogg_stream_init(&ogg_stream, ogg_serialno);
 
-    // Build header packets
-    generate_opus_head_packet();
-    generate_opus_tags_packet();
+    // Build header packets (lib/lifelog_core/codec.h)
+    generate_opus_head_packet(ogg_opus_head);
+    generate_opus_tags_packet(ogg_opus_tags);
 
     opus_encoded_buf = (uint8_t*)malloc(4000); // max Opus packet
 
@@ -833,9 +776,33 @@ void writerTask(void *pvParameters) {
         xSemaphoreGive(ring_mutex);
 
         if (pcm_count == 0) {
-            // Ring empty — block until AFE notification or 50ms timeout.
-            // pdFALSE preserves notification count so multiple notifications
-            // arriving during encoding don't collapse to one.
+            // Ring empty — update cached stats and block until notification.
+            updateDashStats();
+
+            // Refresh SD stats periodically (every 30s) — only when idle
+            static uint32_t lastSdStatsMs = 0;
+            if (!recording && millis() - lastSdStatsMs > 30000) {
+                lastSdStatsMs = millis();
+                sdTake();
+                if (SD.cardType() != CARD_NONE) {
+                    dashStats.sdTotalBytes = SD.totalBytes();
+                    dashStats.sdFreeBytes = SD.totalBytes() - SD.usedBytes();
+                    int count = 0;
+                    File root = SD.open("/lifelog");
+                    if (root && root.isDirectory()) {
+                        File f = root.openNextFile();
+                        while (f) { count++; f = root.openNextFile(); }
+                        root.close();
+                    }
+                    dashStats.sdFileCount = count;
+                } else {
+                    dashStats.sdFileCount = 0;
+                    dashStats.sdFreeBytes = 0;
+                    dashStats.sdTotalBytes = 0;
+                }
+                sdGive();
+            }
+
             ulTaskNotifyTake(pdFALSE, pdMS_TO_TICKS(50));
             continue;
         }

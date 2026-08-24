@@ -228,9 +228,11 @@ static void setupDashboard() {
 }
 
 // ── Dashboard status updater ───────────────────────────────────────
-// Populates status String variables every 5 min; dash.update() pushes to browser.
+// Reads cached stats from audio workers; dash.update() pushes to browser.
 
 static void updateDashboardStatus() {
+    const auto& stats = getDashboardStats();
+
     // WiFi
     statusWiFi = WiFi.SSID();
     statusSignal = String(WiFi.RSSI()) + " dBm";
@@ -240,30 +242,22 @@ static void updateDashboardStatus() {
     unsigned long sec = millis() / 1000;
     statusUptime = String(sec / 3600) + "h " + String((sec % 3600) / 60) + "m " + String(sec % 60) + "s";
 
-    // SD card
-    if (SD.cardType() != CARD_NONE) {
-        uint64_t freeBytes = SD.totalBytes() - SD.usedBytes();
+    // SD card (from cached stats)
+    if (stats.sdTotalBytes > 0) {
         statusSDStatus = "OK";
-        statusSDFree = String(freeBytes / 1024) + " KB / " + String(SD.totalBytes() / (1024 * 1024)) + " MB";
-        int fileCount = 0;
-        File root = SD.open("/lifelog");
-        if (root && root.isDirectory()) {
-            File f = root.openNextFile();
-            while (f) { fileCount++; f = root.openNextFile(); }
-            root.close();
-        }
-        statusSDFiles = String(fileCount);
+        statusSDFree = String(stats.sdFreeBytes / 1024) + " KB / " + String(stats.sdTotalBytes / (1024 * 1024)) + " MB";
+        statusSDFiles = String(stats.sdFileCount);
     } else {
         statusSDStatus = "No card";
         statusSDFree = "N/A";
         statusSDFiles = "N/A";
     }
 
-    // Audio
-    statusRecording = recording ? "Active" : "Idle";
-    statusVAD = vadMode ? "On" : "Off";
-    statusUploadQueue = String(getUploadQueueDepth());
-    statusFlushDrops = String(getFlushDropCount());
+    // Audio (from cached stats)
+    statusRecording = stats.recording ? "Active" : "Idle";
+    statusVAD = stats.vadMode ? "On" : "Off";
+    statusUploadQueue = String(stats.uploadQueueDepth);
+    statusFlushDrops = String(stats.flushDrops);
 }
 
 // ── mDNS ───────────────────────────────────────────────────────────
@@ -327,10 +321,10 @@ void setup() {
     audioInit();
     updateDashboardStatus();  // Initial status before first browser connects
 
-    // Audio tasks — Core 0 gets I2S only, Core 1 gets processing
+    // Audio tasks — Core 0: I2S feed + AFE fetch. Core 1: writer + loop.
     xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, PRIO_AUDIO, NULL, 0);
-    xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, &audioTaskHandle, 1);
-    xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, PRIO_AUDIO, &writerTaskHandle, 1);
+    xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, NULL, 0);
+    xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, 3, &writerTaskHandle, 1);
     setWriterTaskHandle(writerTaskHandle);
     esp_task_wdt_delete(NULL);
     esp_task_wdt_delete(xTaskGetHandle("idle"));
@@ -397,6 +391,8 @@ static void logStats() {
 }
 
 void loop() {
+    LOG_SYSTEM(LOG_INFO, "Running Loop...");
+
     // WiFi reconnection: if disconnected, try reconnecting periodically
     static uint32_t lastReconnectAttempt = 0;
     if (WiFi.status() != WL_CONNECTED && millis() - lastReconnectAttempt > WIFI_RECONNECT_INTERVAL_MS) {
