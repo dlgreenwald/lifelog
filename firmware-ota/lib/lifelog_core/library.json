@@ -1,0 +1,9 @@
+{
+    "name": "lifelog_core",
+    "version": "1.0.0",
+    "description": "Pure business logic for LifeLog firmware — zero Arduino dependencies",
+    "headers": ["codec.h", "settings.h", "filename.h"],
+    "build": {
+        "srcFilter": ["+<*.h>"]
+    }
+}
