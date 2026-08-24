@@ -155,15 +155,13 @@ static String statusRecording;
 static String statusVAD;
 static String statusUploadQueue;
 static String statusFlushDrops;
+static float dashRingFill = 0;
 
 // WiFi reconnection interval
 #define WIFI_RECONNECT_INTERVAL_MS (15 * 60 * 1000)
 
-// Dashboard status update interval (5 minutes)
-#define DASHBOARD_STATUS_INTERVAL_MS (5 * 60 * 1000)
-
-// Dashboard push interval (1 minute)
-#define DASHBOARD_PUSH_INTERVAL_MS (60 * 1000)
+// Dashboard push interval (5 seconds)
+#define DASHBOARD_PUSH_INTERVAL_MS (5 * 1000)
 
 // ── Dashboard setup ───────────────────────────────────────────────
 
@@ -175,6 +173,8 @@ static void setupDashboard() {
     cfgServerPath = deviceSettings.serverPath;
     cfgApiKey = deviceSettings.apiKey;
     cfgDevicePw = deviceSettings.devicePassword;
+
+    dash.lang("en"); 
 
     // ── Settings (editable) ──
     dash.separator("Settings");
@@ -227,6 +227,7 @@ static void setupDashboard() {
     dash.label("VAD Mode", &statusVAD);
     dash.label("Upload Queue", &statusUploadQueue);
     dash.label("Flush Drops", &statusFlushDrops);
+    dash.chart("Ring Fill", &dashRingFill, "/32");
 }
 
 // ── OTA routes (registered AFTER dash.begin() so they override RisalDash's defaults) ──
@@ -323,6 +324,7 @@ static void updateDashboardStatus() {
     statusVAD = vadMode ? "On" : "Off";
     statusUploadQueue = String(getUploadQueueDepth());
     statusFlushDrops = String(getFlushDropCount());
+    dashRingFill = (float)getRingFillLevel();
 }
 
 // ── mDNS ───────────────────────────────────────────────────────────
@@ -401,7 +403,7 @@ void setup() {
     // Audio tasks
     xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, PRIO_AUDIO, &feedTaskHandle, 0);
     xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, &fetchTaskHandle, 1);
-    xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, PRIO_AUDIO, &writerTaskHandle, 1);
+    xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, PRIO_AUDIO, &writerTaskHandle, 0);
     setWriterTaskHandle(writerTaskHandle);
 
     bootConfirm();
@@ -466,6 +468,7 @@ static void logStats() {
     LOG_SYSTEM(LOG_INFO, "samples captured: %lu, written: %lu",
                (unsigned long)getTotalSamplesCaptured(),
                (unsigned long)getTotalSamplesWritten());
+    LOG_SYSTEM(LOG_INFO, "ring fill: %lu/32", (unsigned long)getRingFillLevel());
 }
 
 void loop() {
@@ -477,16 +480,15 @@ void loop() {
         WiFi.reconnect();
     }
 
-    // Update dashboard status every 5 minutes
-    static uint32_t lastDashboardUpdate = 0;
-    if (millis() - lastDashboardUpdate > DASHBOARD_STATUS_INTERVAL_MS) {
-        lastDashboardUpdate = millis();
-        updateDashboardStatus();
-    }
-
-    // Push widget values to browser every minute
+    // Push widget values to browser every 5 seconds
     static uint32_t lastDashPush = 0;
+    static bool chartToggle = false;
     if (millis() - lastDashPush > DASHBOARD_PUSH_INTERVAL_MS) {
+        updateDashboardStatus();
+        // Toggle 0.001 bit so chart always registers as "changed"
+        // (RisalDash deduplicates identical values; this is invisible on a /32 scale)
+        dashRingFill += chartToggle ? 0.001f : -0.001f;
+        chartToggle = !chartToggle;
         lastDashPush = millis();
         dash.update();
     }

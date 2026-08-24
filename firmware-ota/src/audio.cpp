@@ -49,6 +49,7 @@ static uint32_t dmaPartialCount = 0;    // i2s_read returned < requested
 static uint32_t flushDropCount = 0;     // End-of-recording buffer discarded
 static uint32_t totalSamplesCaptured = 0; // Total I2S samples read
 static uint32_t totalSamplesWritten = 0;  // Total samples written to SD
+static volatile uint32_t ringFillLevel = 0;  // Current chunks in ring (sampled by writer)
 
 uint32_t getWriterStallCount() { return writerStallCount; }
 uint32_t getWriterStallMaxMs() { return writerStallMaxMs; }
@@ -56,6 +57,7 @@ uint32_t getDmaPartialCount() { return dmaPartialCount; }
 uint32_t getFlushDropCount() { return flushDropCount; }
 uint32_t getTotalSamplesCaptured() { return totalSamplesCaptured; }
 uint32_t getTotalSamplesWritten() { return totalSamplesWritten; }
+uint32_t getRingFillLevel() { return ringFillLevel; }
 
 // ── WAV header — delegated to lib/lifelog_core/codec.h ─────────────
 
@@ -220,14 +222,14 @@ static void afeInit() {
 // Consumer: writerTask — reads ring_tail
 // Each slot holds one AFE chunk (~32ms at 16kHz)
 
-#define RING_SLOTS       32
-#define RING_CHUNK_SAMPLES 512   // matches AFE feed chunksize
+#define RING_CHUNK_SAMPLES 512   // AFE feed chunksize (must divide RING_CAPACITY)
+#define RING_SLOTS       32     // number of chunks buffered
+#define RING_CAPACITY    (RING_SLOTS * RING_CHUNK_SAMPLES)  // total samples in ring
 #define OGG_BUF_CAPACITY 16384  // 16KB PSRAM buffer for accumulated OGG pages before SD open
 
-static int16_t* ring_buf[RING_SLOTS] = {0};  // ring slot buffers in PSRAM
-static volatile uint32_t ring_head = 0;       // next slot to write
-static volatile uint32_t ring_tail = 0;       // next slot to read
-static volatile bool ring_used[RING_SLOTS] = {false};  // which slots have data
+static int16_t *ring_buf = NULL;               // contiguous ring in PSRAM
+static volatile uint32_t ring_head = 0;        // write offset in samples
+static volatile uint32_t ring_tail = 0;        // read offset in samples
 static SemaphoreHandle_t ring_mutex = NULL;
 
 // ── Opus encoder state (used when AUDIO_FORMAT_OPUS_ACTIVE) ────────
@@ -318,22 +320,20 @@ void audioInit() {
     opus_init();
 #endif
 
-    // Allocate ring buffer slots in PSRAM
+    // Allocate contiguous ring buffer in PSRAM
     ring_mutex = xSemaphoreCreateMutex();
-    uint32_t slotBytes = RING_CHUNK_SAMPLES * sizeof(int16_t);
-    for (int i = 0; i < RING_SLOTS; i++) {
-        ring_buf[i] = (int16_t*)ps_malloc(slotBytes);
-        if (!ring_buf[i]) {
-            LOG_AUDIO(LOG_ERROR, "Ring slot %d malloc failed", i);
-            return;
-        }
-        ring_used[i] = false;
+    ring_buf = (int16_t *)ps_malloc(RING_CAPACITY * sizeof(int16_t));
+    if (!ring_buf) {
+        LOG_AUDIO(LOG_ERROR, "Ring buffer malloc failed (%lu bytes)",
+                  (unsigned long)(RING_CAPACITY * sizeof(int16_t)));
+        return;
     }
     ring_head = 0;
     ring_tail = 0;
-    LOG_AUDIO(LOG_INFO, "Ring buffer ready (%d slots × %d samples = %dms)",
+    LOG_AUDIO(LOG_INFO, "Ring buffer ready (%d slots × %d samples = %dms, %lu bytes contiguous)",
               RING_SLOTS, RING_CHUNK_SAMPLES,
-              (RING_SLOTS * RING_CHUNK_SAMPLES * 1000) / SAMPLE_RATE);
+              (RING_CAPACITY * 1000) / SAMPLE_RATE,
+              (unsigned long)(RING_CAPACITY * sizeof(int16_t)));
 
     // Allocate OGG page buffer in PSRAM (deferred SD open — accumulates until ≥4KB)
     ogg_buf = (uint8_t *)ps_malloc(OGG_BUF_CAPACITY);
@@ -341,7 +341,7 @@ void audioInit() {
 
     // Upload task — offloads blocking HTTP uploads from writerTask
     uploadQueue = xQueueCreate(8, sizeof(UploadRequest));
-    xTaskCreatePinnedToCore(uploadWorkerTask, "uploader", 8192, NULL, 1, &uploadTaskHandle, 0);
+    xTaskCreatePinnedToCore(uploadWorkerTask, "uploader", 8192, NULL, 1, &uploadTaskHandle, 1);
     LOG_AUDIO(LOG_INFO, "Upload task started (queue depth=4)");
 }
 
@@ -419,14 +419,16 @@ static void processAfeResult(afe_fetch_result_t *result) {
             isFinal = false;
         }
 
-        // Write to ring buffer slot at ring_head
+        // Write to ring buffer at ring_head
         xSemaphoreTake(ring_mutex, portMAX_DELAY);
-        uint32_t next_head = (ring_head + 1) % RING_SLOTS;
-        if (ring_used[next_head]) {
-            // Ring full — drop oldest slot and advance tail
-            LOG_AUDIO(LOG_WARN, "Ring overflow: dropping slot %lu", (unsigned long)ring_tail);
-            ring_used[ring_tail] = false;
-            ring_tail = next_head;
+
+        // Check if ring has room for one chunk
+        uint32_t next_head = (ring_head + RING_CHUNK_SAMPLES) % RING_CAPACITY;
+        uint32_t used = (ring_head - ring_tail + RING_CAPACITY) % RING_CAPACITY;
+        if (used + RING_CHUNK_SAMPLES > RING_CAPACITY) {
+            // Ring full — drop oldest chunk and advance tail
+            LOG_AUDIO(LOG_WARN, "Ring overflow: dropping from offset %lu", (unsigned long)ring_tail);
+            ring_tail = (ring_tail + RING_CHUNK_SAMPLES) % RING_CAPACITY;
             flushDropCount++;
         }
 
@@ -435,18 +437,17 @@ static void processAfeResult(afe_fetch_result_t *result) {
         if (result->vad_cache_size > 0 && !wasVoice) {
             int cacheSamples = result->vad_cache_size / sizeof(int16_t);
             if (cacheSamples <= RING_CHUNK_SAMPLES) {
-                memcpy(ring_buf[ring_head], result->vad_cache, result->vad_cache_size);
+                memcpy(ring_buf + ring_head, result->vad_cache, result->vad_cache_size);
                 slotOffset = cacheSamples;
             }
         }
 
-        // Copy AFE-processed audio (NS-cleaned) into ring slot
+        // Copy AFE-processed audio (NS-cleaned) into ring
         int samples = result->data_size / sizeof(int16_t);
         uint32_t available = RING_CHUNK_SAMPLES - slotOffset;
         uint32_t toCopy = (samples <= available) ? samples : available;
-        memcpy(ring_buf[ring_head] + slotOffset, result->data, toCopy * sizeof(int16_t));
+        memcpy(ring_buf + ring_head + slotOffset, result->data, toCopy * sizeof(int16_t));
 
-        ring_used[ring_head] = true;
         ring_head = next_head;
         xSemaphoreGive(ring_mutex);
 
@@ -688,9 +689,8 @@ void writerTask(void *pvParameters) {
     int frame_rem = 0;
     bool prev_recording = false;
 
-    // Local PCM buffer for draining ring — allocated in PSRAM to avoid stack overflow.
-    // Temporary: copied from ring, fed to encoder, discarded.
-    const int pcm_buf_capacity = RING_SLOTS * RING_CHUNK_SAMPLES;
+    // Local PCM buffer for bulk-draining contiguous ring — allocated in PSRAM.
+    const int pcm_buf_capacity = RING_CAPACITY;
     int16_t *pcm_buf = (int16_t *)ps_malloc(pcm_buf_capacity * sizeof(int16_t));
     assert(pcm_buf);
 
@@ -730,64 +730,79 @@ void writerTask(void *pvParameters) {
             } else {
                 LOG_AUDIO(LOG_INFO, "writer: no file to upload (short utterance)");
             }
-            continue;
-        }
-
-        // Drain ring buffer into local PCM buffer
-        xSemaphoreTake(ring_mutex, portMAX_DELAY);
-        int slots_drained = 0;
-        int pcm_count = 0;
-        // Carry over remainder from previous drain
-        if (frame_rem > 0) {
-            memcpy(pcm_buf, frame_buf, frame_rem * sizeof(int16_t));
-            pcm_count = frame_rem;
-        }
-        while (ring_used[ring_tail] && ring_tail != ring_head) {
-            if (pcm_count + RING_CHUNK_SAMPLES > pcm_buf_capacity) {
-                LOG_AUDIO(LOG_WARN, "writer: pcm_buf overflow");
-                break;
+        } else {
+            // ── Drain ring buffer into local PCM buffer ──
+            xSemaphoreTake(ring_mutex, portMAX_DELAY);
+            int slots_drained = 0;
+            int pcm_count = 0;
+            // Carry over remainder from previous drain
+            if (frame_rem > 0) {
+                memcpy(pcm_buf, frame_buf, frame_rem * sizeof(int16_t));
+                pcm_count = frame_rem;
             }
-            memcpy(pcm_buf + pcm_count, ring_buf[ring_tail],
-                   RING_CHUNK_SAMPLES * sizeof(int16_t));
-            pcm_count += RING_CHUNK_SAMPLES;
-            slots_drained++;
-            ring_used[ring_tail] = false;
-            ring_tail = (ring_tail + 1) % RING_SLOTS;
-        }
-        // Snapshot ring state while still under lock
-        int used = 0;
-        for (int i = 0; i < RING_SLOTS; i++) {
-            if (ring_used[i]) used++;
-        }
-        xSemaphoreGive(ring_mutex);
+            // Bulk drain: at most 2 memcpy calls
+            uint32_t avail = (ring_head - ring_tail + RING_CAPACITY) % RING_CAPACITY;
+            uint32_t space = pcm_buf_capacity - pcm_count;
+            uint32_t to_drain = (avail < space) ? avail : space;
+            // Round down to chunk boundary (AFE always produces full chunks)
+            to_drain = (to_drain / RING_CHUNK_SAMPLES) * RING_CHUNK_SAMPLES;
 
-        if (pcm_count == 0) {
-            // Ring empty — block until notification or 50ms timeout.
-            ulTaskNotifyTake(pdFALSE, pdMS_TO_TICKS(50));
-            continue;
-        }
+            if (to_drain > 0) {
+                uint32_t tail_to_end = RING_CAPACITY - ring_tail;
+                uint32_t first = (to_drain < tail_to_end) ? to_drain : tail_to_end;
+                memcpy(pcm_buf + pcm_count, ring_buf + ring_tail, first * sizeof(int16_t));
+                if (first < to_drain) {
+                    memcpy(pcm_buf + pcm_count + first, ring_buf, (to_drain - first) * sizeof(int16_t));
+                }
+                pcm_count += to_drain;
+                slots_drained = to_drain / RING_CHUNK_SAMPLES;
+                ring_tail = (ring_tail + to_drain) % RING_CAPACITY;
+            }
+            // Fill level = chunks in ring before drain
+            uint32_t fill = (avail / RING_CHUNK_SAMPLES);
+            ringFillLevel = fill;
+            if (fill >= RING_SLOTS * 3 / 4) {
+                static uint32_t lastFillWarnMs = 0;
+                uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                if (now - lastFillWarnMs >= 2000) {
+                    LOG_AUDIO(LOG_WARN, "writer: ring fill %lu/%d (%lu%%)",
+                              (unsigned long)fill, RING_SLOTS, (unsigned long)(fill * 100 / RING_SLOTS));
+                    lastFillWarnMs = now;
+                }
+            }
+            xSemaphoreGive(ring_mutex);
 
-        int unconsumed = 0;
+            if (pcm_count == 0) {
+                // Ring empty — block until notification or 50ms timeout.
+                ulTaskNotifyTake(pdFALSE, pdMS_TO_TICKS(50));
+            }
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
-        // No new ring data and only leftover — nothing to encode yet
-        if (pcm_count == frame_rem && frame_rem > 0) {
-            continue;
-        }
-
-        totalSamplesWritten += pcm_count - frame_rem;
-
-        // Encode frames, returns unconsumed count
-        unconsumed = opus_encode_to_buffer(pcm_buf, pcm_count);
-        if (unconsumed > 0) {
-            // Save remainder for next iteration (must be < opus_frame_size_samples)
-            memmove(frame_buf, pcm_buf + (pcm_count - unconsumed),
-                    unconsumed * sizeof(int16_t));
-        }
-        frame_rem = unconsumed;
-#else
-        // WAV fallback: write file on voice end (handled below)
-        totalSamplesWritten += pcm_count;
+            else if (pcm_count == frame_rem && frame_rem > 0) {
+                // No new ring data and only leftover — nothing to encode yet
+            }
 #endif
-        // Loop back immediately — don't sleep, drain again if more data arrived
+            else if (pcm_count > 0) {
+                int unconsumed = 0;
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+                totalSamplesWritten += pcm_count - frame_rem;
+
+                // Encode frames, returns unconsumed count
+                unconsumed = opus_encode_to_buffer(pcm_buf, pcm_count);
+                if (unconsumed > 0) {
+                    // Save remainder for next iteration (must be < opus_frame_size_samples)
+                    memmove(frame_buf, pcm_buf + (pcm_count - unconsumed),
+                            unconsumed * sizeof(int16_t));
+                }
+                frame_rem = unconsumed;
+#else
+                // WAV fallback: write file on voice end (handled below)
+                totalSamplesWritten += pcm_count;
+#endif
+            }
+        }
+
+        // Always yield — IDLE task needs CPU to feed the task watchdog.
+        // 1ms is negligible vs 32ms chunk interval.
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }

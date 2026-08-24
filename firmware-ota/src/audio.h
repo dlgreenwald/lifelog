@@ -41,4 +41,5 @@ uint32_t getDmaPartialCount();
 uint32_t getFlushDropCount();
 uint32_t getTotalSamplesCaptured();
 uint32_t getTotalSamplesWritten();
+uint32_t getRingFillLevel();
 
