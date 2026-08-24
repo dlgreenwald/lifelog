@@ -42,14 +42,3 @@ uint32_t getFlushDropCount();
 uint32_t getTotalSamplesCaptured();
 uint32_t getTotalSamplesWritten();
 
-// ── Dashboard stats (cached by writerTask, read by dashboard) ──────
-struct DashboardStats {
-    uint32_t uploadQueueDepth;
-    uint32_t flushDrops;
-    uint32_t sdFileCount;
-    uint64_t sdFreeBytes;
-    uint64_t sdTotalBytes;
-    bool recording;
-    bool vadMode;
-};
-const DashboardStats& getDashboardStats();

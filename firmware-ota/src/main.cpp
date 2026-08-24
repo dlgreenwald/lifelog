@@ -253,8 +253,14 @@ static void setupOTA() {
             }
             r->send(200, "text/plain", ok ? "OK, rebooting" : "update failed");
             if (ok) {
-                delay(500);
-                ESP.restart();
+                // Defer reboot so the event loop can flush the response
+                static esp_timer_handle_t otaRebootTimer;
+                static esp_timer_create_args_t otaRebootArgs = {
+                    .callback = [](void*) { ESP.restart(); },
+                    .name = "ota_reboot"
+                };
+                esp_timer_create(&otaRebootArgs, &otaRebootTimer);
+                esp_timer_start_once(otaRebootTimer, 500000); // 500ms
             }
         },
         [](AsyncWebServerRequest*, String, size_t index, uint8_t* data, size_t len, bool final) {
@@ -290,8 +296,6 @@ static void setupOTA() {
 // Reads cached stats from audio workers; dash.update() pushes to browser.
 
 static void updateDashboardStatus() {
-    const auto& stats = getDashboardStats();
-
     // WiFi
     statusWiFi = WiFi.SSID();
     statusSignal = String(WiFi.RSSI()) + " dBm";
@@ -301,22 +305,24 @@ static void updateDashboardStatus() {
     unsigned long sec = millis() / 1000;
     statusUptime = String(sec / 3600) + "h " + String((sec % 3600) / 60) + "m " + String(sec % 60) + "s";
 
-    // SD card (from cached stats)
-    if (stats.sdTotalBytes > 0) {
+    // SD card (direct register reads — no mutex, <1ms)
+    if (SD.cardType() != CARD_NONE) {
         statusSDStatus = "OK";
-        statusSDFree = String(stats.sdFreeBytes / 1024) + " KB / " + String(stats.sdTotalBytes / (1024 * 1024)) + " MB";
-        statusSDFiles = String(stats.sdFileCount);
+        uint64_t total = SD.totalBytes();
+        uint64_t free_ = total - SD.usedBytes();
+        statusSDFree = String(free_ / 1024) + " KB / " + String(total / (1024 * 1024)) + " MB";
+        statusSDFiles = "N/A";
     } else {
         statusSDStatus = "No card";
         statusSDFree = "N/A";
         statusSDFiles = "N/A";
     }
 
-    // Audio (from cached stats)
-    statusRecording = stats.recording ? "Active" : "Idle";
-    statusVAD = stats.vadMode ? "On" : "Off";
-    statusUploadQueue = String(stats.uploadQueueDepth);
-    statusFlushDrops = String(stats.flushDrops);
+    // Audio (direct reads — no intermediate cache needed)
+    statusRecording = recording ? "Active" : "Idle";
+    statusVAD = vadMode ? "On" : "Off";
+    statusUploadQueue = String(getUploadQueueDepth());
+    statusFlushDrops = String(getFlushDropCount());
 }
 
 // ── mDNS ───────────────────────────────────────────────────────────
@@ -392,10 +398,10 @@ void setup() {
     audioInit();
     updateDashboardStatus();  // Initial status before first browser connects
 
-    // Audio tasks — Core 0: I2S feed + AFE fetch. Core 1: writer + loop.
+    // Audio tasks
     xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, PRIO_AUDIO, &feedTaskHandle, 0);
-    xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, &fetchTaskHandle, 0);
-    xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, 3, &writerTaskHandle, 1);
+    xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, &fetchTaskHandle, 1);
+    xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, PRIO_AUDIO, &writerTaskHandle, 1);
     setWriterTaskHandle(writerTaskHandle);
 
     bootConfirm();

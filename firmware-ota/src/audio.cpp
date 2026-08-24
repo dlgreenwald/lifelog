@@ -57,20 +57,6 @@ uint32_t getFlushDropCount() { return flushDropCount; }
 uint32_t getTotalSamplesCaptured() { return totalSamplesCaptured; }
 uint32_t getTotalSamplesWritten() { return totalSamplesWritten; }
 
-// ── Dashboard stats (cached by writerTask) ─────────────────────────
-static DashboardStats dashStats = {};
-
-const DashboardStats& getDashboardStats() {
-    return dashStats;
-}
-
-static void updateDashStats() {
-    dashStats.uploadQueueDepth = uploadQueue ? uxQueueMessagesWaiting(uploadQueue) : 0;
-    dashStats.flushDrops = flushDropCount;
-    dashStats.recording = recording;
-    dashStats.vadMode = vadMode;
-}
-
 // ── WAV header — delegated to lib/lifelog_core/codec.h ─────────────
 
 // ── Forward declarations ──────────────────────────────────────────
@@ -776,33 +762,7 @@ void writerTask(void *pvParameters) {
         xSemaphoreGive(ring_mutex);
 
         if (pcm_count == 0) {
-            // Ring empty — update cached stats and block until notification.
-            updateDashStats();
-
-            // Refresh SD stats periodically (every 30s) — only when idle
-            static uint32_t lastSdStatsMs = 0;
-            if (!recording && millis() - lastSdStatsMs > 30000) {
-                lastSdStatsMs = millis();
-                sdTake();
-                if (SD.cardType() != CARD_NONE) {
-                    dashStats.sdTotalBytes = SD.totalBytes();
-                    dashStats.sdFreeBytes = SD.totalBytes() - SD.usedBytes();
-                    int count = 0;
-                    File root = SD.open("/lifelog");
-                    if (root && root.isDirectory()) {
-                        File f = root.openNextFile();
-                        while (f) { count++; f = root.openNextFile(); }
-                        root.close();
-                    }
-                    dashStats.sdFileCount = count;
-                } else {
-                    dashStats.sdFileCount = 0;
-                    dashStats.sdFreeBytes = 0;
-                    dashStats.sdTotalBytes = 0;
-                }
-                sdGive();
-            }
-
+            // Ring empty — block until notification or 50ms timeout.
             ulTaskNotifyTake(pdFALSE, pdMS_TO_TICKS(50));
             continue;
         }
