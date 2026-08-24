@@ -157,6 +157,9 @@ static String statusFlushDrops;
 // WiFi reconnection interval
 #define WIFI_RECONNECT_INTERVAL_MS (15 * 60 * 1000)
 
+// Dashboard update interval (5 minutes)
+#define DASHBOARD_UPDATE_INTERVAL_MS (5 * 60 * 1000)
+
 // ── Dashboard setup ───────────────────────────────────────────────
 
 static void setupDashboard() {
@@ -224,6 +227,45 @@ static void setupDashboard() {
     dash.label("Flush Drops", &statusFlushDrops);
 }
 
+// ── Dashboard status updater ───────────────────────────────────────
+// Populates status String variables every 5 min; dash.update() pushes to browser.
+
+static void updateDashboardStatus() {
+    // WiFi
+    statusWiFi = WiFi.SSID();
+    statusSignal = String(WiFi.RSSI()) + " dBm";
+    statusIP = WiFi.localIP().toString();
+
+    // Uptime
+    unsigned long sec = millis() / 1000;
+    statusUptime = String(sec / 3600) + "h " + String((sec % 3600) / 60) + "m " + String(sec % 60) + "s";
+
+    // SD card
+    if (SD.cardType() != CARD_NONE) {
+        uint64_t freeBytes = SD.totalBytes() - SD.usedBytes();
+        statusSDStatus = "OK";
+        statusSDFree = String(freeBytes / 1024) + " KB / " + String(SD.totalBytes() / (1024 * 1024)) + " MB";
+        int fileCount = 0;
+        File root = SD.open("/lifelog");
+        if (root && root.isDirectory()) {
+            File f = root.openNextFile();
+            while (f) { fileCount++; f = root.openNextFile(); }
+            root.close();
+        }
+        statusSDFiles = String(fileCount);
+    } else {
+        statusSDStatus = "No card";
+        statusSDFree = "N/A";
+        statusSDFiles = "N/A";
+    }
+
+    // Audio
+    statusRecording = recording ? "Active" : "Idle";
+    statusVAD = vadMode ? "On" : "Off";
+    statusUploadQueue = String(getUploadQueueDepth());
+    statusFlushDrops = String(getFlushDropCount());
+}
+
 // ── mDNS ───────────────────────────────────────────────────────────
 
 static void setupMDNS() {
@@ -283,6 +325,7 @@ void setup() {
 
     setupMDNS();
     audioInit();
+    updateDashboardStatus();  // Initial status before first browser connects
 
     // Audio tasks — Core 0 gets I2S only, Core 1 gets processing
     xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, PRIO_AUDIO, NULL, 0);
@@ -360,6 +403,13 @@ void loop() {
         lastReconnectAttempt = millis();
         LOG_WIFI(LOG_INFO, "WiFi disconnected — reconnecting...");
         WiFi.reconnect();
+    }
+
+    // Update dashboard status every 5 minutes
+    static uint32_t lastDashboardUpdate = 0;
+    if (millis() - lastDashboardUpdate > DASHBOARD_UPDATE_INTERVAL_MS) {
+        lastDashboardUpdate = millis();
+        updateDashboardStatus();
     }
 
     dash.update();  // Pushes changed widget values to browser via WebSocket
