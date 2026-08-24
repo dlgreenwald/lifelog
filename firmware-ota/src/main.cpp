@@ -5,6 +5,7 @@
 #include <ESPmDNS.h>
 #include <RisalUI.h>
 #include <WiFi.h>
+#include <Update.h>
 #include <esp_ota_ops.h>
 #include <esp_task_wdt.h>
 #include <esp_freertos_hooks.h>
@@ -22,7 +23,8 @@
 
 static Preferences prefs;
 static const char* NS = "ota";
-static TaskHandle_t audioTaskHandle = NULL;
+static TaskHandle_t feedTaskHandle = NULL;
+static TaskHandle_t fetchTaskHandle = NULL;
 static TaskHandle_t writerTaskHandle = NULL;
 
 // ── Device settings (defined in settings.h) ───────────────────────
@@ -157,8 +159,11 @@ static String statusFlushDrops;
 // WiFi reconnection interval
 #define WIFI_RECONNECT_INTERVAL_MS (15 * 60 * 1000)
 
-// Dashboard update interval (5 minutes)
-#define DASHBOARD_UPDATE_INTERVAL_MS (5 * 60 * 1000)
+// Dashboard status update interval (5 minutes)
+#define DASHBOARD_STATUS_INTERVAL_MS (5 * 60 * 1000)
+
+// Dashboard push interval (1 minute)
+#define DASHBOARD_PUSH_INTERVAL_MS (60 * 1000)
 
 // ── Dashboard setup ───────────────────────────────────────────────
 
@@ -170,9 +175,6 @@ static void setupDashboard() {
     cfgServerPath = deviceSettings.serverPath;
     cfgApiKey = deviceSettings.apiKey;
     cfgDevicePw = deviceSettings.devicePassword;
-
-    // ── OTA ──
-    dash.enableOTA();
 
     // ── Settings (editable) ──
     dash.separator("Settings");
@@ -225,6 +227,63 @@ static void setupDashboard() {
     dash.label("VAD Mode", &statusVAD);
     dash.label("Upload Queue", &statusUploadQueue);
     dash.label("Flush Drops", &statusFlushDrops);
+}
+
+// ── OTA routes (registered AFTER dash.begin() so they override RisalDash's defaults) ──
+
+static void setupOTA() {
+    dash.server().on("/update", HTTP_GET, [](AsyncWebServerRequest* r) {
+        r->send(200, "text/html",
+                "<!DOCTYPE html><meta name=viewport content=\"width=device-width,initial-scale=1\">"
+                "<body style=\"font-family:sans-serif;background:#0F1115;color:#F2F4F8;padding:32px\">"
+                "<h2>OTA update</h2><form method=POST action=/update enctype=multipart/form-data>"
+                "<input type=file name=firmware> <button>Upload</button></form></body>");
+    });
+    dash.server().on(
+        "/update", HTTP_POST,
+        [](AsyncWebServerRequest* r) {
+            bool ok = !Update.hasError();
+            Serial.printf("OTA result: %s\n", ok ? "success" : "FAILED");
+            if (ok) {
+                const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
+                if (next) {
+                    Serial.printf("OTA: setting boot partition to %s\n", next->label);
+                    esp_ota_set_boot_partition(next);
+                }
+            }
+            r->send(200, "text/plain", ok ? "OK, rebooting" : "update failed");
+            if (ok) {
+                delay(500);
+                ESP.restart();
+            }
+        },
+        [](AsyncWebServerRequest*, String, size_t index, uint8_t* data, size_t len, bool final) {
+            static bool otaInProgress = false;
+            static uint32_t totalWritten = 0;
+            if (index == 0) {
+                // Stop audio tasks — they contend with flash erase
+                if (feedTaskHandle) vTaskSuspend(feedTaskHandle);
+                if (fetchTaskHandle) vTaskSuspend(fetchTaskHandle);
+                if (writerTaskHandle) vTaskSuspend(writerTaskHandle);
+                Serial.println("OTA: audio tasks suspended");
+                // Remove idle from WDT — flash erase blocks Core 0 for seconds
+                esp_task_wdt_delete(xTaskGetHandle("idle"));
+                otaInProgress = Update.begin(UPDATE_SIZE_UNKNOWN);
+                totalWritten = 0;
+                Serial.printf("OTA start: begin=%d\n", otaInProgress);
+                if (!otaInProgress) Serial.printf("OTA begin FAILED: %d\n", Update.getError());
+            }
+            if (otaInProgress && len) {
+                size_t written = Update.write(data, len);
+                totalWritten += written;
+                if (written != len) Serial.printf("OTA write mismatch: %d != %d\n", written, len);
+            }
+            if (final) {
+                Serial.printf("OTA end: total=%lu, result=%d\n", totalWritten, Update.end(true));
+                if (Update.hasError()) Serial.printf("OTA end FAILED: %d\n", Update.getError());
+            }
+        });
+    Serial.println("OTA: custom handler registered");
 }
 
 // ── Dashboard status updater ───────────────────────────────────────
@@ -295,12 +354,23 @@ static void setupSD() {
     }
 }
 
+// ── Forward declarations ──────────────────────────────────────────
+static void logStats();
+
 // ── Main ───────────────────────────────────────────────────────────
 
 void setup() {
     Serial.begin(115200);
+#ifdef SLOW_BOOT
+    delay(10000);
+#endif
     delay(1000);
     Serial.println("\n=== LifeLog OTA Demo ===");
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    Serial.printf("Running partition: %s (offset=0x%06x, size=0x%06x)\n",
+                  running ? running->label : "NULL",
+                  running ? running->address : 0,
+                  running ? running->size : 0);
 
     esp_register_freertos_idle_hook_for_cpu(idleHook0, 0);
     esp_register_freertos_idle_hook_for_cpu(idleHook1, 1);
@@ -316,20 +386,22 @@ void setup() {
     // - First boot (no saved creds) → captive portal AP, blocks until configured
     // - Saved creds → STA mode, connects to known network
     dash.begin();
+    setupOTA();  // Register AFTER dash.begin() so we override RisalDash's /update routes
 
     setupMDNS();
     audioInit();
     updateDashboardStatus();  // Initial status before first browser connects
 
     // Audio tasks — Core 0: I2S feed + AFE fetch. Core 1: writer + loop.
-    xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, PRIO_AUDIO, NULL, 0);
-    xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, NULL, 0);
+    xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, PRIO_AUDIO, &feedTaskHandle, 0);
+    xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, &fetchTaskHandle, 0);
     xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, 3, &writerTaskHandle, 1);
     setWriterTaskHandle(writerTaskHandle);
-    esp_task_wdt_delete(NULL);
-    esp_task_wdt_delete(xTaskGetHandle("idle"));
 
     bootConfirm();
+
+    logStats();
+    loop();
 }
 
 static void logStats() {
@@ -391,8 +463,6 @@ static void logStats() {
 }
 
 void loop() {
-    LOG_SYSTEM(LOG_INFO, "Running Loop...");
-
     // WiFi reconnection: if disconnected, try reconnecting periodically
     static uint32_t lastReconnectAttempt = 0;
     if (WiFi.status() != WL_CONNECTED && millis() - lastReconnectAttempt > WIFI_RECONNECT_INTERVAL_MS) {
@@ -403,11 +473,15 @@ void loop() {
 
     // Update dashboard status every 5 minutes
     static uint32_t lastDashboardUpdate = 0;
-    if (millis() - lastDashboardUpdate > DASHBOARD_UPDATE_INTERVAL_MS) {
+    if (millis() - lastDashboardUpdate > DASHBOARD_STATUS_INTERVAL_MS) {
         lastDashboardUpdate = millis();
         updateDashboardStatus();
     }
 
-    dash.update();  // Pushes changed widget values to browser via WebSocket
-    logStats();
+    // Push widget values to browser every minute
+    static uint32_t lastDashPush = 0;
+    if (millis() - lastDashPush > DASHBOARD_PUSH_INTERVAL_MS) {
+        lastDashPush = millis();
+        dash.update();
+    }
 }
