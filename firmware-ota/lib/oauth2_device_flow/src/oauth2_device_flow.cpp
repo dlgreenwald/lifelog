@@ -99,6 +99,13 @@ uint32_t OAuth2DeviceFlow::getTokenExpiresInSeconds() const {
     return _tokenExpiry - static_cast<uint32_t>(time(NULL));
 }
 
+uint32_t OAuth2DeviceFlow::getRefreshTokenExpiresInSeconds() const {
+    if (!_hasTokens || _refreshToken[0] == '\0' || _refreshTokenExpiry == 0) return 0;
+    uint32_t nowSec = static_cast<uint32_t>(time(NULL));
+    if (nowSec >= _refreshTokenExpiry) return 0;
+    return _refreshTokenExpiry - nowSec;
+}
+
 void OAuth2DeviceFlow::setState(AuthState s) {
     _state = s;
     if (_storage) _storage->putUint32(NS, "state", static_cast<uint32_t>(s));
@@ -128,11 +135,13 @@ void OAuth2DeviceFlow::start() {
             _accessToken[0] = '\0';
             _refreshToken[0] = '\0';
             _tokenExpiry = 0;
+            _refreshTokenExpiry = 0;
             _hasTokens = false;
             if (_storage) {
                 _storage->remove(NS, "access_token");
                 _storage->remove(NS, "refresh_token");
                 _storage->remove(NS, "token_expiry");
+                _storage->remove(NS, "refresh_exp");
                 _storage->putBool(NS, "has_tokens", false);
             }
             if (_config.issuer && _config.issuer[0]) {
@@ -202,6 +211,7 @@ void OAuth2DeviceFlow::saveTokens() {
     _storage->putString(NS, "access_token", _accessToken);
     _storage->putString(NS, "refresh_token", _refreshToken);
     _storage->putUint32(NS, "token_expiry", _tokenExpiry);
+    _storage->putUint32(NS, "refresh_exp", _refreshTokenExpiry);
     _storage->putBool(NS, "has_tokens", _hasTokens);
 }
 
@@ -210,6 +220,7 @@ void OAuth2DeviceFlow::loadTokens() {
     strlcpy(_accessToken, _storage->getString(NS, "access_token", ""), sizeof(_accessToken));
     strlcpy(_refreshToken, _storage->getString(NS, "refresh_token", ""), sizeof(_refreshToken));
     _tokenExpiry = _storage->getUint32(NS, "token_expiry", 0);
+    _refreshTokenExpiry = _storage->getUint32(NS, "refresh_exp", 0);
     _hasTokens = _storage->getBool(NS, "has_tokens", false);
 }
 
@@ -269,9 +280,11 @@ void OAuth2DeviceFlow::loadSavedState() {
 #endif
                 _accessToken[0] = '\0';
                 _tokenExpiry = 0;
+                _refreshTokenExpiry = 0;
                 _hasTokens = false;
                 _storage->remove(NS, "access_token");
                 _storage->remove(NS, "token_expiry");
+                _storage->remove(NS, "refresh_exp");
                 _storage->putBool(NS, "has_tokens", false);
                 // Set state so start() goes straight to device code flow
                 if (_config.issuer && _config.issuer[0]) {
@@ -309,11 +322,13 @@ void OAuth2DeviceFlow::clearTokens() {
     _accessToken[0] = '\0';
     _refreshToken[0] = '\0';
     _tokenExpiry = 0;
+    _refreshTokenExpiry = 0;
     _hasTokens = false;
     if (_storage) {
         _storage->remove(NS, "access_token");
         _storage->remove(NS, "refresh_token");
         _storage->remove(NS, "token_expiry");
+        _storage->remove(NS, "refresh_exp");
         _storage->putBool(NS, "has_tokens", false);
     }
     setState(AUTH_IDLE);
@@ -444,11 +459,13 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                     _accessToken[0] = '\0';
                     _refreshToken[0] = '\0';
                     _tokenExpiry = 0;
+                    _refreshTokenExpiry = 0;
                     _hasTokens = false;
                     if (_storage) {
                         _storage->remove(NS, "access_token");
                         _storage->remove(NS, "refresh_token");
                         _storage->remove(NS, "token_expiry");
+                        _storage->remove(NS, "refresh_exp");
                         _storage->putBool(NS, "has_tokens", false);
                     }
                     setState(AUTH_REQUESTING_CODE);
@@ -573,6 +590,7 @@ void OAuth2DeviceFlow::pollToken() {
     const char* accessToken = resp.body["access_token"] | "";
     const char* refreshToken = resp.body["refresh_token"] | "";
     int expiresIn = resp.body["expires_in"] | 0;
+    int refreshExpiresIn = resp.body["refresh_expires_in"] | 0;
     if (accessToken[0] == '\0') { strlcpy(_lastError, "No access token", sizeof(_lastError)); setState(AUTH_ERROR); return; }
 
     strlcpy(_accessToken, accessToken, sizeof(_accessToken));
@@ -586,12 +604,16 @@ void OAuth2DeviceFlow::pollToken() {
     } else {
         _tokenExpiry = static_cast<uint32_t>(time(NULL)) + expiresIn;
     }
+    _refreshTokenExpiry = (refreshExpiresIn > 0)
+        ? static_cast<uint32_t>(time(NULL)) + refreshExpiresIn : 0;
     _hasTokens = true;
 #ifndef OAUTH2_TESTING
     if (_refreshToken[0] == '\0') {
         Serial.printf("[OAUTH] No refresh token in response — token will require re-auth on expiry\n");
+    } else if (_refreshTokenExpiry > 0) {
+        Serial.printf("[OAUTH] Refresh token received (expires in %ds)\n", refreshExpiresIn);
     } else {
-        Serial.printf("[OAUTH] Refresh token received\n");
+        Serial.printf("[OAUTH] Refresh token received (no expiry)\n");
     }
 #endif
     saveTokens();
@@ -624,6 +646,7 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
     const char* accessToken = resp.body["access_token"] | "";
     const char* refreshToken = resp.body["refresh_token"] | "";
     int expiresIn = resp.body["expires_in"] | 0;
+    int refreshExpiresIn = resp.body["refresh_expires_in"] | 0;
     if (accessToken[0] == '\0') { strlcpy(_lastError, "No token in refresh", sizeof(_lastError)); _hasTokens = false; setState(AUTH_ERROR); return; }
 
     strlcpy(_accessToken, accessToken, sizeof(_accessToken));
@@ -637,12 +660,18 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
     } else {
         _tokenExpiry = static_cast<uint32_t>(time(NULL)) + expiresIn;
     }
+    _refreshTokenExpiry = (refreshExpiresIn > 0)
+        ? static_cast<uint32_t>(time(NULL)) + refreshExpiresIn : 0;
     _hasTokens = true;
 #ifndef OAUTH2_TESTING
     uint32_t nowSec = static_cast<uint32_t>(time(NULL));
-    Serial.printf("[OAUTH] Token refreshed, expires in %lus (at %lu)\n",
-                  _tokenExpiry > nowSec ? _tokenExpiry - nowSec : 0,
-                  (unsigned long)_tokenExpiry);
+    Serial.printf("[OAUTH] Token refreshed, access expires in %lus",
+                  _tokenExpiry > nowSec ? _tokenExpiry - nowSec : 0);
+    if (_refreshTokenExpiry > 0) {
+        Serial.printf(", refresh expires in %lus",
+                      _refreshTokenExpiry > nowSec ? _refreshTokenExpiry - nowSec : 0);
+    }
+    Serial.printf("\n");
 #endif
     saveTokens();
 }

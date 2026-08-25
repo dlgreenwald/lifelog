@@ -71,6 +71,7 @@ public:
     const char* getVerificationUriComplete() const;
     bool hasValidToken() const;
     uint32_t getTokenExpiresInSeconds() const;
+    uint32_t getRefreshTokenExpiresInSeconds() const;
     const char* getLastError() const;
 
     // ── Token management ────────────────────────────────────────────
@@ -159,6 +160,7 @@ private:
     char _refreshToken[512] = {};
     char _lastError[128] = {};
     uint32_t _tokenExpiry = 0;
+    uint32_t _refreshTokenExpiry = 0;  // Epoch seconds; 0 = no expiry known
     uint16_t _pollInterval = 5000;
     uint32_t _lastPollTime = 0;
     uint32_t _flowStartTime = 0;
