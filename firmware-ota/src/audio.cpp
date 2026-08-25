@@ -22,10 +22,6 @@
 
 #include "lifelog_core/codec.h"
 
-// WAV header size
-#define WAV_HEADER_SIZE 44
-#define SAMPLE_BITS 16
-
 // Global state
 volatile bool recording = false;
 volatile bool vadMode = true;

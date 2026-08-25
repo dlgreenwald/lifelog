@@ -3,6 +3,7 @@
 
 #include "oauth2_device_flow.h"
 #include <cstring>
+#include <ctime>
 
 // ── Platform HTTP (esp_http_client or test mock) ───────────────────
 
@@ -79,6 +80,9 @@ void OAuth2DeviceFlow::configure(const OAuth2Config& config) {
 
 // ── State management ───────────────────────────────────────────────
 
+// Read-only getters: safe without mutex on ESP32 (Xtensa).
+// Single-writer (polling task) publishes these; main thread reads.
+// Aligned 32-bit and pointer reads are atomic on Xtensa.
 AuthState OAuth2DeviceFlow::getState() const { return _state; }
 const char* OAuth2DeviceFlow::getUserCode() const { return _userCode; }
 const char* OAuth2DeviceFlow::getVerificationUri() const { return _verificationUri; }
@@ -87,12 +91,12 @@ const char* OAuth2DeviceFlow::getLastError() const { return _lastError; }
 
 bool OAuth2DeviceFlow::hasValidToken() const {
     if (!_hasTokens || _accessToken[0] == '\0') return false;
-    return nowMs() < _tokenExpiry;
+    return static_cast<uint32_t>(time(NULL)) < _tokenExpiry;
 }
 
 uint32_t OAuth2DeviceFlow::getTokenExpiresInSeconds() const {
-    if (!_hasTokens || nowMs() >= _tokenExpiry) return 0;
-    return (_tokenExpiry - nowMs()) / 1000;
+    if (!_hasTokens || static_cast<uint32_t>(time(NULL)) >= _tokenExpiry) return 0;
+    return _tokenExpiry - static_cast<uint32_t>(time(NULL));
 }
 
 void OAuth2DeviceFlow::setState(AuthState s) {
@@ -110,17 +114,27 @@ void OAuth2DeviceFlow::start() {
         _mutex = xSemaphoreCreateMutex();
 #endif
     }
+#ifndef OAUTH2_TESTING
+    xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
+#endif
     if (_state == AUTH_POLLING || _state == AUTH_DISPLAYING_CODE || _state == AUTHENTICATED) {
         if (_pollingTaskHandle) {
 #ifndef OAUTH2_TESTING
+            xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
             vTaskResume(static_cast<TaskHandle_t>(_pollingTaskHandle));
 #endif
         }
+#ifndef OAUTH2_TESTING
+        else xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+#endif
         return;
     }
     setState(AUTH_REQUESTING_CODE);
     _lastError[0] = '\0';
     _flowStartTime = nowMs();
+#ifndef OAUTH2_TESTING
+    xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+#endif
     if (_pollingTaskHandle) {
 #ifndef OAUTH2_TESTING
         vTaskResume(static_cast<TaskHandle_t>(_pollingTaskHandle));
@@ -136,7 +150,13 @@ void OAuth2DeviceFlow::start() {
 }
 
 void OAuth2DeviceFlow::stop() {
+#ifndef OAUTH2_TESTING
+    xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
+#endif
     setState(AUTH_IDLE);
+#ifndef OAUTH2_TESTING
+    xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+#endif
     if (_pollingTaskHandle) {
 #ifndef OAUTH2_TESTING
         vTaskSuspend(static_cast<TaskHandle_t>(_pollingTaskHandle));
@@ -197,7 +217,7 @@ void OAuth2DeviceFlow::loadSavedState() {
 
     if (_hasTokens && _accessToken[0] != '\0') {
         uint32_t jwtExp = parseJwtExp(_accessToken);
-        if (jwtExp > 0) _tokenExpiry = jwtExp * 1000;
+        if (jwtExp > 0) _tokenExpiry = jwtExp;
     }
 }
 
@@ -213,6 +233,9 @@ void OAuth2DeviceFlow::refreshToken() {
 }
 
 void OAuth2DeviceFlow::clearTokens() {
+#ifndef OAUTH2_TESTING
+    xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
+#endif
     _accessToken[0] = '\0';
     _refreshToken[0] = '\0';
     _tokenExpiry = 0;
@@ -224,16 +247,28 @@ void OAuth2DeviceFlow::clearTokens() {
         _storage->putBool(NS, "has_tokens", false);
     }
     setState(AUTH_IDLE);
+#ifndef OAUTH2_TESTING
+    xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+#endif
 }
 
 void OAuth2DeviceFlow::clearConfig() {
+#ifndef OAUTH2_TESTING
+    xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
+#endif
     _config = {};
+    _cfgIssuer[0] = '\0';
+    _cfgClientId[0] = '\0';
+    _cfgScope[0] = '\0';
     if (_storage) {
         _storage->remove(NS, "issuer");
         _storage->remove(NS, "client_id");
         _storage->remove(NS, "scope");
         _storage->remove(NS, "timeout_ms");
     }
+#ifndef OAUTH2_TESTING
+    xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+#endif
 }
 
 // ── Background task ────────────────────────────────────────────────
@@ -266,12 +301,13 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
             }
             case AUTHENTICATED: {
                 // Sleep until halfway to token expiry, then refresh
+                // _tokenExpiry is epoch seconds
                 uint32_t delayMs = 3600000;  // Default 1 hour
                 if (_hasTokens && _tokenExpiry > 0) {
-                    uint32_t now = nowMs();
-                    if (_tokenExpiry > now) {
-                        uint32_t remainingMs = _tokenExpiry - now;
-                        delayMs = remainingMs / 2;  // Wake at halfway
+                    uint32_t nowSec = static_cast<uint32_t>(time(NULL));
+                    if (_tokenExpiry > nowSec) {
+                        uint32_t remainingSec = _tokenExpiry - nowSec;
+                        delayMs = (remainingSec / 2) * 1000;  // Wake at halfway
                     } else {
                         delayMs = 0;  // Already expired, refresh immediately
                     }
@@ -284,7 +320,7 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                 if (_hasTokens && _refreshToken[0] != '\0') {
                     exchangeRefreshToken();
                 }
-                // Loop back to AUTHENTICATED — will calculate new delay
+                break;  // Loop back to re-evaluate state (AUTHENTICATED or AUTH_ERROR)
 #else
                 return;
 #endif
@@ -412,12 +448,12 @@ void OAuth2DeviceFlow::pollToken() {
     strlcpy(_refreshToken, refreshToken, sizeof(_refreshToken));
 
     // Validate JWT exp claim — prefer it over expires_in
+    // Store as epoch seconds (not millis) to avoid uint32 overflow
     uint32_t jwtExp = parseJwtExp(accessToken);
     if (jwtExp > 0) {
-        // jwtExp is epoch seconds, convert to millis timestamp
-        _tokenExpiry = jwtExp * 1000;
+        _tokenExpiry = jwtExp;
     } else {
-        _tokenExpiry = nowMs() + (static_cast<uint32_t>(expiresIn) * 1000);
+        _tokenExpiry = static_cast<uint32_t>(time(NULL)) + expiresIn;
     }
     _hasTokens = true;
     saveTokens();
@@ -450,11 +486,12 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
     if (refreshToken[0] != '\0') strlcpy(_refreshToken, refreshToken, sizeof(_refreshToken));
 
     // Validate JWT exp claim — prefer it over expires_in
+    // Store as epoch seconds (not millis) to avoid uint32 overflow
     uint32_t jwtExp = parseJwtExp(accessToken);
     if (jwtExp > 0) {
-        _tokenExpiry = jwtExp * 1000;
+        _tokenExpiry = jwtExp;
     } else {
-        _tokenExpiry = nowMs() + (static_cast<uint32_t>(expiresIn) * 1000);
+        _tokenExpiry = static_cast<uint32_t>(time(NULL)) + expiresIn;
     }
     _hasTokens = true;
     saveTokens();
@@ -522,8 +559,8 @@ static uint32_t parseJwtExp(const char* jwt) {
 bool OAuth2DeviceFlow::ensureValidToken() {
     if (!_hasTokens || _accessToken[0] == '\0') return false;
 
-    // Check stored expiry
-    if (nowMs() < _tokenExpiry) return true;
+    // Check stored expiry (epoch seconds)
+    if (static_cast<uint32_t>(time(NULL)) < _tokenExpiry) return true;
 
     // Token expired — try refresh
     if (_refreshToken[0] != '\0') {

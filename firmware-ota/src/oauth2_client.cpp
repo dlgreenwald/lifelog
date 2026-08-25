@@ -1,11 +1,8 @@
 // ESP32 OAuth2 client — Preferences-backed storage for the oauth2_device_flow library.
 
 #include "oauth2_client.h"
-#include <SD.h>
 #include <Preferences.h>
 
-static Preferences _oauthPrefs;
-static const char* _oauthNS = "oauth2";
 static OAuth2DeviceFlow _flow;
 
 // ── Storage function pointers ──────────────────────────────────────
@@ -23,10 +20,11 @@ static const char* espGetString(const char* ns, const char* key, const char* def
     String result = p.getString(key, def ? def : "");
     p.end();
     // Rotating static buffers — caller must copy before next getString call
-    static char _bufs[4][512];
+    // 2048 bytes: access_token can be a full JWT (~1500-2048 bytes)
+    static char _bufs[4][2048];
     static int idx = 0;
     char* buf = _bufs[idx++ & 3];
-    strlcpy(buf, result.c_str(), 512);
+    strlcpy(buf, result.c_str(), 2048);
     return buf;
 }
 

@@ -117,7 +117,6 @@ public:
 
     // ── Test hooks ──────────────────────────────────────────────────
 #ifdef OAUTH2_TESTING
-    void _testSetMockTime(uint32_t ms) { _mockTimeMs = ms; }
     void _testSetHttpResponse(int status, const char* jsonBody);
     void pollOnce();
 #endif
@@ -173,7 +172,6 @@ private:
     int _pendingStatus = 0;  // -401 = retry needed after token refresh
 
 #ifdef OAUTH2_TESTING
-    uint32_t _mockTimeMs = 10000;
     int _mockHttpStatus = 0;
     char _mockHttpBody[4096] = {};
     bool _mockHttpReady = false;

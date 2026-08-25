@@ -16,7 +16,6 @@
 #include "settings.h"
 #include "audio.h"
 #include "upload.h"
-#include "commands.h"
 #include "oauth2_client.h"
 
 #define MAX_BOOT 3
@@ -75,9 +74,7 @@ static void loadDeviceSettings() {
     strlcpy(deviceSettings.serverHost, p.getString("server_host", DEFAULT_SERVER_HOST).c_str(), sizeof(deviceSettings.serverHost));
     deviceSettings.serverPort = p.getUShort("server_port", DEFAULT_SERVER_PORT);
     strlcpy(deviceSettings.serverPath, p.getString("server_path", DEFAULT_SERVER_PATH).c_str(), sizeof(deviceSettings.serverPath));
-    strlcpy(deviceSettings.apiKey, p.getString("api_key", API_KEY).c_str(), sizeof(deviceSettings.apiKey));
     strlcpy(deviceSettings.devicePassword, p.getString("device_pw", "").c_str(), sizeof(deviceSettings.devicePassword));
-    deviceSettings.oauthEnabled = p.getBool("oauth_enabled", false);
     strlcpy(deviceSettings.oauthIssuer, p.getString("oauth_issuer", "").c_str(), sizeof(deviceSettings.oauthIssuer));
     strlcpy(deviceSettings.oauthClientId, p.getString("oauth_client_id", "").c_str(), sizeof(deviceSettings.oauthClientId));
     strlcpy(deviceSettings.oauthScope, p.getString("oauth_scope", "openid offline_access").c_str(), sizeof(deviceSettings.oauthScope));
@@ -103,9 +100,7 @@ static void saveDeviceSettings() {
     p.putString("server_host", deviceSettings.serverHost);
     p.putUShort("server_port", deviceSettings.serverPort);
     p.putString("server_path", deviceSettings.serverPath);
-    p.putString("api_key", deviceSettings.apiKey);
     p.putString("device_pw", deviceSettings.devicePassword);
-    p.putBool("oauth_enabled", deviceSettings.oauthEnabled);
     p.putString("oauth_issuer", deviceSettings.oauthIssuer);
     p.putString("oauth_client_id", deviceSettings.oauthClientId);
     p.putString("oauth_scope", deviceSettings.oauthScope);
@@ -167,9 +162,7 @@ static String statusIP;
 static String statusUptime;
 static String statusSDStatus;
 static String statusSDFree;
-static String statusSDFiles;
 static String statusRecording;
-static String statusVAD;
 static String statusUploadQueue;
 static String statusFlushDrops;
 static float dashRingFill = 0;
@@ -359,11 +352,9 @@ static void updateDashboardStatus() {
         uint64_t total = SD.totalBytes();
         uint64_t free_ = total - SD.usedBytes();
         statusSDFree = String(free_ / 1024) + " KB / " + String(total / (1024 * 1024)) + " MB";
-        statusSDFiles = "N/A";
     } else {
         statusSDStatus = "No card";
         statusSDFree = "N/A";
-        statusSDFiles = "N/A";
     }
 
     // OAuth2 status — only show user code/URL during active polling
@@ -414,7 +405,6 @@ static void updateDashboardStatus() {
 
     // Audio (direct reads — no intermediate cache needed)
     statusRecording = recording ? "Active" : "Idle";
-    statusVAD = vadMode ? "On" : "Off";
     statusUploadQueue = String(getUploadQueueDepth());
     statusFlushDrops = String(getFlushDropCount());
     dashRingFill = (float)getRingFillLevel();

@@ -1,7 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
-// LED
+// LED — shares GPIO21 with SD CS on XIAO ESP32-S3 Sense.
+// LED is only used during boot (bootConfirm); safe to share.
 #define LED_PIN  21
 
 // SD Card - XIAO ESP32-S3 Sense built-in slot
@@ -10,9 +11,6 @@
 // PDM Microphone - Sense built-in
 #define I2S_MIC_CLK  42
 #define I2S_MIC_DIN  41
-
-// Server — API_KEY kept as fallback for deviceSettings.apiKey
-#define API_KEY        "07a12a33ae0f36b02e1a54ff158402efafeac9832b013592bd8e5f5061c7eb31"
 
 // ── Compile-time log levels ────────────────────────────────────────
 #define LOG_NONE  0
@@ -82,6 +80,6 @@
 #define LOG_MIC(lvl, fmt, ...) \
     do { if (LOG_MIC_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[MIC] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_LS(lvl, fmt, ...) \
-    do { if (LOG_LS_LEVEL >= (lvl)) Serial.printf("[LS] " fmt "\n", ##__VA_ARGS__); } while(0)
+    do { if (LOG_LS_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[LS] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_OAUTH(lvl, fmt, ...) \
     do { if (LOG_OAUTH_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[OAUTH] " fmt "\n", ##__VA_ARGS__); } } while(0)

@@ -441,7 +441,7 @@ int main() {
     RUN_TEST(test_addKnownNetwork_update_existing);
     RUN_TEST(test_addKnownNetwork_max_limit);
 
-    // ── OAuth2 Device Flow (20 tests) ──
+    // ── OAuth2 Device Flow (28 tests) ──
     RUN_TEST(test_oauth2_initial_state_is_idle);
     RUN_TEST(test_oauth2_start_transitions_to_requesting_code);
     RUN_TEST(test_oauth2_device_code_request_success);
@@ -462,6 +462,14 @@ int main() {
     RUN_TEST(test_oauth2_post_injects_auth_header);
     RUN_TEST(test_oauth2_post_retries_on_401);
     RUN_TEST(test_oauth2_del_injects_auth_header);
+    RUN_TEST(test_oauth2_stop_sets_idle);
+    RUN_TEST(test_oauth2_clearConfig_clears_buffers);
+    RUN_TEST(test_oauth2_loadSavedState_restores);
+    RUN_TEST(test_oauth2_ensureValidToken_noop_when_valid);
+    RUN_TEST(test_oauth2_ensureValidToken_refresh_when_expired);
+    RUN_TEST(test_oauth2_put_returns_zero_when_not_authenticated);
+    RUN_TEST(test_oauth2_patch_returns_zero_when_not_authenticated);
+    RUN_TEST(test_oauth2_malformed_json_response);
 
     UNITY_END();
     return 0;

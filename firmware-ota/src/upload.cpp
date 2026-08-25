@@ -125,14 +125,15 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
         uint8_t readBuf[4096];
         uint32_t totalSent = 0;
         while (totalSent < fileSize) {
+            sdTake();
             int n = file.read(readBuf, sizeof(readBuf));
-            if (n <= 0) break;
             sdGive();
+            if (n <= 0) break;
             oauth2Client().write(readBuf, n);
             totalSent += n;
             vTaskDelay(pdMS_TO_TICKS(1));
-            sdTake();
         }
+        sdTake();
         file.close();
         sdGive();
 

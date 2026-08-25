@@ -5,6 +5,7 @@
 
 #include <unity.h>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <string>
 
@@ -14,6 +15,13 @@
 // ── Mock time ──────────────────────────────────────────────────────
 
 uint32_t _oauth2_test_mock_time = 10000;
+
+// Override time() for native tests — _tokenExpiry now uses epoch seconds
+extern "C" time_t time(time_t* t) {
+    time_t seconds = static_cast<time_t>(_oauth2_test_mock_time / 1000);
+    if (t) *t = seconds;
+    return seconds;
+}
 
 static void oauth2AdvanceTime(uint32_t ms) {
     _oauth2_test_mock_time += ms;
@@ -446,4 +454,123 @@ void test_oauth2_del_injects_auth_header() {
     oauth2Flow._testSetHttpResponse(200, "{\"status\":\"deleted\"}");
     OAuth2HttpResponse resp = oauth2Flow.del("/api/resource/1");
     TEST_ASSERT_EQUAL(200, resp.statusCode);
+}
+
+// ── Additional coverage tests ──────────────────────────────────────
+
+void test_oauth2_stop_sets_idle() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+    oauth2SetupToPolling(oauth2Flow);
+    TEST_ASSERT_EQUAL(AUTH_POLLING, oauth2Flow.getState());
+
+    oauth2Flow.stop();
+    TEST_ASSERT_EQUAL(AUTH_IDLE, oauth2Flow.getState());
+}
+
+void test_oauth2_clearConfig_clears_buffers() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+
+    // Verify config was stored
+    TEST_ASSERT_EQUAL_STRING("https://auth.example.com", mockGetString("oauth2", "issuer", ""));
+
+    oauth2Flow.clearConfig();
+    TEST_ASSERT_EQUAL_STRING("", mockGetString("oauth2", "issuer", ""));
+    TEST_ASSERT_EQUAL_STRING("", mockGetString("oauth2", "client_id", ""));
+}
+
+void test_oauth2_loadSavedState_restores() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+    oauth2SetupToPolling(oauth2Flow);
+    oauth2Flow._testSetHttpResponse(200,
+        "{\"access_token\":\"at_xyz\","
+        "\"refresh_token\":\"rt_xyz\","
+        "\"expires_in\":3600}");
+    oauth2Flow.pollOnce();
+    TEST_ASSERT_TRUE(oauth2Flow.hasValidToken());
+
+    // Create new flow — should restore from storage
+    OAuth2DeviceFlow flow2;
+    flow2.begin(&mockStorage);
+    TEST_ASSERT_TRUE(flow2.hasValidToken());
+    TEST_ASSERT_EQUAL(AUTHENTICATED, flow2.getState());
+}
+
+void test_oauth2_ensureValidToken_noop_when_valid() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+    oauth2SetupToPolling(oauth2Flow);
+    oauth2Flow._testSetHttpResponse(200,
+        "{\"access_token\":\"at_xyz\","
+        "\"refresh_token\":\"rt_xyz\","
+        "\"expires_in\":3600}");
+    oauth2Flow.pollOnce();
+    TEST_ASSERT_TRUE(oauth2Flow.hasValidToken());
+
+    // ensureValidToken should return true without refresh
+    TEST_ASSERT_TRUE(oauth2Flow.ensureValidToken());
+    TEST_ASSERT_EQUAL(AUTHENTICATED, oauth2Flow.getState());
+}
+
+void test_oauth2_ensureValidToken_refresh_when_expired() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+    oauth2SetupToPolling(oauth2Flow);
+    oauth2Flow._testSetHttpResponse(200,
+        "{\"access_token\":\"at_old\","
+        "\"refresh_token\":\"rt_old\","
+        "\"expires_in\":3600}");
+    oauth2Flow.pollOnce();
+
+    // Expire token
+    oauth2AdvanceTime(3601000);
+    TEST_ASSERT_FALSE(oauth2Flow.hasValidToken());
+
+    // Set mock response for refresh
+    oauth2Flow._testSetHttpResponse(200,
+        "{\"access_token\":\"at_new\","
+        "\"refresh_token\":\"rt_new\","
+        "\"expires_in\":3600}");
+
+    TEST_ASSERT_TRUE(oauth2Flow.ensureValidToken());
+    TEST_ASSERT_TRUE(oauth2Flow.hasValidToken());
+}
+
+void test_oauth2_put_returns_zero_when_not_authenticated() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+
+    OAuth2HttpResponse resp = oauth2Flow.put("/api/settings", "data");
+    TEST_ASSERT_EQUAL(0, resp.statusCode);
+}
+
+void test_oauth2_patch_returns_zero_when_not_authenticated() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+
+    OAuth2HttpResponse resp = oauth2Flow.patch("/api/settings", "data");
+    TEST_ASSERT_EQUAL(0, resp.statusCode);
+}
+
+void test_oauth2_malformed_json_response() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+    oauth2SetupToPolling(oauth2Flow);
+
+    // Return malformed JSON — should not crash
+    oauth2Flow._testSetHttpResponse(200, "not json at all {{{");
+    oauth2Flow.pollOnce();
+
+    // Should be in error state (no valid token fields parsed)
+    TEST_ASSERT_EQUAL(AUTH_ERROR, oauth2Flow.getState());
 }

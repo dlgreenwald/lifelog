@@ -4,9 +4,6 @@
 // Audio settings
 #define SAMPLE_RATE     16000
 
-// Stall protection — max time A/B buffer swap waits for writer before dropping
-#define VAD_STALL_TIMEOUT_MS  3000
-
 // Public state
 extern volatile bool recording;
 extern volatile bool vadMode;
