@@ -122,11 +122,17 @@ void OAuth2DeviceFlow::start() {
 #ifndef OAUTH2_TESTING
             xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
             vTaskResume(static_cast<TaskHandle_t>(_pollingTaskHandle));
+            Serial.printf("[OAUTH] Resumed polling task (state=%d)\n", _state);
+#endif
+        } else {
+            // State restored from NVS but task was never created (e.g. boot with valid token)
+#ifndef OAUTH2_TESTING
+            xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+            xTaskCreatePinnedToCore(pollingTaskEntry, "oauth2_poll", 8192,
+                                    this, 2, reinterpret_cast<TaskHandle_t*>(&_pollingTaskHandle), 1);
+            Serial.printf("[OAUTH] Created polling task for restored state=%d\n", _state);
 #endif
         }
-#ifndef OAUTH2_TESTING
-        else xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
-#endif
         return;
     }
     setState(AUTH_REQUESTING_CODE);
@@ -301,35 +307,72 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
             }
             case AUTHENTICATED: {
                 // Sleep until halfway to token expiry, then refresh
-                // _tokenExpiry is epoch seconds
+                // _tokenExpiry is epoch seconds (from JWT exp claim or expires_in fallback)
+                if (!_hasTokens || _refreshToken[0] == '\0') {
+                    // No refresh token — must re-authenticate via device code flow
+#ifndef OAUTH2_TESTING
+                    Serial.printf("[OAUTH] No refresh token, restarting device code flow\n");
+#endif
+                    clearTokens();
+                    if (_config.issuer && _config.issuer[0]) {
+                        setState(AUTH_REQUESTING_CODE);
+                        _flowStartTime = nowMs();
+                    } else {
+                        setState(AUTH_IDLE);
+                    }
+                    break;
+                }
                 uint32_t delayMs = 3600000;  // Default 1 hour
-                if (_hasTokens && _tokenExpiry > 0) {
+                if (_tokenExpiry > 0) {
                     uint32_t nowSec = static_cast<uint32_t>(time(NULL));
                     if (_tokenExpiry > nowSec) {
                         uint32_t remainingSec = _tokenExpiry - nowSec;
                         delayMs = (remainingSec / 2) * 1000;  // Wake at halfway
+#ifndef OAUTH2_TESTING
+                        Serial.printf("[OAUTH] Token valid for %lus, sleeping %lus before refresh\n",
+                                      remainingSec, remainingSec / 2);
+#endif
                     } else {
                         delayMs = 0;  // Already expired, refresh immediately
+#ifndef OAUTH2_TESTING
+                        Serial.printf("[OAUTH] Token expired, refreshing now\n");
+#endif
                     }
                 }
 #ifndef OAUTH2_TESTING
                 xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
                 vTaskDelay(pdMS_TO_TICKS(delayMs));
                 xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
-                // Refresh token
-                if (_hasTokens && _refreshToken[0] != '\0') {
-                    exchangeRefreshToken();
+                Serial.printf("[OAUTH] Background refresh starting\n");
+                exchangeRefreshToken();
+                if (_hasTokens) {
+                    Serial.printf("[OAUTH] Background refresh succeeded\n");
+                } else {
+                    // Refresh failed — restart device code flow (settings preserved)
+                    Serial.printf("[OAUTH] Refresh failed, restarting device code flow\n");
+                    if (_config.issuer && _config.issuer[0]) {
+                        setState(AUTH_REQUESTING_CODE);
+                        _flowStartTime = nowMs();
+                    }
                 }
-                break;  // Loop back to re-evaluate state (AUTHENTICATED or AUTH_ERROR)
+                break;  // Loop back to re-evaluate state
 #else
                 return;
 #endif
             }
             case AUTH_ERROR:
 #ifndef OAUTH2_TESTING
-                xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
-                vTaskSuspend(NULL);
-                continue;
+                // If config is valid, auto-recover by restarting device code flow
+                if (_config.issuer && _config.issuer[0]) {
+                    Serial.printf("[OAUTH] Error state with valid config, restarting device code flow\n");
+                    clearTokens();
+                    setState(AUTH_REQUESTING_CODE);
+                    _flowStartTime = nowMs();
+                } else {
+                    xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+                    vTaskSuspend(NULL);
+                    continue;
+                }
 #endif
                 break;
             default: break;
@@ -469,8 +512,14 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
     snprintf(body, sizeof(body), "grant_type=refresh_token&refresh_token=%s&client_id=%s",
              _refreshToken, _config.clientId);
 
+#ifndef OAUTH2_TESTING
+    Serial.printf("[OAUTH] Refreshing token via %s\n", url);
+#endif
     OAuth2HttpResponse resp = requestInternal("POST", url, nullptr, body);
     if (resp.statusCode == 0 || resp.statusCode != 200) {
+#ifndef OAUTH2_TESTING
+        Serial.printf("[OAUTH] Token refresh failed: status=%d\n", resp.statusCode);
+#endif
         strlcpy(_lastError, "Token refresh failed", sizeof(_lastError));
         _hasTokens = false;
         setState(AUTH_ERROR);
@@ -494,6 +543,12 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
         _tokenExpiry = static_cast<uint32_t>(time(NULL)) + expiresIn;
     }
     _hasTokens = true;
+#ifndef OAUTH2_TESTING
+    uint32_t nowSec = static_cast<uint32_t>(time(NULL));
+    Serial.printf("[OAUTH] Token refreshed, expires in %lus (at %lu)\n",
+                  _tokenExpiry > nowSec ? _tokenExpiry - nowSec : 0,
+                  (unsigned long)_tokenExpiry);
+#endif
     saveTokens();
 }
 
