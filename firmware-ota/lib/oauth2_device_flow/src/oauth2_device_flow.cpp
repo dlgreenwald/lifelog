@@ -65,13 +65,6 @@ void OAuth2DeviceFlow::configure(const OAuth2Config& config) {
     strlcpy(_cfgIssuer, config.issuer ? config.issuer : "", sizeof(_cfgIssuer));
     strlcpy(_cfgClientId, config.clientId ? config.clientId : "", sizeof(_cfgClientId));
     strlcpy(_cfgScope, config.scope ? config.scope : "", sizeof(_cfgScope));
-    // Ensure offline_access is always present — required for refresh tokens
-    if (_cfgScope[0] != '\0' && !strstr(_cfgScope, "offline_access")) {
-        size_t len = strlen(_cfgScope);
-        if (len + sizeof(" offline_access") <= sizeof(_cfgScope)) {
-            strlcpy(_cfgScope + len, " offline_access", sizeof(_cfgScope) - len);
-        }
-    }
     _config.issuer = _cfgIssuer;
     _config.clientId = _cfgClientId;
     _config.scope = _cfgScope;
