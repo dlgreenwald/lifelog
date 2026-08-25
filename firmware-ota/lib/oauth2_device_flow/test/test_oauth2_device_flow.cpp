@@ -380,7 +380,7 @@ void test_oauth2_configure_overwrites_defaults() {
 
     TEST_ASSERT_EQUAL_STRING("https://custom.example.com", mockGetString("oauth2", "issuer", ""));
     TEST_ASSERT_EQUAL_STRING("custom-client", mockGetString("oauth2", "client_id", ""));
-    TEST_ASSERT_EQUAL_STRING("openid", mockGetString("oauth2", "scope", ""));
+    TEST_ASSERT_EQUAL_STRING("openid offline_access", mockGetString("oauth2", "scope", ""));
 
     OAuth2DeviceFlow flow2;
     flow2.begin(&mockStorage);
