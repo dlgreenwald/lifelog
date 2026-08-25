@@ -16,7 +16,7 @@ LifeLog is a voice-activated life journal. A wearable recorder (XIAO ESP32-S3 + 
 
 ```mermaid
 graph LR
-    ESP32[Wearable<br/>ESP32-S3] -->|HTTPS + X-API-Key| ORCH[Orchestrator<br/>FastAPI :8443]
+    ESP32[Wearable<br/>ESP32-S3] -->|HTTPS + OAuth2 Bearer| ORCH[Orchestrator<br/>FastAPI :8443]
     ORCH -->|HTTPS| WHISPER[whisper-asr<br/>whisperx GPU :9000]
     ORCH -->|HTTPS| SPK[Speaker ID<br/>ECAPA-TDNN GPU :8443]
     ORCH -->|OpenAI-compat API| LLM[Local LLM]
@@ -29,7 +29,7 @@ graph LR
 - **Background worker**: `worker.py` polls for pending utterances and runs the full pipeline asynchronously
 - **Stateless GPU services**: Voiceprints are passed in HTTP request bodies, not fetched from DB
 - **Per-user encryption**: Audio encrypted with Fernet keys derived via PBKDF2 from user-specific secrets
-- **Independent auth**: Device uploads use `X-API-Key`; dashboard uses OIDC JWT. Both map to the same user row
+- **Independent auth**: Device uploads use OAuth2 device code flow; dashboard uses OIDC JWT. Both map to the same user row
 - **DB isolation**: Only the orchestrator connects to PostgreSQL. GPU services have zero DB access
 - **ESP32 dashboard**: RisalDash replaces ESPUI+WiFiManager — handles WiFi captive portal, credential storage, reconnection, OTA updates, and real-time web dashboard via WebSocket
 
@@ -104,7 +104,7 @@ npm run build        # Production build
 ```bash
 cd firmware-ota
 pio run                              # Build only
-pio test -e test                     # Run native tests (38 tests)
+pio test -e test                     # Run native tests (66 tests)
 pio device monitor                   # Serial monitor (115200 baud)
 
 # OTA update (HTTP, not ArduinoOTA):
@@ -139,7 +139,7 @@ cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 15 tests
 cd dashboard && npx vitest run                            # 83 tests
 
 # Firmware-OTA
-cd firmware-ota && pio test -e test                       # 38 tests
+cd firmware-ota && pio test -e test                       # 66 tests
 ```
 
 ## Code Conventions & Common Patterns
@@ -282,7 +282,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 
 ## Testing & QA
 
-**Total**: ~219 tests across 5 components (75 server + 8 diarization + 15 speaker-id + 83 dashboard + 38 firmware-ota)
+**Total**: ~247 tests across 5 components (75 server + 8 diarization + 15 speaker-id + 83 dashboard + 66 firmware-ota)
 
 ### Python test framework
 - **pytest** with `pytest-asyncio` (`asyncio_mode = "auto"`)
@@ -305,7 +305,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 | Dashboard components | 7 components | `vi.mock` API client, `render` + `screen` queries |
 | API client | 8 methods | `vi.stubGlobal('fetch')` with mock responses |
 | ML pipeline | 3 functions | `sys.modules` mocking for pyannote/torch/speechbrain |
-| Firmware-OTA | 38 tests | Native Unity tests with full ESP32/FreeRTOS mock layer |
+| Firmware-OTA | 66 tests | Native Unity tests with full ESP32/FreeRTOS mock layer |
 
 ### Key testing patterns
 - **FastAPI routes**: Always use `app.dependency_overrides[validate_oidc_token]` (not `patch`) — FastAPI captures dependency references at import time
@@ -340,7 +340,7 @@ Before merging any change:
 
 1. **Lint**: `ruff check src/ tests/` passes on all Python services (0 errors)
 2. **Type check**: `npx tsc --noEmit` passes on dashboard (0 errors)
-3. **Tests**: All ~152 tests pass across all 5 services
+3. **Tests**: All ~247 tests pass across all 5 services
 4. **No regressions**: Existing functionality not broken
 
 ### Ruff configuration
@@ -376,7 +376,7 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | `diarization/build.sh` | compile check → ruff lint → pytest (8 tests) |
 | `speaker-id/build.sh` | compile check → ruff lint → pytest (15 tests) |
 | `dashboard/build.sh` | tsc type check → vite build → vitest (83 tests) → bundle size |
-| `firmware-ota/build.sh` | pio compile check → native test (38 tests) |
+| `firmware-ota/build.sh` | pio compile check → native test (66 tests) |
 
 **Run everything:**
 ```bash

@@ -77,11 +77,11 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 | `src/audio.h` | Public API: task handles, sdTake/sdGive, utterance globals |
 | `src/upload.cpp` | HTTP multipart upload, file streaming, bulk re-upload |
 | `src/upload.h` | Public: uploadFile(), uploadAllRecordings() |
-| `src/commands.cpp` | Serial command parser: rec, stop, vad, upload, ls, mic |
-| `src/commands.h` | Public: commandsInit(), processCommand() |
+| `src/oauth2_client.cpp` | ESP32 OAuth2 Preferences-backed storage for device flow |
+| `src/oauth2_client.h` | Public: oauth2ClientInit(), oauth2Client() |
 | `src/afe_stubs.h` | Weak stubs for esp-dl/FFT symbols not in precompiled libs |
 | `test/mocks.h` | Complete ESP32/FreeRTOS/Arduino/Opus/OGG mock layer |
-| `test/test_all.cpp` | 108 Unity tests across 10 categories |
+| `test/test_all.cpp` | 66 Unity tests across 10 categories |
 | `partitions/partitions_ota.csv` | OTA partition table with model partition |
 
 ## Development Commands
@@ -143,7 +143,7 @@ esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
 
 ### Tests
 ```bash
-pio test -e test                  # Run all 108 native tests
+pio test -e test                  # Run all 66 native tests
 ```
 
 ### Serial Monitor
@@ -153,17 +153,6 @@ pio device monitor                # 115200 baud
 
 ### WiFi Config
 Device creates AP `LifeLog-Setup` on first boot or connection failure. Connect and configure at `http://192.168.4.1`.
-
-## Serial Commands
-
-| Command | Action |
-|---|---|
-| `rec` | Start 5-second test recording |
-| `stop` | Stop current recording |
-| `vad` | Toggle VAD mode on/off |
-| `upload` | Upload all recordings on SD |
-| `ls` | List files in `/lifelog/` |
-| `mic` | Toggle mic on/off |
 
 ## Configuration
 
@@ -192,7 +181,7 @@ Device creates AP `LifeLog-Setup` on first boot or connection failure. Connect a
 | Host | `192.168.68.190` |
 | Port | `8444` |
 | Endpoint | `POST /api/v1/upload` |
-| Auth | `X-API-Key` header |
+| Auth | OAuth2 Bearer token (device code flow) |
 
 ### Compile-Time Flags
 
@@ -204,7 +193,7 @@ Device creates AP `LifeLog-Setup` on first boot or connection failure. Connect a
 ### Log Levels
 
 Per-component, compile-time in `config.h` (0=NONE, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG):
-BOOT, WIFI, OTA, SYSTEM, SD, I2S, AUDIO, VAD, AFE, UPLOAD, CMD, MIC, LS
+BOOT, WIFI, OTA, SYSTEM, SD, I2S, AUDIO, VAD, AFE, UPLOAD, MIC, LS, OAUTH
 
 ## Partition Table
 
@@ -326,10 +315,10 @@ To fix this properly: restructure tests to `#include` the actual `.cpp` files (w
 
 ### Framework
 - **Unity** (throwtheswitch/Unity@^2.5.2) — native platform, no hardware needed
-- **108 tests** across 10 categories
+- **66 tests** across 10 categories
 
 ### Categories
-WAV header generation, Opus header generation, Opus frame encoding, OGG page structure, ring buffer operations, VAD state machine, file naming, upload request building, command parsing, config validation
+WAV header generation, Opus header generation, Opus tags, filename generation, upload extension matching, addKnownNetwork, OAuth2 device code flow (registration, polling, token management, HTTP proxy)
 
 ### Mock Layer (`test/mocks.h`)
 Complete ESP32/FreeRTOS/Arduino mock for native compilation:
@@ -379,7 +368,7 @@ pio test -e test
 
 | Script | Steps |
 |---|---|
-| `build.sh` | pio compile → native tests (88 tests) |
+| `build.sh` | pio compile → native tests (66 tests) |
 
 ## Dependencies
 

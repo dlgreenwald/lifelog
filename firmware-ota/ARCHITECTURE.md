@@ -245,16 +245,15 @@ flowchart TB
     D --> E["setupSD()<br/>SD.begin(SD_CS_PIN, SPI, 25000000)<br/>25MHz SPI clock<br/>Creates /lifelog/ if missing"]
     E --> F["audioInit()<br/>Init I2S PDM (16kHz, mono)<br/>Init esp-sr AFE (NSNET2 + WebRTC VAD)<br/>Init Opus encoder (24kbps, 20ms frames)<br/>Init OGG mux<br/>Create ring buffer<br/>Create upload queue (depth 8)"]
     F --> G["setupOTA()<br/>ArduinoOTA init<br/>Hostname: lifelog"]
-    G --> H["commandsInit()<br/>Serial command parser"]
-    H --> I["xTaskCreatePinnedToCore<br/>afe_feed → Core 0"]
-    H --> J["xTaskCreatePinnedToCore<br/>afe_fetch → Core 1"]
-    H --> K["xTaskCreatePinnedToCore<br/>writer → Core 1"]
-    I --> L["setWriterTaskHandle()"]
-    J --> L
-    K --> L
-    L --> M["esp_task_wdt_delete(NULL)<br/>Remove loop + idle from WDT"]
-    M --> N["bootConfirm()<br/>NVS: confirmed=1, boots=0"]
-    N --> O["Log Ready! AFE active"]
+    G --> H["xTaskCreatePinnedToCore<br/>afe_feed → Core 0"]
+    G --> I["xTaskCreatePinnedToCore<br/>afe_fetch → Core 1"]
+    G --> J["xTaskCreatePinnedToCore<br/>writer → Core 1"]
+    H --> K["setWriterTaskHandle()"]
+    I --> K
+    J --> K
+    K --> L["esp_task_wdt_delete(NULL)<br/>Remove loop + idle from WDT"]
+    L --> M["bootConfirm()<br/>NVS: confirmed=1, boots=0"]
+    M --> N["Log Ready! AFE active"]
 ```
 
 ## Opus/OGG Encoding
@@ -371,19 +370,8 @@ flowchart TB
 | Host | `192.168.68.190` |
 | Port | `8444` |
 | Endpoint | `POST /api/v1/upload` |
-| Auth | `X-API-Key` header |
-| Protocol | HTTPS (self-signed cert) |
-
-### Serial Commands
-
-| Command | Action |
-|---------|--------|
-| `rec` | Start 5-second test recording |
-| `stop` | Stop current recording |
-| `vad` | Toggle VAD mode on/off |
-| `upload` | Upload all recordings on SD |
-| `ls` | List files in `/lifelog/` |
-| `mic` | Toggle mic on/off |
+| Auth | OAuth2 Bearer token (device code flow) |
+| Protocol | HTTPS (cert bundle via `esp_crt_bundle_attach`) |
 
 ## Memory Layout
 
