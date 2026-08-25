@@ -16,27 +16,8 @@
 // Server API key (matches config.h)
 #define API_KEY "07a12a33ae0f36b02e1a54ff158402efafeac9832b013592bd8e5f5061c7eb31"
 
-// Forward declarations — OAuth2 device flow tests (defined in test_oauth2_device_flow.cpp)
-void test_oauth2_initial_state_is_idle();
-void test_oauth2_start_transitions_to_requesting_code();
-void test_oauth2_device_code_request_success();
-void test_oauth2_device_code_request_network_error();
-void test_oauth2_poll_authorization_pending();
-void test_oauth2_poll_slow_down();
-void test_oauth2_poll_success();
-void test_oauth2_poll_expired_token_error();
-void test_oauth2_poll_access_denied();
-void test_oauth2_poll_timeout();
-void test_oauth2_start_after_error_retries();
-void test_oauth2_has_valid_token();
-void test_oauth2_clear_tokens();
-void test_oauth2_token_refresh();
-void test_oauth2_storage_roundtrip();
-void test_oauth2_configure_overwrites_defaults();
-void test_oauth2_get_returns_zero_when_not_authenticated();
-void test_oauth2_post_injects_auth_header();
-void test_oauth2_post_retries_on_401();
-void test_oauth2_del_injects_auth_header();
+// Pull in OAuth2 device flow tests from the library's test directory
+#include "../lib/oauth2_device_flow/test/test_oauth2_device_flow.cpp"
 
 // ═══════════════════════════════════════════════════════════════════
 // Test state — reset each test via setUp()

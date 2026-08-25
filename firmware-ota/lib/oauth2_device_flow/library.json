@@ -5,6 +5,7 @@
   "keywords": "oauth2, device-code, rfc8628, authentik, oidc, esp32",
   "frameworks": "arduino",
   "platforms": "espressif32",
+  "test": true,
   "dependencies": [
     { "name": "ArduinoJson", "frameworks": "arduino" }
   ]
