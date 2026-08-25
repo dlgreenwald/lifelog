@@ -470,7 +470,7 @@ void setup() {
     bootInit();
     loadDeviceSettings();
 
-    // Initialize OAuth2 client — always start background task for token refresh
+    // Initialize OAuth2 config (but don't start task yet — WiFi not connected)
     oauth2ClientInit();
     if (deviceSettings.oauthIssuer[0] && deviceSettings.oauthClientId[0]) {
         OAuth2Config oauthCfg;
@@ -479,12 +479,6 @@ void setup() {
         oauthCfg.scope = deviceSettings.oauthScope;
         oauthCfg.timeoutMs = 600000;
         oauth2Client().configure(oauthCfg);
-        oauth2Client().start();  // Creates refresh task (or starts device code flow)
-        if (!oauth2Client().hasValidToken()) {
-            LOG_OAUTH(LOG_INFO, "Device code flow started (no valid token)");
-        } else {
-            LOG_OAUTH(LOG_INFO, "Background token refresh active");
-        }
     }
 
     setupSD();
@@ -495,6 +489,16 @@ void setup() {
     // - Saved creds → STA mode, connects to known network
     dash.begin();
     setupOTA();  // Register AFTER dash.begin() so we override RisalDash's /update routes
+
+    // Start OAuth2 background task AFTER WiFi is connected
+    if (deviceSettings.oauthIssuer[0] && deviceSettings.oauthClientId[0]) {
+        oauth2Client().start();
+        if (!oauth2Client().hasValidToken()) {
+            LOG_OAUTH(LOG_INFO, "Device code flow started (no valid token)");
+        } else {
+            LOG_OAUTH(LOG_INFO, "Background token refresh active");
+        }
+    }
 
     setupMDNS();
     audioInit();

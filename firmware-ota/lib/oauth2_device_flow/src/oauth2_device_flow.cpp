@@ -118,6 +118,30 @@ void OAuth2DeviceFlow::start() {
     xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
 #endif
     if (_state == AUTH_POLLING || _state == AUTH_DISPLAYING_CODE || _state == AUTHENTICATED) {
+        // If authenticated but token expired and no refresh token, restart device code flow
+        if (_state == AUTHENTICATED && (!_hasTokens || _refreshToken[0] == '\0' ||
+            static_cast<uint32_t>(time(NULL)) >= _tokenExpiry)) {
+#ifndef OAUTH2_TESTING
+            Serial.printf("[OAUTH] Token expired/unavailable on startup, restarting device code flow\n");
+#endif
+            // Clear stale tokens directly (can't call clearTokens() — mutex already held)
+            _accessToken[0] = '\0';
+            _refreshToken[0] = '\0';
+            _tokenExpiry = 0;
+            _hasTokens = false;
+            if (_storage) {
+                _storage->remove(NS, "access_token");
+                _storage->remove(NS, "refresh_token");
+                _storage->remove(NS, "token_expiry");
+                _storage->putBool(NS, "has_tokens", false);
+            }
+            if (_config.issuer && _config.issuer[0]) {
+                setState(AUTH_REQUESTING_CODE);
+                _flowStartTime = nowMs();
+            } else {
+                setState(AUTH_IDLE);
+            }
+        }
         if (_pollingTaskHandle) {
 #ifndef OAUTH2_TESTING
             xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
@@ -127,10 +151,11 @@ void OAuth2DeviceFlow::start() {
         } else {
             // State restored from NVS but task was never created (e.g. boot with valid token)
 #ifndef OAUTH2_TESTING
+            int savedState = _state;
             xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
             xTaskCreatePinnedToCore(pollingTaskEntry, "oauth2_poll", 8192,
                                     this, 2, reinterpret_cast<TaskHandle_t*>(&_pollingTaskHandle), 1);
-            Serial.printf("[OAUTH] Created polling task for restored state=%d\n", _state);
+            Serial.printf("[OAUTH] Created polling task (state=%d)\n", savedState);
 #endif
         }
         return;
@@ -221,9 +246,48 @@ void OAuth2DeviceFlow::loadSavedState() {
     _config.timeoutMs = _storage->getUint32(NS, "timeout_ms", 600000);
     _state = static_cast<AuthState>(_storage->getUint32(NS, "state", static_cast<uint32_t>(AUTH_IDLE)));
 
+    // Parse JWT exp to get accurate token expiry
     if (_hasTokens && _accessToken[0] != '\0') {
         uint32_t jwtExp = parseJwtExp(_accessToken);
         if (jwtExp > 0) _tokenExpiry = jwtExp;
+    }
+
+    // Validate token state on boot — don't trust NVS blindly
+    if (_state == AUTHENTICATED && _hasTokens && _accessToken[0] != '\0') {
+        uint32_t nowSec = static_cast<uint32_t>(time(NULL));
+        if (_tokenExpiry > 0 && nowSec >= _tokenExpiry) {
+            // Access token expired — can we recover?
+            if (_refreshToken[0] != '\0') {
+                // Have refresh token → stay AUTHENTICATED, background task will refresh
+#ifndef OAUTH2_TESTING
+                Serial.printf("[OAUTH] Boot: access token expired, refresh token available\n");
+#endif
+            } else {
+                // No refresh token → must re-authenticate from scratch
+#ifndef OAUTH2_TESTING
+                Serial.printf("[OAUTH] Boot: access token expired, no refresh token — restarting auth\n");
+#endif
+                _accessToken[0] = '\0';
+                _tokenExpiry = 0;
+                _hasTokens = false;
+                _storage->remove(NS, "access_token");
+                _storage->remove(NS, "token_expiry");
+                _storage->putBool(NS, "has_tokens", false);
+                // Set state so start() goes straight to device code flow
+                if (_config.issuer && _config.issuer[0]) {
+                    _state = AUTH_REQUESTING_CODE;
+                } else {
+                    _state = AUTH_IDLE;
+                }
+                _storage->putUint32(NS, "state", static_cast<uint32_t>(_state));
+            }
+        }
+#ifndef OAUTH2_TESTING
+        else if (_tokenExpiry > 0) {
+            Serial.printf("[OAUTH] Boot: token valid for %lus\n",
+                          _tokenExpiry - nowSec);
+        }
+#endif
     }
 }
 
@@ -309,12 +373,22 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                 // Sleep until halfway to token expiry, then refresh
                 // _tokenExpiry is epoch seconds (from JWT exp claim or expires_in fallback)
                 if (!_hasTokens || _refreshToken[0] == '\0') {
-                    // No refresh token — must re-authenticate via device code flow
+                // No refresh token — must re-authenticate via device code flow
 #ifndef OAUTH2_TESTING
-                    Serial.printf("[OAUTH] No refresh token, restarting device code flow\n");
+                Serial.printf("[OAUTH] No refresh token, restarting device code flow\n");
 #endif
-                    clearTokens();
-                    if (_config.issuer && _config.issuer[0]) {
+                // Clear stale tokens directly (mutex already held — can't call clearTokens())
+                _accessToken[0] = '\0';
+                _refreshToken[0] = '\0';
+                _tokenExpiry = 0;
+                _hasTokens = false;
+                if (_storage) {
+                    _storage->remove(NS, "access_token");
+                    _storage->remove(NS, "refresh_token");
+                    _storage->remove(NS, "token_expiry");
+                    _storage->putBool(NS, "has_tokens", false);
+                }
+                if (_config.issuer && _config.issuer[0]) {
                         setState(AUTH_REQUESTING_CODE);
                         _flowStartTime = nowMs();
                     } else {
@@ -365,7 +439,17 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                 // If config is valid, auto-recover by restarting device code flow
                 if (_config.issuer && _config.issuer[0]) {
                     Serial.printf("[OAUTH] Error state with valid config, restarting device code flow\n");
-                    clearTokens();
+                    // Clear tokens directly (mutex already held)
+                    _accessToken[0] = '\0';
+                    _refreshToken[0] = '\0';
+                    _tokenExpiry = 0;
+                    _hasTokens = false;
+                    if (_storage) {
+                        _storage->remove(NS, "access_token");
+                        _storage->remove(NS, "refresh_token");
+                        _storage->remove(NS, "token_expiry");
+                        _storage->putBool(NS, "has_tokens", false);
+                    }
                     setState(AUTH_REQUESTING_CODE);
                     _flowStartTime = nowMs();
                 } else {
