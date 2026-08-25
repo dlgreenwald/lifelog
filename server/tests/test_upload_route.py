@@ -5,8 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from lifelog.auth import validate_api_key
-from lifelog.routes.upload import _active_utterances, router
+from lifelog.routes.upload import _active_utterances, router, validate_upload_auth
 
 SERVER_UTT_ID = 1700000000
 
@@ -16,10 +15,10 @@ def _app_with_mocks(user=None):
     app = FastAPI()
     app.include_router(router)
 
-    async def fake_api_key(x_api_key: str = ""):
+    async def fake_upload_auth():
         return user or {"id": 1, "api_key": "test-key", "name": "Test", "encryption_secret": "secret-123"}
 
-    app.dependency_overrides[validate_api_key] = fake_api_key
+    app.dependency_overrides[validate_upload_auth] = fake_upload_auth
     return app
 
 
@@ -223,8 +222,8 @@ async def test_upload_finalize_on_is_final():
 
 
 @pytest.mark.asyncio
-async def test_upload_missing_api_key():
-    """Upload without API key returns 422 (missing required header)."""
+async def test_upload_missing_auth():
+    """Upload without Bearer token returns 401."""
     app = FastAPI()
     app.include_router(router)
 
@@ -233,9 +232,10 @@ async def test_upload_missing_api_key():
         "/upload",
         files={"file": ("test.opus", b"data", "audio/opus")},
         data={"utterance_id": 1, "chunk_index": 0, "is_final": "true"},
+        headers={"Authorization": "Invalid token"},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio

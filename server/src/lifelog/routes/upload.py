@@ -1,11 +1,21 @@
 import logging
 import time
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, UploadFile
 
 from lifelog import database
-from lifelog.auth import validate_api_key
+from lifelog.auth import validate_bearer_token
 from lifelog.database import save_utterance_chunk
+
+
+async def validate_upload_auth(
+    authorization: str = Header(...),
+) -> dict:
+    """Validate upload authentication: Bearer token required."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
+    token = authorization[7:]
+    return await validate_bearer_token(token)
 
 logger = logging.getLogger("lifelog.upload")
 
@@ -58,7 +68,7 @@ async def upload_audio(
     utterance_id: int = Form(...),
     chunk_index: int = Form(...),
     is_final: bool = Form(...),
-    user: dict = Depends(validate_api_key),
+    user: dict = Depends(validate_upload_auth),
 ):
     """Accept Opus audio chunk. Store it; worker processes on is_final.
 
@@ -151,7 +161,7 @@ async def upload_audio(
 @router.get("/utterance/{utterance_id}/status")
 async def get_utterance_status(
     utterance_id: int,
-    user: dict = Depends(validate_api_key),
+    user: dict = Depends(validate_upload_auth),
 ):
     """Check processing status of an utterance."""
     async with database.pool.acquire() as conn:

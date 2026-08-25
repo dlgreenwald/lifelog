@@ -23,6 +23,11 @@ struct DeviceSettings {
     char serverPath[64];
     char apiKey[128];
     char devicePassword[64];  // Protects ESPUI page + AP; empty = no auth
+    // OAuth2 device code flow
+    bool oauthEnabled;
+    char oauthIssuer[128];
+    char oauthClientId[128];
+    char oauthScope[64];
 };
 
 // Add or update a known network. Deduplicates by SSID.

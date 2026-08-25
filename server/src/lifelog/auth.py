@@ -44,6 +44,34 @@ async def validate_api_key(x_api_key: str = Header(...)) -> dict:
     return user
 
 
+async def validate_bearer_token(token: str) -> dict:
+    """Validate a raw Bearer token string (not a FastAPI dependency).
+
+    Used by endpoints that accept both API key and Bearer token auth.
+    """
+    from lifelog.database import get_user_by_oidc_sub
+
+    try:
+        signing_key = _get_jwk_client().get_signing_key_from_jwt(token)
+        payload = pyjwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256", "ES256"],
+            audience=settings.oidc_client_id,
+            issuer=settings.oidc_issuer_url,
+        )
+        user = await get_user_by_oidc_sub(payload["sub"])
+        if not user:
+            from lifelog.database import create_user
+            user = await create_user(
+                oidc_sub=payload["sub"],
+                name=payload.get("preferred_username", payload.get("sub", "User")),
+            )
+        return user
+    except pyjwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
 async def validate_oidc_token(
     token: str = Depends(security),
 ) -> dict:

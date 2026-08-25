@@ -36,6 +36,7 @@
 #define LOG_CMD_LEVEL     LOG_DEBUG
 #define LOG_MIC_LEVEL     LOG_DEBUG
 #define LOG_LS_LEVEL     LOG_DEBUG
+#define LOG_OAUTH_LEVEL  LOG_INFO
 
 // ── Audio format selection (set via build_flags: -DAUDIO_FORMAT_OPUS) ──
 #if defined(AUDIO_FORMAT_OPUS)
@@ -82,3 +83,5 @@
     do { if (LOG_MIC_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[MIC] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define LOG_LS(lvl, fmt, ...) \
     do { if (LOG_LS_LEVEL >= (lvl)) Serial.printf("[LS] " fmt "\n", ##__VA_ARGS__); } while(0)
+#define LOG_OAUTH(lvl, fmt, ...) \
+    do { if (LOG_OAUTH_LEVEL >= (lvl)) { LOG_TS; Serial.printf("[OAUTH] " fmt "\n", ##__VA_ARGS__); } } while(0)

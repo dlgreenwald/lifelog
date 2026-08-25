@@ -17,6 +17,7 @@
 #include "audio.h"
 #include "upload.h"
 #include "commands.h"
+#include "oauth2_client.h"
 
 #define MAX_BOOT 3
 #define HOSTNAME "LifeLog"
@@ -76,6 +77,10 @@ static void loadDeviceSettings() {
     strlcpy(deviceSettings.serverPath, p.getString("server_path", DEFAULT_SERVER_PATH).c_str(), sizeof(deviceSettings.serverPath));
     strlcpy(deviceSettings.apiKey, p.getString("api_key", API_KEY).c_str(), sizeof(deviceSettings.apiKey));
     strlcpy(deviceSettings.devicePassword, p.getString("device_pw", "").c_str(), sizeof(deviceSettings.devicePassword));
+    deviceSettings.oauthEnabled = p.getBool("oauth_enabled", false);
+    strlcpy(deviceSettings.oauthIssuer, p.getString("oauth_issuer", "").c_str(), sizeof(deviceSettings.oauthIssuer));
+    strlcpy(deviceSettings.oauthClientId, p.getString("oauth_client_id", "").c_str(), sizeof(deviceSettings.oauthClientId));
+    strlcpy(deviceSettings.oauthScope, p.getString("oauth_scope", "openid offline_access").c_str(), sizeof(deviceSettings.oauthScope));
     knownNetworkCount = 0;
     String netsJson = p.getString("known_nets", "[]");
     p.end();
@@ -100,6 +105,10 @@ static void saveDeviceSettings() {
     p.putString("server_path", deviceSettings.serverPath);
     p.putString("api_key", deviceSettings.apiKey);
     p.putString("device_pw", deviceSettings.devicePassword);
+    p.putBool("oauth_enabled", deviceSettings.oauthEnabled);
+    p.putString("oauth_issuer", deviceSettings.oauthIssuer);
+    p.putString("oauth_client_id", deviceSettings.oauthClientId);
+    p.putString("oauth_scope", deviceSettings.oauthScope);
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
     for (int i = 0; i < knownNetworkCount; i++) {
@@ -139,9 +148,17 @@ static RisalUI dash(HOSTNAME);
 static String cfgHostname;
 static String cfgServerHost;
 static String cfgServerPort;
-static String cfgServerPath;
-static String cfgApiKey;
 static String cfgDevicePw;
+
+// OAuth config (editable)
+static String cfgOAuthIssuer;
+static String cfgOAuthClientId;
+
+// OAuth status (read-only)
+static String statusAuthState;
+static String statusUserCode;
+static String statusVerificationUri;
+static String statusTokenExpiry;
 
 // Status (read-only, updated in loop)
 static String statusWiFi;
@@ -170,14 +187,18 @@ static void setupDashboard() {
     cfgHostname = deviceSettings.hostname;
     cfgServerHost = deviceSettings.serverHost;
     cfgServerPort = String(deviceSettings.serverPort);
-    cfgServerPath = deviceSettings.serverPath;
-    cfgApiKey = deviceSettings.apiKey;
     cfgDevicePw = deviceSettings.devicePassword;
+    cfgOAuthIssuer = deviceSettings.oauthIssuer;
+    cfgOAuthClientId = deviceSettings.oauthClientId;
 
-    dash.lang("en"); 
+    dash.lang("en");
 
-    // ── Settings (editable) ──
-    dash.separator("Settings");
+    // ════════════════════════════════════════════════════════════════
+    // Settings Tab
+    // ════════════════════════════════════════════════════════════════
+    dash.tab("Settings");
+
+    dash.separator("Network");
     dash.text("Hostname (.local)", &cfgHostname, [](const String& v) {
         strlcpy(deviceSettings.hostname, v.c_str(), sizeof(deviceSettings.hostname));
     });
@@ -187,15 +208,34 @@ static void setupDashboard() {
     dash.text("Server Port", &cfgServerPort, [](const String& v) {
         deviceSettings.serverPort = atoi(v.c_str());
     });
-    dash.text("Server Path", &cfgServerPath, [](const String& v) {
-        strlcpy(deviceSettings.serverPath, v.c_str(), sizeof(deviceSettings.serverPath));
-    });
-    dash.text("API Key", &cfgApiKey, [](const String& v) {
-        strlcpy(deviceSettings.apiKey, v.c_str(), sizeof(deviceSettings.apiKey));
-    });
-    dash.text("Device Password", &cfgDevicePw, [](const String& v) {
+    dash.password("Device Password", &cfgDevicePw, [](const String& v) {
         strlcpy(deviceSettings.devicePassword, v.c_str(), sizeof(deviceSettings.devicePassword));
     });
+
+    dash.separator("OAuth2");
+    dash.text("Issuer URL", &cfgOAuthIssuer, [](const String& v) {
+        strlcpy(deviceSettings.oauthIssuer, v.c_str(), sizeof(deviceSettings.oauthIssuer));
+    });
+    dash.text("Client ID", &cfgOAuthClientId, [](const String& v) {
+        strlcpy(deviceSettings.oauthClientId, v.c_str(), sizeof(deviceSettings.oauthClientId));
+    });
+    dash.button("Authorize", "Authorize", []() {
+        if (deviceSettings.oauthIssuer[0] && deviceSettings.oauthClientId[0]) {
+            OAuth2Config oauthCfg;
+            oauthCfg.issuer = deviceSettings.oauthIssuer;
+            oauthCfg.clientId = deviceSettings.oauthClientId;
+            oauthCfg.scope = deviceSettings.oauthScope;
+            oauthCfg.timeoutMs = 600000;
+            oauth2Client().configure(oauthCfg);
+            oauth2Client().start();
+            LOG_OAUTH(LOG_INFO, "Device code flow started");
+        }
+    });
+    dash.button("Clear Auth", "Clear", []() {
+        oauth2Client().clearTokens();
+        LOG_OAUTH(LOG_INFO, "Tokens cleared");
+    });
+
     dash.button("Save & Restart", "Save", []() {
         saveDeviceSettings();
         delay(500);
@@ -205,26 +245,33 @@ static void setupDashboard() {
         dash.forgetWiFi();
     });
 
-    // ── WiFi Status ──
+    // ════════════════════════════════════════════════════════════════
+    // Status Tab
+    // ════════════════════════════════════════════════════════════════
+    dash.tab("Status");
+
+    // ── WiFi ──
     dash.separator("WiFi");
     dash.label("Network", &statusWiFi);
     dash.label("Signal", &statusSignal);
     dash.label("IP Address", &statusIP);
 
-    // ── Device Status ──
-    dash.separator("Device Status");
+    // ── Device ──
+    dash.separator("Device");
     dash.label("Uptime", &statusUptime);
+    dash.label("SD Status", &statusSDStatus);
+    dash.label("SD Free", &statusSDFree);
 
-    // ── SD Card ──
-    dash.separator("SD Card");
-    dash.label("Status", &statusSDStatus);
-    dash.label("Free Space", &statusSDFree);
-    dash.label("Files in /lifelog", &statusSDFiles);
+    // ── Auth ──
+    dash.separator("Auth");
+    dash.label("Auth State", &statusAuthState);
+    dash.label("User Code", &statusUserCode);
+    dash.label("Verification URL", &statusVerificationUri);
+    dash.label("Token Expiry", &statusTokenExpiry);
 
     // ── Audio ──
     dash.separator("Audio");
     dash.label("Recording", &statusRecording);
-    dash.label("VAD Mode", &statusVAD);
     dash.label("Upload Queue", &statusUploadQueue);
     dash.label("Flush Drops", &statusFlushDrops);
     dash.chart("Ring Fill", &dashRingFill, "/32");
@@ -319,6 +366,52 @@ static void updateDashboardStatus() {
         statusSDFiles = "N/A";
     }
 
+    // OAuth2 status — only show user code/URL during active polling
+    switch (oauth2Client().getState()) {
+        case AUTH_IDLE:
+            statusAuthState = "Not configured";
+            statusUserCode = "";
+            statusVerificationUri = "";
+            statusTokenExpiry = "";
+            break;
+        case AUTH_REQUESTING_CODE:
+            statusAuthState = "Requesting code...";
+            statusUserCode = "";
+            statusVerificationUri = "";
+            statusTokenExpiry = "";
+            break;
+        case AUTH_DISPLAYING_CODE:
+        case AUTH_POLLING:
+            statusAuthState = "Waiting for authorization";
+            statusUserCode = oauth2Client().getUserCode();
+            statusVerificationUri = oauth2Client().getVerificationUri();
+            statusTokenExpiry = "";
+            break;
+        case AUTHENTICATED:
+            statusAuthState = "Authenticated";
+            statusUserCode = "";
+            statusVerificationUri = "";
+            {
+                uint32_t secs = oauth2Client().getTokenExpiresInSeconds();
+                if (secs > 3600) {
+                    statusTokenExpiry = "Expires in " + String(secs / 3600) + "h";
+                } else if (secs > 60) {
+                    statusTokenExpiry = "Expires in " + String(secs / 60) + "m";
+                } else if (secs > 0) {
+                    statusTokenExpiry = "Expires in " + String(secs) + "s";
+                } else {
+                    statusTokenExpiry = "Expired";
+                }
+            }
+            break;
+        case AUTH_ERROR:
+            statusAuthState = String("Error: ") + oauth2Client().getLastError();
+            statusUserCode = "";
+            statusVerificationUri = "";
+            statusTokenExpiry = "";
+            break;
+    }
+
     // Audio (direct reads — no intermediate cache needed)
     statusRecording = recording ? "Active" : "Idle";
     statusVAD = vadMode ? "On" : "Off";
@@ -386,6 +479,21 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     bootInit();
     loadDeviceSettings();
+
+    // Initialize OAuth2 client
+    oauth2ClientInit();
+    if (deviceSettings.oauthIssuer[0] && deviceSettings.oauthClientId[0]) {
+        OAuth2Config oauthCfg;
+        oauthCfg.issuer = deviceSettings.oauthIssuer;
+        oauthCfg.clientId = deviceSettings.oauthClientId;
+        oauthCfg.scope = deviceSettings.oauthScope;
+        oauthCfg.timeoutMs = 600000;
+        oauth2Client().configure(oauthCfg);
+        if (!oauth2Client().hasValidToken()) {
+            oauth2Client().start();
+            LOG_OAUTH(LOG_INFO, "Auto-starting device code flow");
+        }
+    }
 
     setupSD();
     setupDashboard();

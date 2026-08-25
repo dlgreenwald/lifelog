@@ -341,7 +341,7 @@ void audioInit() {
 
     // Upload task — offloads blocking HTTP uploads from writerTask
     uploadQueue = xQueueCreate(8, sizeof(UploadRequest));
-    xTaskCreatePinnedToCore(uploadWorkerTask, "uploader", 8192, NULL, 1, &uploadTaskHandle, 1);
+    xTaskCreatePinnedToCore(uploadWorkerTask, "uploader", 16384, NULL, 1, &uploadTaskHandle, 1);
     LOG_AUDIO(LOG_INFO, "Upload task started (queue depth=4)");
 }
 
