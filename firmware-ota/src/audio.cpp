@@ -183,6 +183,10 @@ static void afeInit() {
         LOG_AFE(LOG_ERROR, "afe_config_init failed");
         return;
     }
+    // We only need VAD + AGC — disable wake word and AEC
+    afe_config->wakenet_init = false;
+    afe_config->aec_init = false;
+
     // Switch to WebRTC VAD (simpler, more reliable than VADNet)
     // Setting vad_model_name to NULL triggers WebRTC fallback
     if (afe_config->vad_model_name) {

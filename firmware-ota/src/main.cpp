@@ -296,11 +296,11 @@ static void setupOTA() {
         "/update", HTTP_POST,
         [](AsyncWebServerRequest* r) {
             bool ok = !Update.hasError();
-            Serial.printf("OTA result: %s\n", ok ? "success" : "FAILED");
+            LOG_OTA(LOG_INFO, "result: %s", ok ? "success" : "FAILED");
             if (ok) {
                 const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
                 if (next) {
-                    Serial.printf("OTA: setting boot partition to %s\n", next->label);
+                    LOG_OTA(LOG_INFO, "setting boot partition to %s", next->label);
                     esp_ota_set_boot_partition(next);
                 }
             }
@@ -324,25 +324,25 @@ static void setupOTA() {
                 if (feedTaskHandle) vTaskSuspend(feedTaskHandle);
                 if (fetchTaskHandle) vTaskSuspend(fetchTaskHandle);
                 if (writerTaskHandle) vTaskSuspend(writerTaskHandle);
-                Serial.println("OTA: audio tasks suspended");
+                LOG_OTA(LOG_INFO, "audio tasks suspended");
                 // Remove idle from WDT — flash erase blocks Core 0 for seconds
                 esp_task_wdt_delete(xTaskGetHandle("idle"));
                 otaInProgress = Update.begin(UPDATE_SIZE_UNKNOWN);
                 totalWritten = 0;
-                Serial.printf("OTA start: begin=%d\n", otaInProgress);
-                if (!otaInProgress) Serial.printf("OTA begin FAILED: %d\n", Update.getError());
+                LOG_OTA(LOG_INFO, "start: begin=%d", otaInProgress);
+                if (!otaInProgress) LOG_OTA(LOG_ERROR, "begin FAILED: %d", Update.getError());
             }
             if (otaInProgress && len) {
                 size_t written = Update.write(data, len);
                 totalWritten += written;
-                if (written != len) Serial.printf("OTA write mismatch: %d != %d\n", written, len);
+                if (written != len) LOG_OTA(LOG_ERROR, "write mismatch: %d != %d", written, len);
             }
             if (final) {
-                Serial.printf("OTA end: total=%lu, result=%d\n", totalWritten, Update.end(true));
-                if (Update.hasError()) Serial.printf("OTA end FAILED: %d\n", Update.getError());
+                LOG_OTA(LOG_INFO, "end: total=%lu, result=%d", totalWritten, Update.end(true));
+                if (Update.hasError()) LOG_OTA(LOG_ERROR, "end FAILED: %d", Update.getError());
             }
         });
-    Serial.println("OTA: custom handler registered");
+    LOG_OTA(LOG_INFO, "custom handler registered");
 }
 
 // ── Dashboard status updater ───────────────────────────────────────

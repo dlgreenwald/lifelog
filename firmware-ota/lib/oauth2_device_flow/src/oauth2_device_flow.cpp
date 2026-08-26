@@ -129,7 +129,7 @@ void OAuth2DeviceFlow::start() {
         if (_state == AUTHENTICATED && (!_hasTokens || _refreshToken[0] == '\0' ||
             static_cast<uint32_t>(time(NULL)) >= _tokenExpiry)) {
 #ifndef OAUTH2_TESTING
-            Serial.printf("[OAUTH] Token expired/unavailable on startup, restarting device code flow\n");
+            OAUTH_LOG(1, "Token expired/unavailable on startup, restarting device code flow");
 #endif
             // Clear stale tokens directly (can't call clearTokens() — mutex already held)
             _accessToken[0] = '\0';
@@ -155,7 +155,7 @@ void OAuth2DeviceFlow::start() {
 #ifndef OAUTH2_TESTING
             xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
             vTaskResume(static_cast<TaskHandle_t>(_pollingTaskHandle));
-            Serial.printf("[OAUTH] Resumed polling task (state=%d)\n", _state);
+            OAUTH_LOG(1, "Resumed polling task (state=%d)", _state);
 #endif
         } else {
             // State restored from NVS but task was never created (e.g. boot with valid token)
@@ -164,7 +164,7 @@ void OAuth2DeviceFlow::start() {
             xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
             xTaskCreatePinnedToCore(pollingTaskEntry, "oauth2_poll", 8192,
                                     this, 2, reinterpret_cast<TaskHandle_t*>(&_pollingTaskHandle), 1);
-            Serial.printf("[OAUTH] Created polling task (state=%d)\n", savedState);
+            OAUTH_LOG(1, "Created polling task (state=%d)", savedState);
 #endif
         }
         return;
@@ -271,12 +271,12 @@ void OAuth2DeviceFlow::loadSavedState() {
             if (_refreshToken[0] != '\0') {
                 // Have refresh token → stay AUTHENTICATED, background task will refresh
 #ifndef OAUTH2_TESTING
-                Serial.printf("[OAUTH] Boot: access token expired, refresh token available\n");
+                OAUTH_LOG(1, "Boot: access token expired, refresh token available");
 #endif
             } else {
                 // No refresh token → must re-authenticate from scratch
 #ifndef OAUTH2_TESTING
-                Serial.printf("[OAUTH] Boot: access token expired, no refresh token — restarting auth\n");
+                OAUTH_LOG(1, "Boot: access token expired, no refresh token — restarting auth");
 #endif
                 _accessToken[0] = '\0';
                 _tokenExpiry = 0;
@@ -297,7 +297,7 @@ void OAuth2DeviceFlow::loadSavedState() {
         }
 #ifndef OAUTH2_TESTING
         else if (_tokenExpiry > 0) {
-            Serial.printf("[OAUTH] Boot: token valid for %lus\n",
+            OAUTH_LOG(1, "Boot: token valid for %lus",
                           _tokenExpiry - nowSec);
         }
 #endif
@@ -408,13 +408,13 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                     if (_tokenExpiry > 0 && _tokenExpiry > nowSec) {
                         delayMs = (_tokenExpiry - nowSec) * 1000;
 #ifndef OAUTH2_TESTING
-                        Serial.printf("[OAUTH] No refresh token, token expires in %lus\n",
+                        OAUTH_LOG(1, "No refresh token, token expires in %lus",
                                       _tokenExpiry - nowSec);
 #endif
                     } else {
                         // Token already expired — nothing to do, wait for dashboard re-auth
 #ifndef OAUTH2_TESTING
-                        Serial.printf("[OAUTH] Token expired, no refresh token — waiting for re-auth\n");
+                        OAUTH_LOG(1, "Token expired, no refresh token — waiting for re-auth");
 #endif
                         delayMs = 60000;  // Check again in 1 minute
                     }
@@ -433,13 +433,13 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                         uint32_t remainingSec = _tokenExpiry - nowSec;
                         delayMs = (remainingSec / 2) * 1000;  // Wake at halfway
 #ifndef OAUTH2_TESTING
-                        Serial.printf("[OAUTH] Token valid for %lus, sleeping %lus before refresh\n",
+                        OAUTH_LOG(1, "Token valid for %lus, sleeping %lus before refresh",
                                       remainingSec, remainingSec / 2);
 #endif
                     } else {
                         delayMs = 0;  // Already expired, refresh immediately
 #ifndef OAUTH2_TESTING
-                        Serial.printf("[OAUTH] Token expired, refreshing now\n");
+                        OAUTH_LOG(1, "Token expired, refreshing now");
 #endif
                     }
                 }
@@ -447,13 +447,13 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                 xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
                 vTaskDelay(pdMS_TO_TICKS(delayMs));
                 xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
-                Serial.printf("[OAUTH] Background refresh starting\n");
+                OAUTH_LOG(1, "Background refresh starting");
                 exchangeRefreshToken();
                 if (_hasTokens) {
-                    Serial.printf("[OAUTH] Background refresh succeeded\n");
+                    OAUTH_LOG(1, "Background refresh succeeded");
                 } else {
                     // Refresh failed — stay AUTHENTICATED, user must re-auth via dashboard
-                    Serial.printf("[OAUTH] Refresh failed — re-authentication required\n");
+                    OAUTH_LOG(1, "Refresh failed — re-authentication required");
                 }
                 break;  // Loop back to re-evaluate state
 #else
@@ -464,7 +464,7 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
 #ifndef OAUTH2_TESTING
                 // If config is valid, auto-recover by restarting device code flow
                 if (_config.issuer && _config.issuer[0]) {
-                    Serial.printf("[OAUTH] Error state with valid config, restarting device code flow\n");
+                    OAUTH_LOG(1, "Error state with valid config, restarting device code flow");
                     // Clear tokens directly (mutex already held)
                     _accessToken[0] = '\0';
                     _refreshToken[0] = '\0';
@@ -508,15 +508,15 @@ void OAuth2DeviceFlow::requestDeviceCode() {
     snprintf(body, sizeof(body), "client_id=%s&scope=%s", _config.clientId, _config.scope);
 
 #ifndef OAUTH2_TESTING
-    Serial.printf("[OAUTH] Device code request: scope=%s\n", _config.scope);
+    OAUTH_LOG(1, "Device code request: scope=%s", _config.scope);
 #endif
     OAuth2HttpResponse resp = requestInternal("POST", url, nullptr, body);
 
 #ifndef OAUTH2_TESTING
-    Serial.printf("[OAUTH] Device code request: status=%d\n", resp.statusCode);
+    OAUTH_LOG(1, "Device code request: status=%d", resp.statusCode);
     char respBuf[512] = {};
     serializeJson(resp.body, respBuf, sizeof(respBuf));
-    Serial.printf("[OAUTH] Response: %.400s\n", respBuf);
+    OAUTH_LOG(1, "Response: %.400s", respBuf);
 #endif
 
     if (resp.statusCode == 0) { strlcpy(_lastError, "Network error", sizeof(_lastError)); setState(AUTH_ERROR); return; }
@@ -570,17 +570,17 @@ void OAuth2DeviceFlow::pollToken() {
              "&device_code=%s&client_id=%s", encodedDeviceCode, _config.clientId);
 
 #ifndef OAUTH2_TESTING
-    Serial.printf("[OAUTH] Token poll URL: %s\n", url);
-    Serial.printf("[OAUTH] Token poll body: %.200s\n", body);
+    OAUTH_LOG(1, "Token poll URL: %s", url);
+    OAUTH_LOG(1, "Token poll body: %.200s", body);
 #endif
 
     OAuth2HttpResponse resp = requestInternal("POST", url, nullptr, body);
 
 #ifndef OAUTH2_TESTING
-    Serial.printf("[OAUTH] Token poll: status=%d\n", resp.statusCode);
+    OAUTH_LOG(1, "Token poll: status=%d", resp.statusCode);
     char respBuf[512] = {};
     serializeJson(resp.body, respBuf, sizeof(respBuf));
-    Serial.printf("[OAUTH] Token response: %.400s\n", respBuf);
+    OAUTH_LOG(1, "Token response: %.400s", respBuf);
 #endif
 
     if (resp.statusCode == 0) { strlcpy(_lastError, "Network error", sizeof(_lastError)); setState(AUTH_ERROR); return; }
@@ -620,11 +620,11 @@ void OAuth2DeviceFlow::pollToken() {
     _hasTokens = true;
 #ifndef OAUTH2_TESTING
     if (_refreshToken[0] == '\0') {
-        Serial.printf("[OAUTH] No refresh token in response — token will require re-auth on expiry\n");
+        OAUTH_LOG(1, "No refresh token in response — token will require re-auth on expiry");
     } else if (_refreshTokenExpiry > 0) {
-        Serial.printf("[OAUTH] Refresh token received (expires in %ds)\n", refreshExpiresIn);
+        OAUTH_LOG(1, "Refresh token received (expires in %ds)", refreshExpiresIn);
     } else {
-        Serial.printf("[OAUTH] Refresh token received (no expiry)\n");
+        OAUTH_LOG(1, "Refresh token received (no expiry)");
     }
 #endif
     saveTokens();
@@ -641,12 +641,12 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
              _refreshToken, _config.clientId);
 
 #ifndef OAUTH2_TESTING
-    Serial.printf("[OAUTH] Refreshing token via %s\n", url);
+    OAUTH_LOG(1, "Refreshing token via %s", url);
 #endif
     OAuth2HttpResponse resp = requestInternal("POST", url, nullptr, body);
     if (resp.statusCode == 0 || resp.statusCode != 200) {
 #ifndef OAUTH2_TESTING
-        Serial.printf("[OAUTH] Token refresh failed: status=%d\n", resp.statusCode);
+        OAUTH_LOG(1, "Token refresh failed: status=%d", resp.statusCode);
 #endif
         strlcpy(_lastError, "Token refresh failed", sizeof(_lastError));
         _hasTokens = false;
@@ -676,13 +676,13 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
     _hasTokens = true;
 #ifndef OAUTH2_TESTING
     uint32_t nowSec = static_cast<uint32_t>(time(NULL));
-    Serial.printf("[OAUTH] Token refreshed, access expires in %lus",
-                  _tokenExpiry > nowSec ? _tokenExpiry - nowSec : 0);
+    uint32_t accessRemaining = _tokenExpiry > nowSec ? _tokenExpiry - nowSec : 0;
+    uint32_t refreshRemaining = _refreshTokenExpiry > nowSec ? _refreshTokenExpiry - nowSec : 0;
     if (_refreshTokenExpiry > 0) {
-        Serial.printf(", refresh expires in %lus",
-                      _refreshTokenExpiry > nowSec ? _refreshTokenExpiry - nowSec : 0);
+        OAUTH_LOG(1, "Token refreshed, access expires in %lus, refresh expires in %lus", accessRemaining, refreshRemaining);
+    } else {
+        OAUTH_LOG(1, "Token refreshed, access expires in %lus", accessRemaining);
     }
-    Serial.printf("\n");
 #endif
     saveTokens();
 }
@@ -928,7 +928,7 @@ OAuth2HttpResponse OAuth2DeviceFlow::requestInternal(const char* method, const c
                 buf[totalRead] = '\0';
                 deserializeJson(result.body, buf);
 #ifndef OAUTH2_TESTING
-                Serial.printf("[OAUTH] Read %d bytes of response\n", totalRead);
+                OAUTH_LOG(1, "Read %d bytes of response", totalRead);
 #endif
             }
             vPortFree(buf);

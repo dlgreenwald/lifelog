@@ -6,6 +6,14 @@
 #include <cstdint>
 #include <ArduinoJson.h>
 
+// ── Logging (matches [time] [component] format from config.h) ─────
+#if !defined(OAUTH2_TESTING)
+#define OAUTH_LOG(level, fmt, ...) \
+    do { if (level) { Serial.printf("[%lu] [OAUTH] " fmt "\n", millis(), ##__VA_ARGS__); } } while(0)
+#else
+#define OAUTH_LOG(level, fmt, ...) do {} while(0)
+#endif
+
 // ── Platform type stubs (for native tests) ────────────────────────
 #if !defined(ARDUINO) || defined(OAUTH2_TESTING)
 typedef void* TaskHandle_t;
