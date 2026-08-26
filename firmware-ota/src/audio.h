@@ -1,8 +1,15 @@
 #pragma once
 #include <Arduino.h>
+#include "freertos/ringbuf.h"
 
 // Audio settings
 #define SAMPLE_RATE     16000
+
+// Ring buffer — producer writes, consumer reads
+extern RingbufHandle_t audioRingBuf;
+#define RING_ITEM_BYTES  1024   // 512 samples × 2 bytes — one AFE chunk
+#define RING_NUM_ITEMS   32     // 32 × 32ms = 1024ms buffered
+#define RING_TOTAL_BYTES ((size_t)(RING_ITEM_BYTES + 16) * RING_NUM_ITEMS)
 
 // Public state
 extern volatile bool recording;
@@ -19,24 +26,21 @@ extern volatile uint32_t utteranceId;   // Monotonic counter, incremented on voi
 extern volatile uint32_t chunkIndex;    // Reset to 0 on voice start, incremented per buffer
 extern volatile bool isFinal;           // Set true when silence ends utterance
 
-// Upload queue depth
-uint32_t getUploadQueueDepth();
+// Shared pipeline state (accessed by i2s_fe.cpp, writer.cpp)
+extern TaskHandle_t writerTaskHandle;
 
-// Functions
-void audioInit();
-void setWriterTaskHandle(TaskHandle_t handle);
-void afeFeedTask(void *pvParameters);
-void afeFetchTask(void *pvParameters);
-void writerTask(void *pvParameters);
-void startRecording(uint32_t durationMs);
-void toggleVAD();
+// Buffer health (counters shared with i2s_fe.cpp)
+extern uint32_t flushDropCount;
+extern uint32_t totalSamplesCaptured;
 
 // Buffer health accessors
 uint32_t getWriterStallCount();
 uint32_t getWriterStallMaxMs();
-uint32_t getDmaPartialCount();
 uint32_t getFlushDropCount();
 uint32_t getTotalSamplesCaptured();
-uint32_t getTotalSamplesWritten();
 uint32_t getRingFillLevel();
 
+// Functions
+void audioInit();
+void startRecording(uint32_t durationMs);
+void toggleVAD();

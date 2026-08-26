@@ -15,6 +15,8 @@
 #include "config.h"
 #include "settings.h"
 #include "audio.h"
+#include "i2s_fe.h"
+#include "writer.h"
 #include "upload.h"
 #include "oauth2_client.h"
 
@@ -25,7 +27,6 @@ static Preferences prefs;
 static const char* NS = "ota";
 static TaskHandle_t feedTaskHandle = NULL;
 static TaskHandle_t fetchTaskHandle = NULL;
-static TaskHandle_t writerTaskHandle = NULL;
 
 // ── Device settings (defined in settings.h) ───────────────────────
 
@@ -48,10 +49,10 @@ static void bootInit() {
     bool confirmed = prefs.getUChar("confirmed", 0);
     uint8_t boots = prefs.getUChar("boots", 0);
     if (confirmed) {
-        LOG_BOOT(LOG_INFO, "Firmware confirmed");
+        ESP_LOGI("BOOT", "Firmware confirmed");
     } else {
         boots++;
-        LOG_BOOT(LOG_WARN, "Boot %d/%d (unconfirmed)", boots, MAX_BOOT);
+        ESP_LOGW("BOOT", "Boot %d/%d (unconfirmed)", boots, MAX_BOOT);
         prefs.putUChar("boots", boots);
     }
     prefs.end();
@@ -62,7 +63,7 @@ static void bootConfirm() {
     prefs.putUChar("confirmed", 1);
     prefs.putUChar("boots", 0);
     prefs.end();
-    LOG_BOOT(LOG_INFO, "Firmware confirmed");
+    ESP_LOGI("BOOT", "Firmware confirmed");
 }
 
 // ── NVS load/save ─────────────────────────────────────────────────
@@ -90,7 +91,7 @@ static void loadDeviceSettings() {
             knownNetworkCount++;
         }
     }
-    LOG_WIFI(LOG_INFO, "Loaded %d known networks", knownNetworkCount);
+    ESP_LOGI("WIFI", "Loaded %d known networks", knownNetworkCount);
 }
 
 static void saveDeviceSettings() {
@@ -227,7 +228,7 @@ static void setupDashboard() {
             p.putString("oauth_issuer", deviceSettings.oauthIssuer);
             p.putString("oauth_client_id", deviceSettings.oauthClientId);
             p.end();
-            LOG_OAUTH(LOG_INFO, "Device code flow started");
+            ESP_LOGI("OAUTH", "Device code flow started");
         }
     });
     dash.button("Clear Auth", "Clear", []() {
@@ -238,7 +239,7 @@ static void setupDashboard() {
         p.remove("oauth_issuer");
         p.remove("oauth_client_id");
         p.end();
-        LOG_OAUTH(LOG_INFO, "Tokens cleared");
+        ESP_LOGI("OAUTH", "Tokens cleared");
     });
 
     dash.button("Save & Restart", "Save", []() {
@@ -296,11 +297,11 @@ static void setupOTA() {
         "/update", HTTP_POST,
         [](AsyncWebServerRequest* r) {
             bool ok = !Update.hasError();
-            LOG_OTA(LOG_INFO, "result: %s", ok ? "success" : "FAILED");
+            ESP_LOGI("OTA", "result: %s", ok ? "success" : "FAILED");
             if (ok) {
                 const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
                 if (next) {
-                    LOG_OTA(LOG_INFO, "setting boot partition to %s", next->label);
+                    ESP_LOGI("OTA", "setting boot partition to %s", next->label);
                     esp_ota_set_boot_partition(next);
                 }
             }
@@ -324,25 +325,25 @@ static void setupOTA() {
                 if (feedTaskHandle) vTaskSuspend(feedTaskHandle);
                 if (fetchTaskHandle) vTaskSuspend(fetchTaskHandle);
                 if (writerTaskHandle) vTaskSuspend(writerTaskHandle);
-                LOG_OTA(LOG_INFO, "audio tasks suspended");
+                ESP_LOGI("OTA", "audio tasks suspended");
                 // Remove idle from WDT — flash erase blocks Core 0 for seconds
                 esp_task_wdt_delete(xTaskGetHandle("idle"));
                 otaInProgress = Update.begin(UPDATE_SIZE_UNKNOWN);
                 totalWritten = 0;
-                LOG_OTA(LOG_INFO, "start: begin=%d", otaInProgress);
-                if (!otaInProgress) LOG_OTA(LOG_ERROR, "begin FAILED: %d", Update.getError());
+                ESP_LOGI("OTA", "start: begin=%d", otaInProgress);
+                if (!otaInProgress) ESP_LOGE("OTA", "begin FAILED: %d", Update.getError());
             }
             if (otaInProgress && len) {
                 size_t written = Update.write(data, len);
                 totalWritten += written;
-                if (written != len) LOG_OTA(LOG_ERROR, "write mismatch: %d != %d", written, len);
+                if (written != len) ESP_LOGE("OTA", "write mismatch: %d != %d", written, len);
             }
             if (final) {
-                LOG_OTA(LOG_INFO, "end: total=%lu, result=%d", totalWritten, Update.end(true));
-                if (Update.hasError()) LOG_OTA(LOG_ERROR, "end FAILED: %d", Update.getError());
+                ESP_LOGI("OTA", "end: total=%lu, result=%d", totalWritten, Update.end(true));
+                if (Update.hasError()) ESP_LOGE("OTA", "end FAILED: %d", Update.getError());
             }
         });
-    LOG_OTA(LOG_INFO, "custom handler registered");
+    ESP_LOGI("OTA", "custom handler registered");
 }
 
 // ── Dashboard status updater ───────────────────────────────────────
@@ -426,10 +427,10 @@ static void updateDashboardStatus() {
 
 static void setupMDNS() {
     if (MDNS.begin(deviceSettings.hostname)) {
-        LOG_WIFI(LOG_INFO, "mDNS: http://%s.local", deviceSettings.hostname);
+        ESP_LOGI("WIFI", "mDNS: http://%s.local", deviceSettings.hostname);
         MDNS.addService("http", "tcp", 80);
     } else {
-        LOG_WIFI(LOG_WARN, "mDNS failed");
+        ESP_LOGW("WIFI", "mDNS failed");
     }
 }
 
@@ -438,22 +439,22 @@ static void setupMDNS() {
 static void setupSD() {
     // Initialize SD like the guide: SD.begin(21)
     if (!SD.begin(SD_CS_PIN, SPI, 25000000)) {
-        LOG_SD(LOG_ERROR, "Mount failed");
+        ESP_LOGE("SD", "Mount failed");
         return;
     }
 
     uint8_t t = SD.cardType();
     if (t == CARD_NONE) {
-        LOG_SD(LOG_WARN, "No card detected");
+        ESP_LOGW("SD", "No card detected");
         return;
     }
 
     const char* names[] = {"UNKNOWN","MMC","SD","SDHC"};
-    LOG_SD(LOG_INFO, "Mounted: %s %llu MB @ 25MHz", names[t], SD.cardSize()/(1024*1024));
+    ESP_LOGI("SD", "Mounted: %s %llu MB @ 25MHz", names[t], SD.cardSize()/(1024*1024));
 
     if (!SD.exists("lifelog")) {
         SD.mkdir("lifelog");
-        LOG_SD(LOG_INFO, "Created /lifelog");
+        ESP_LOGI("SD", "Created /lifelog");
     }
 }
 
@@ -464,16 +465,26 @@ static void logStats();
 
 void setup() {
     Serial.begin(115200);
+
+    // Runtime log levels — set early so all boot messages visible
+    esp_log_level_set("*", ESP_LOG_DEBUG);
+    esp_log_level_set("SD", ESP_LOG_DEBUG);
+    esp_log_level_set("AFE_FEED", ESP_LOG_INFO);
+    esp_log_level_set("WRITER", ESP_LOG_INFO);
+    esp_log_level_set("UPLOAD", ESP_LOG_INFO);
+    esp_log_level_set("WIFI", ESP_LOG_INFO);
+    esp_log_level_set("ASYNC_TCP", ESP_LOG_ERROR);
+
 #ifdef SLOW_BOOT
     delay(10000);
 #endif
     delay(1000);
-    Serial.println("\n=== LifeLog OTA Demo ===");
+    ESP_LOGI("BOOT", "=== LifeLog OTA Demo ===");
     const esp_partition_t* running = esp_ota_get_running_partition();
-    Serial.printf("Running partition: %s (offset=0x%06x, size=0x%06x)\n",
-                  running ? running->label : "NULL",
-                  running ? running->address : 0,
-                  running ? running->size : 0);
+    ESP_LOGI("BOOT", "Running partition: %s (offset=0x%06x, size=0x%06x)",
+             running ? running->label : "NULL",
+             running ? running->address : 0,
+             running ? running->size : 0);
 
     esp_register_freertos_idle_hook_for_cpu(idleHook0, 0);
     esp_register_freertos_idle_hook_for_cpu(idleHook1, 1);
@@ -506,21 +517,21 @@ void setup() {
     if (deviceSettings.oauthIssuer[0] && deviceSettings.oauthClientId[0]) {
         oauth2Client().start();
         if (!oauth2Client().hasValidToken()) {
-            LOG_OAUTH(LOG_INFO, "Device code flow started (no valid token)");
+            ESP_LOGI("OAUTH", "Device code flow started (no valid token)");
         } else {
-            LOG_OAUTH(LOG_INFO, "Background token refresh active");
+            ESP_LOGI("OAUTH", "Background token refresh active");
         }
     }
 
     setupMDNS();
     audioInit();
+
     updateDashboardStatus();  // Initial status before first browser connects
 
     // Audio tasks
     xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, PRIO_AUDIO, &feedTaskHandle, 0);
     xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, &fetchTaskHandle, 1);
     xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, PRIO_AUDIO, &writerTaskHandle, 1);
-    setWriterTaskHandle(writerTaskHandle);
 
     bootConfirm();
 
@@ -541,7 +552,7 @@ static void logStats() {
     // Each idle hook invocation ≈ 1 tick. Busy% = (elapsed - idle) / elapsed * 100
     uint32_t busy0 = (elapsed > c0) ? (elapsed - c0) * 100 / elapsed : 0;
     uint32_t busy1 = (elapsed > c1) ? (elapsed - c1) * 100 / elapsed : 0;
-    LOG_SYSTEM(LOG_INFO, "cpu0: %lu%% busy, cpu1: %lu%% busy", busy0, busy1);
+    ESP_LOGI("SYSTEM", "cpu0: %lu%% busy, cpu1: %lu%% busy", busy0, busy1);
 
     // ── Task enumeration via uxTaskGetSnapshotAll ──
     UBaseType_t taskCount = uxTaskGetNumberOfTasks();
@@ -549,7 +560,7 @@ static void logStats() {
     if (snapshots) {
         UBaseType_t tcbSize;
         UBaseType_t actual = uxTaskGetSnapshotAll(snapshots, taskCount, &tcbSize);
-        LOG_SYSTEM(LOG_INFO, "--- %lu tasks ---", (unsigned long)actual);
+        ESP_LOGI("SYSTEM", "--- %lu tasks ---", (unsigned long)actual);
 
         for (UBaseType_t i = 0; i < actual; i++) {
             TaskHandle_t handle = (TaskHandle_t)snapshots[i].pxTCB;
@@ -565,26 +576,26 @@ static void logStats() {
                 default:         stateStr = "?"; break;
             }
             UBaseType_t stackFree = uxTaskGetStackHighWaterMark(handle);
-            LOG_SYSTEM(LOG_INFO, "  %-12s %5luB %s", name, (unsigned long)stackFree * 4, stateStr);
+            ESP_LOGI("SYSTEM", "  %-12s %5luB %s", name, (unsigned long)stackFree * 4, stateStr);
         }
         vPortFree(snapshots);
     }
 
     // ── Memory ──
-    LOG_SYSTEM(LOG_INFO, "heap free: %lu bytes", (unsigned long)ESP.getFreeHeap());
-    LOG_SYSTEM(LOG_INFO, "psram free: %lu bytes", (unsigned long)ESP.getFreePsram());
+    ESP_LOGI("SYSTEM", "heap free: %lu bytes", (unsigned long)ESP.getFreeHeap());
+    ESP_LOGI("SYSTEM", "psram free: %lu bytes", (unsigned long)ESP.getFreePsram());
 
     // ── Buffer health ──
-    LOG_SYSTEM(LOG_INFO, "buf stalls: %lu (max %lu ms)",
+    ESP_LOGI("SYSTEM", "buf stalls: %lu (max %lu ms)",
                (unsigned long)getWriterStallCount(),
                (unsigned long)getWriterStallMaxMs());
-    LOG_SYSTEM(LOG_INFO, "dma partials: %lu, flush drops: %lu",
+    ESP_LOGI("SYSTEM", "dma partials: %lu, flush drops: %lu",
                (unsigned long)getDmaPartialCount(),
                (unsigned long)getFlushDropCount());
-    LOG_SYSTEM(LOG_INFO, "samples captured: %lu, written: %lu",
+    ESP_LOGI("SYSTEM", "samples captured: %lu, written: %lu",
                (unsigned long)getTotalSamplesCaptured(),
                (unsigned long)getTotalSamplesWritten());
-    LOG_SYSTEM(LOG_INFO, "ring fill: %lu/32", (unsigned long)getRingFillLevel());
+    ESP_LOGI("SYSTEM", "ring fill: %lu/32", (unsigned long)getRingFillLevel());
 }
 
 void loop() {
@@ -592,7 +603,7 @@ void loop() {
     static uint32_t lastReconnectAttempt = 0;
     if (WiFi.status() != WL_CONNECTED && millis() - lastReconnectAttempt > WIFI_RECONNECT_INTERVAL_MS) {
         lastReconnectAttempt = millis();
-        LOG_WIFI(LOG_INFO, "WiFi disconnected — reconnecting...");
+        ESP_LOGI("WIFI", "WiFi disconnected — reconnecting...");
         WiFi.reconnect();
     }
 

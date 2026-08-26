@@ -6,33 +6,36 @@ extern "C" esp_err_t esp_crt_bundle_attach(void *conf);
 #include "config.h"
 #include "settings.h"
 #include "audio.h"
+#include "writer.h"
 #include "oauth2_client.h"
+
+static const char* TAG = "UPLOAD";
 
 bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool final) {
     if (WiFi.status() != WL_CONNECTED) {
-        LOG_UPLOAD(LOG_WARN, "No WiFi connection");
+        ESP_LOGW(TAG, "No WiFi connection");
         return false;
     }
 
     // Quick size check
     sdTake();
     File probe = SD.open(filename, FILE_READ);
-    if (!probe) { sdGive(); LOG_UPLOAD(LOG_ERROR, "Failed to open %s", filename); return false; }
+    if (!probe) { sdGive(); ESP_LOGE(TAG, "Failed to open %s", filename); return false; }
     uint32_t fileSize = probe.size();
     probe.close();
     sdGive();
 
     if (fileSize < 4096) {
-        LOG_UPLOAD(LOG_INFO, "Discarded short clip: %s (%luB)", filename, (unsigned long)fileSize);
+        ESP_LOGI(TAG, "Discarded short clip: %s (%luB)", filename, (unsigned long)fileSize);
         return true;
     }
 
     uint32_t uploadStart = millis();
-    LOG_UPLOAD(LOG_INFO, "Upload start: %s %luKB", filename, (unsigned long)(fileSize / 1024));
+    ESP_LOGD(TAG, "Upload start: %s %luKB", filename, (unsigned long)(fileSize / 1024));
 
     // Check auth — OAuth token required
     if (!oauth2Client().hasValidToken()) {
-        LOG_UPLOAD(LOG_WARN, "No valid OAuth token, skipping upload");
+        ESP_LOGW(TAG, "No valid OAuth token, skipping upload");
         return false;
     }
 
@@ -86,7 +89,7 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
-        LOG_UPLOAD(LOG_ERROR, "Failed to init HTTP client");
+        ESP_LOGE(TAG, "Failed to init HTTP client");
         return false;
     }
 
@@ -116,7 +119,7 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
         File file = SD.open(filename, FILE_READ);
         sdGive();
         if (!file) {
-            LOG_UPLOAD(LOG_ERROR, "Failed to open %s for reading", filename);
+            ESP_LOGE(TAG, "Failed to open %s for reading", filename);
             oauth2Client().close();
             esp_http_client_cleanup(client);
             return false;
@@ -146,7 +149,7 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
 
         if (httpStatus == -401) {
             // Token was refreshed, retry
-            LOG_UPLOAD(LOG_INFO, "Auth failed, retrying with new token");
+            ESP_LOGD(TAG, "Auth failed, retrying with new token");
             continue;
         }
         break;  // Got final status
@@ -158,12 +161,12 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     uint32_t elapsed = millis() - uploadStart;
     if (httpStatus == 200) {
         uint32_t rate = (elapsed > 0) ? (fileSize * 1000) / elapsed : 0;
-        LOG_UPLOAD(LOG_INFO, "Upload done: %s %lums %luB/s q=%lu", filename,
+        ESP_LOGI(TAG, "Upload done: %s %lums %luB/s q=%lu", filename,
                    (unsigned long)elapsed, (unsigned long)rate,
                    (unsigned long)getUploadQueueDepth());
         return true;
     } else {
-        LOG_UPLOAD(LOG_ERROR, "Upload failed: %s %lums q=%lu status=%d", filename,
+        ESP_LOGE(TAG, "Upload failed: %s %lums q=%lu status=%d", filename,
                    (unsigned long)elapsed, (unsigned long)getUploadQueueDepth(), httpStatus);
         return false;
     }
@@ -173,7 +176,7 @@ void uploadAllRecordings() {
     sdTake();
     File root = SD.open("lifelog");
     sdGive();
-    if (!root) { LOG_UPLOAD(LOG_ERROR, "Failed to open /lifelog"); return; }
+    if (!root) { ESP_LOGE(TAG, "Failed to open /lifelog"); return; }
 
     char paths[64][64];
     int count = 0;
@@ -203,8 +206,8 @@ void uploadAllRecordings() {
             SD.remove(paths[i]);
             sdGive();
             uploaded++;
-            LOG_UPLOAD(LOG_DEBUG, "Deleted %s", paths[i]);
+            ESP_LOGD(TAG, "Deleted %s", paths[i]);
         }
     }
-    LOG_UPLOAD(LOG_INFO, "Done: %d files uploaded", uploaded);
+    ESP_LOGI(TAG, "Done: %d files uploaded", uploaded);
 }

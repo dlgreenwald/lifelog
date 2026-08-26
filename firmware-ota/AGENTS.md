@@ -47,19 +47,20 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 | Resource | Type | Guards |
 |---|---|---|
 | `sdMutex` | Recursive mutex | All SD SPI access (`sdTake()`/`sdGive()`) |
-| `ring_mutex` | Mutex | Ring buffer head/tail |
-| `ring_head` / `ring_tail` | `volatile uint32_t` | Ring buffer sample offsets (contiguous PSRAM) |
+| `audioRingBuf` | `RingbufHandle_t` (RTOS NOSPLIT, 32KB PSRAM) | Thread-safe via RTOS xRingbuffer — no mutex needed |
 | `recording` | `volatile bool` | VAD state, read by writerTask |
 | `utteranceId`, `chunkIndex`, `isFinal` | `volatile` | Utterance metadata |
-| `ogg_buf` | `uint8_t *` (PSRAM, 16KB) | Deferred SD open — OGG pages buffered until ≥4KB |
-| `pages_flushed` | `bool` | True after first SD write; false = still buffering |
-| `uploadQueue` | FreeRTOS queue (depth 8) | `UploadRequest` structs |
+| `writerTaskHandle` | `TaskHandle_t` | Shared between i2s_fe.cpp (notifies) and writer.cpp (receives) |
+| `flushDropCount`, `totalSamplesCaptured` | `uint32_t` | Buffer health counters (extern in audio.h) |
+| `ogg_buf` | `uint8_t *` (PSRAM, 16KB) | Deferred SD open — OGG pages buffered until ≥4KB (writer.cpp) |
+| `pages_flushed` | `bool` | True after first SD write; false = still buffering (writer.cpp) |
+| `uploadQueue` | FreeRTOS queue (depth 8) | `UploadRequest` structs (writer.cpp) |
 
 ### Ring Buffer
-- Contiguous PSRAM allocation: 32 × 512 samples × 2 bytes = 32KB (1024ms at 16kHz)
-- Producer: `afeFetchTask` writes one chunk (512 samples) at `ring_head`, advances by `RING_CHUNK_SAMPLES`
-- Consumer: `writerTask` drains in bulk via at most 2 `memcpy` calls (handles wraparound)
-- Overflow: oldest chunk dropped, `flushDropCount++`
+- RTOS `xRingbufferCreateStatic` (NOSPLIT mode): 32 × (1024+16) bytes ≈ 33KB in PSRAM
+- Producer: `processAfeResult()` (i2s_fe.cpp) sends chunks; drops oldest on overflow
+- Consumer: `writerTask()` (writer.cpp) receives via `xRingbufferReceive()`; blocked via `ulTaskNotifyTake()`
+- Thread-safe by design — no mutex needed for xRingbuffer
 
 ### Deferred SD Open
 - OGG pages accumulate in `ogg_buf` (16KB PSRAM) before opening SD file
@@ -71,11 +72,15 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 
 | File | Purpose |
 |---|---|
-| `src/config.h` | Pin assignments, server config, log levels, Opus settings |
-| `src/main.cpp` | Entry point: setup(), loop(), WiFi, OTA, SD mount, task creation |
-| `src/audio.cpp` | Core engine: I2S, AFE, ring buffer, Opus/OGG, writer, upload queue |
-| `src/audio.h` | Public API: task handles, sdTake/sdGive, utterance globals |
-| `src/upload.cpp` | HTTP multipart upload, file streaming, bulk re-upload |
+| `src/config.h` | Pin assignments, audio format selection, Opus settings, `#include "esp_log.h"` |
+| `src/main.cpp` | Entry point: setup(), loop(), WiFi, OTA, SD mount, task creation, runtime log levels |
+| `src/audio.h` | Shared pipeline interface: ring buffer, extern globals, buffer health accessors |
+| `src/audio.cpp` | Ring buffer + producer: audioInit, sdTake/sdGive, startRecording, toggleVAD |
+| `src/i2s_fe.h` | I2S + AFE public interface |
+| `src/i2s_fe.cpp` | I2S PDM driver, AFE init, feed/fetch tasks, processAfeResult (TAG="AFE") |
+| `src/writer.h` | Writer public interface: writerInit, writerTask, queue depth, sample count |
+| `src/writer.cpp` | Consumer: Opus/OGG encode, SD write, upload queue, upload worker (TAG="WRITER") |
+| `src/upload.cpp` | HTTP multipart upload, file streaming, bulk re-upload (TAG="UPLOAD") |
 | `src/upload.h` | Public: uploadFile(), uploadAllRecordings() |
 | `src/oauth2_client.cpp` | ESP32 OAuth2 Preferences-backed storage for device flow |
 | `src/oauth2_client.h` | Public: oauth2ClientInit(), oauth2Client() |
@@ -192,8 +197,11 @@ Device creates AP `LifeLog-Setup` on first boot or connection failure. Connect a
 
 ### Log Levels
 
-Per-component, compile-time in `config.h` (0=NONE, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG):
-BOOT, WIFI, OTA, SYSTEM, SD, I2S, AUDIO, VAD, AFE, UPLOAD, MIC, LS, OAUTH
+ESP-IDF `esp_log.h` — runtime-adjustable per TAG via `esp_log_level_set()` in `setup()`:
+- Default: `ESP_LOG_INFO` for all TAGs
+- `SD` and `AFE`: `ESP_LOG_DEBUG` (set in main.cpp)
+- TAGs: `BOOT`, `WIFI`, `OTA`, `SYSTEM`, `SD`, `AFE`, `AUDIO`, `WRITER`, `UPLOAD`, `OAUTH`, `VAD`
+- Format: `I (12345) AUDIO: message` with ANSI color on Serial
 
 ## Partition Table
 
