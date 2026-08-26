@@ -647,9 +647,6 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
     if (resp.statusCode == 0 || resp.statusCode != 200) {
 #ifndef OAUTH2_TESTING
         Serial.printf("[OAUTH] Token refresh failed: status=%d\n", resp.statusCode);
-        char respBuf[512] = {};
-        serializeJson(resp.body, respBuf, sizeof(respBuf));
-        Serial.printf("[OAUTH] Refresh response: %.400s\n", respBuf);
 #endif
         strlcpy(_lastError, "Token refresh failed", sizeof(_lastError));
         _hasTokens = false;
