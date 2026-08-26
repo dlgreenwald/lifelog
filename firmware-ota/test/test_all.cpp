@@ -466,8 +466,8 @@ int main() {
     RUN_TEST(test_oauth2_clearConfig_clears_buffers);
     RUN_TEST(test_oauth2_loadSavedState_restores);
     RUN_TEST(test_oauth2_ensureValidToken_noop_when_valid);
-    RUN_TEST(test_oauth2_ensureValidToken_refresh_when_expired);
-    RUN_TEST(test_oauth2_put_returns_zero_when_not_authenticated);
+    RUN_TEST(test_oauth2_ensureValidToken_expired_returns_false);
+    RUN_TEST(test_oauth2_put_no_auth_header_when_not_authenticated);
     RUN_TEST(test_oauth2_patch_returns_zero_when_not_authenticated);
     RUN_TEST(test_oauth2_malformed_json_response);
 

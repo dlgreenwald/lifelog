@@ -221,11 +221,23 @@ static void setupDashboard() {
             oauthCfg.timeoutMs = 600000;
             oauth2Client().configure(oauthCfg);
             oauth2Client().start();
+            // Persist to "device" namespace so reboot doesn't overwrite with stale values
+            Preferences p;
+            p.begin("device", false);
+            p.putString("oauth_issuer", deviceSettings.oauthIssuer);
+            p.putString("oauth_client_id", deviceSettings.oauthClientId);
+            p.end();
             LOG_OAUTH(LOG_INFO, "Device code flow started");
         }
     });
     dash.button("Clear Auth", "Clear", []() {
         oauth2Client().clearTokens();
+        // Clear from "device" namespace so reboot doesn't restore stale issuer/client ID
+        Preferences p;
+        p.begin("device", false);
+        p.remove("oauth_issuer");
+        p.remove("oauth_client_id");
+        p.end();
         LOG_OAUTH(LOG_INFO, "Tokens cleared");
     });
 

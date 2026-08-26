@@ -518,7 +518,7 @@ void test_oauth2_ensureValidToken_noop_when_valid() {
     TEST_ASSERT_EQUAL(AUTHENTICATED, oauth2Flow.getState());
 }
 
-void test_oauth2_ensureValidToken_refresh_when_expired() {
+void test_oauth2_ensureValidToken_expired_returns_false() {
     oauth2ResetAll();
     oauth2Flow.begin(&mockStorage);
     oauth2Flow.configure(oauth2TestConfig());
@@ -533,23 +533,21 @@ void test_oauth2_ensureValidToken_refresh_when_expired() {
     oauth2AdvanceTime(3601000);
     TEST_ASSERT_FALSE(oauth2Flow.hasValidToken());
 
-    // Set mock response for refresh
-    oauth2Flow._testSetHttpResponse(200,
-        "{\"access_token\":\"at_new\","
-        "\"refresh_token\":\"rt_new\","
-        "\"expires_in\":3600}");
-
-    TEST_ASSERT_TRUE(oauth2Flow.ensureValidToken());
-    TEST_ASSERT_TRUE(oauth2Flow.hasValidToken());
+    // ensureValidToken should NOT refresh — background task owns lifecycle
+    TEST_ASSERT_FALSE(oauth2Flow.ensureValidToken());
+    TEST_ASSERT_FALSE(oauth2Flow.hasValidToken());
 }
 
-void test_oauth2_put_returns_zero_when_not_authenticated() {
+void test_oauth2_put_no_auth_header_when_not_authenticated() {
     oauth2ResetAll();
     oauth2Flow.begin(&mockStorage);
     oauth2Flow.configure(oauth2TestConfig());
+    oauth2Flow._testSetHttpResponse(401, "{\"error\":\"unauthorized\"}");
 
+    // No tokens — request goes without auth header, server returns 401
     OAuth2HttpResponse resp = oauth2Flow.put("/api/settings", "data");
-    TEST_ASSERT_EQUAL(0, resp.statusCode);
+    TEST_ASSERT_EQUAL(401, resp.statusCode);
+    // Pass-through does NOT refresh — background task owns token lifecycle
 }
 
 void test_oauth2_patch_returns_zero_when_not_authenticated() {

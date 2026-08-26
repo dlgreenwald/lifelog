@@ -147,6 +147,10 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
         if (httpStatus == -401) {
             // Token was refreshed, retry
             LOG_UPLOAD(LOG_INFO, "Auth failed, retrying with new token");
+            // Log server response for debugging
+            char respBuf[256] = {};
+            oauth2Client().read(respBuf, sizeof(respBuf));
+            LOG_UPLOAD(LOG_INFO, "Server response: %s", respBuf);
             continue;
         }
         break;  // Got final status
@@ -156,6 +160,9 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     if (httpStatus > 0) {
         char respBuf[256];
         oauth2Client().read(respBuf, sizeof(respBuf));
+        LOG_UPLOAD(LOG_INFO, "Server response (status=%d): %.200s", httpStatus, respBuf);
+    } else if (httpStatus != 0) {
+        LOG_UPLOAD(LOG_WARN, "Upload failed with status=%d", httpStatus);
     }
 
     oauth2Client().close();

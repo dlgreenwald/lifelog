@@ -324,12 +324,21 @@ void OAuth2DeviceFlow::clearTokens() {
     _tokenExpiry = 0;
     _refreshTokenExpiry = 0;
     _hasTokens = false;
+    _deviceCode[0] = '\0';
+    _userCode[0] = '\0';
+    _verificationUri[0] = '\0';
+    _verificationUriComplete[0] = '\0';
+    _deviceCodeExpiry = 0;
     if (_storage) {
         _storage->remove(NS, "access_token");
         _storage->remove(NS, "refresh_token");
         _storage->remove(NS, "token_expiry");
         _storage->remove(NS, "refresh_exp");
         _storage->putBool(NS, "has_tokens", false);
+        _storage->remove(NS, "device_code");
+        _storage->remove(NS, "user_code");
+        _storage->remove(NS, "ver_uri");
+        _storage->remove(NS, "ver_uri_full");
     }
     setState(AUTH_IDLE);
 #ifndef OAUTH2_TESTING
@@ -371,7 +380,8 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
             case AUTH_REQUESTING_CODE: requestDeviceCode(); break;
             case AUTH_DISPLAYING_CODE: setState(AUTH_POLLING); break;
             case AUTH_POLLING: {
-                if (nowMs() - _flowStartTime > _config.timeoutMs) {
+                if (nowMs() - _flowStartTime > _config.timeoutMs ||
+                    (_deviceCodeExpiry > 0 && nowMs() > _deviceCodeExpiry)) {
                     strlcpy(_lastError, "Timed out", sizeof(_lastError));
                     setState(AUTH_ERROR);
                     break;
@@ -504,7 +514,6 @@ void OAuth2DeviceFlow::requestDeviceCode() {
 
 #ifndef OAUTH2_TESTING
     Serial.printf("[OAUTH] Device code request: status=%d\n", resp.statusCode);
-    // Log response body (truncated for safety — never log tokens)
     char respBuf[512] = {};
     serializeJson(resp.body, respBuf, sizeof(respBuf));
     Serial.printf("[OAUTH] Response: %.400s\n", respBuf);
@@ -518,6 +527,8 @@ void OAuth2DeviceFlow::requestDeviceCode() {
     strlcpy(_verificationUri, resp.body["verification_uri"] | "", sizeof(_verificationUri));
     strlcpy(_verificationUriComplete, resp.body["verification_uri_complete"] | "", sizeof(_verificationUriComplete));
     _pollInterval = static_cast<uint16_t>(resp.body["interval"] | 5000);
+    int expires_in = resp.body["expires_in"] | 60;
+    _deviceCodeExpiry = nowMs() + (expires_in * 1000);
 
     if (_deviceCode[0] == '\0' || _userCode[0] == '\0') {
         strlcpy(_lastError, "Invalid device code response", sizeof(_lastError));
@@ -636,6 +647,9 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
     if (resp.statusCode == 0 || resp.statusCode != 200) {
 #ifndef OAUTH2_TESTING
         Serial.printf("[OAUTH] Token refresh failed: status=%d\n", resp.statusCode);
+        char respBuf[512] = {};
+        serializeJson(resp.body, respBuf, sizeof(respBuf));
+        Serial.printf("[OAUTH] Refresh response: %.400s\n", respBuf);
 #endif
         strlcpy(_lastError, "Token refresh failed", sizeof(_lastError));
         _hasTokens = false;
@@ -739,14 +753,8 @@ bool OAuth2DeviceFlow::ensureValidToken() {
     if (!_hasTokens || _accessToken[0] == '\0') return false;
 
     // Check stored expiry (epoch seconds)
-    if (static_cast<uint32_t>(time(NULL)) < _tokenExpiry) return true;
-
-    // Token expired — try refresh
-    if (_refreshToken[0] != '\0') {
-        exchangeRefreshToken();
-        return _hasTokens;
-    }
-    return false;
+    // Don't refresh here — the background polling task owns token lifecycle.
+    return static_cast<uint32_t>(time(NULL)) < _tokenExpiry;
 }
 
 // ── esp_http_client proxy ──────────────────────────────────────────
@@ -790,10 +798,8 @@ int OAuth2DeviceFlow::fetch_headers() {
     esp_http_client_fetch_headers(client);
     int status = esp_http_client_get_status_code(client);
 
-    if (status == 401 && _hasTokens && _refreshToken[0] != '\0') {
-        xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
-        exchangeRefreshToken();
-        xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+    if (status == 401) {
+        // Don't refresh here — the background polling task owns token lifecycle.
         esp_http_client_close(client);
         _pendingStatus = -401;
         return -401;
@@ -847,21 +853,9 @@ OAuth2HttpResponse OAuth2DeviceFlow::doWithRetry(const char* method, const char*
 
     result = requestInternal(method, url, authHeader[0] ? authHeader : nullptr, body);
 
-    if (result.statusCode == 401 && _hasTokens && _refreshToken[0] != '\0') {
-#ifndef OAUTH2_TESTING
-        xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
-#endif
-        exchangeRefreshToken();
-#ifndef OAUTH2_TESTING
-        xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
-#endif
-        if (_hasTokens) {
-            snprintf(authHeader, sizeof(authHeader), "Bearer %s", _accessToken);
-            result = requestInternal(method, url, authHeader, body);
-        } else {
-            setState(AUTH_ERROR);
-        }
-    }
+    // 401 on pass-through: return it to the caller (upload skips this chunk).
+    // Don't refresh here — the background polling task owns token lifecycle.
+    // Refreshing here races with the polling task and can clobber its state.
     return result;
 }
 

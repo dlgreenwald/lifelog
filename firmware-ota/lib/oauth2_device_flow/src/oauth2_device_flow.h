@@ -164,6 +164,7 @@ private:
     uint16_t _pollInterval = 5000;
     uint32_t _lastPollTime = 0;
     uint32_t _flowStartTime = 0;
+    uint32_t _deviceCodeExpiry = 0;  // Epoch millis when device code expires
     bool _hasTokens = false;
 
     void* _pollingTaskHandle = nullptr;
