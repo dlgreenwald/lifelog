@@ -519,7 +519,7 @@ void setup() {
     // Audio tasks
     xTaskCreatePinnedToCore(afeFeedTask, "afe_feed", 8192, NULL, PRIO_AUDIO, &feedTaskHandle, 0);
     xTaskCreatePinnedToCore(afeFetchTask, "afe_fetch", 8192, NULL, PRIO_AUDIO, &fetchTaskHandle, 1);
-    xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, PRIO_AUDIO, &writerTaskHandle, 0);
+    xTaskCreatePinnedToCore(writerTask, "writer", 49152, NULL, PRIO_AUDIO, &writerTaskHandle, 1);
     setWriterTaskHandle(writerTaskHandle);
 
     bootConfirm();
