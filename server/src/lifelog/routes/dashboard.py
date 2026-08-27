@@ -32,6 +32,23 @@ from lifelog.models import CreateDecision, CreateTodo
 
 logger = logging.getLogger("lifelog.dashboard")
 
+
+def _normalize_recording(rec: dict) -> dict:
+    """Ensure summary is a string — LLM may return {"summary": "..."} instead of "..."."""
+    summary = rec.get("summary")
+    if isinstance(summary, dict):
+        rec["summary"] = summary.get("summary", str(summary))
+    elif isinstance(summary, str) and summary.startswith("{"):
+        try:
+            import json
+            parsed = json.loads(summary)
+            if isinstance(parsed, dict):
+                rec["summary"] = parsed.get("summary", str(parsed))
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return rec
+
+
 router = APIRouter()
 
 
@@ -73,7 +90,7 @@ async def get_day_recordings(
     logger.debug("Day recordings request: user=%d, date=%s, category=%s", user["id"], date, category)
     recordings = await get_recordings_by_date(user["id"], date, category=category)
     logger.debug("Found %d recordings for %s", len(recordings), date)
-    return {"recordings": recordings}
+    return {"recordings": [_normalize_recording(r) for r in recordings]}
 
 
 @router.get("/recording/{recording_id}")
@@ -84,7 +101,7 @@ async def get_recording_detail(recording_id: int, user: dict = Depends(validate_
     if not recording:
         logger.warning("Recording %d not found for user %d", recording_id, user["id"])
         raise HTTPException(status_code=404, detail="Recording not found")
-    return recording
+    return _normalize_recording(recording)
 
 
 @router.get("/audio/{filename}")
@@ -321,4 +338,9 @@ async def get_active_recording_route(user: dict = Depends(validate_oidc_token)):
 async def get_daily_summary_route(date: str, user: dict = Depends(validate_oidc_token)):
     """Get the daily summary for a specific date (YYYY-MM-DD)."""
     summary = await get_daily_summary(user["id"], date)
+    # Normalize nested objects — LLM may return {"Work": {"summary": "..."}} instead of {"Work": "..."}
+    if isinstance(summary, dict) and isinstance(summary.get("daily_summary"), dict):
+        for key, val in summary["daily_summary"].items():
+            if isinstance(val, dict):
+                summary["daily_summary"][key] = val.get("summary", str(val))
     return {"daily_summary": summary}

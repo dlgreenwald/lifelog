@@ -569,6 +569,12 @@ async def _reprocess_session(session: dict):
     t_llm = time.monotonic()
     logger.info("Session %d: calling LLM summarize...", session_id)
     llm_result = summarize(all_named_segments)
+    # Ensure summary is a string — LLM may return {"summary": "..."} instead of "..."
+    raw_summary = llm_result.get("summary", "")
+    if isinstance(raw_summary, dict):
+        llm_result["summary"] = raw_summary.get("summary", str(raw_summary))
+    elif isinstance(raw_summary, list):
+        llm_result["summary"] = "\n".join(str(s) for s in raw_summary)
     logger.info(
         "Session %d: LLM summarize returned in %.1fs",
         session_id, time.monotonic() - t_llm,

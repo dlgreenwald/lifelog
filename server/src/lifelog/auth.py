@@ -1,9 +1,13 @@
+import logging
+
 import httpx
 import jwt as pyjwt
 from fastapi import Depends, Header, HTTPException
 from fastapi.security import HTTPBearer
 
 from lifelog.config import settings
+
+logger = logging.getLogger("lifelog.auth")
 
 security = HTTPBearer()
 
@@ -51,6 +55,12 @@ async def validate_bearer_token(token: str) -> dict:
     """
     from lifelog.database import get_user_by_oidc_sub
 
+    # Decode payload without verification for logging in error handlers
+    try:
+        payload = pyjwt.decode(token, options={"verify_signature": False})
+    except pyjwt.InvalidTokenError:
+        payload = {}
+
     try:
         signing_key = _get_jwk_client().get_signing_key_from_jwt(token)
         payload = pyjwt.decode(
@@ -68,7 +78,17 @@ async def validate_bearer_token(token: str) -> dict:
                 name=payload.get("preferred_username", payload.get("sub", "User")),
             )
         return user
-    except pyjwt.InvalidTokenError:
+    except pyjwt.ExpiredSignatureError:
+        logger.warning("Token expired: sub=%s exp=%s", payload.get("sub", "?"), payload.get("exp", "?"))
+        raise HTTPException(status_code=401, detail="Token expired")
+    except pyjwt.InvalidAudienceError:
+        logger.warning("Invalid audience: token_aud=%s expected=%s", payload.get("aud", "?"), settings.oidc_client_id)
+        raise HTTPException(status_code=401, detail="Invalid audience")
+    except pyjwt.InvalidIssuerError:
+        logger.warning("Invalid issuer: token_iss=%s expected=%s", payload.get("iss", "?"), settings.oidc_issuer_url)
+        raise HTTPException(status_code=401, detail="Invalid issuer")
+    except pyjwt.InvalidTokenError as e:
+        logger.warning("Invalid token: %s", e)
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
@@ -77,6 +97,12 @@ async def validate_oidc_token(
 ) -> dict:
     """Validate OIDC JWT token using JWKS public key."""
     from lifelog.database import get_user_by_oidc_sub
+
+    # Decode payload without verification for logging in error handlers
+    try:
+        payload = pyjwt.decode(token.credentials, options={"verify_signature": False})
+    except pyjwt.InvalidTokenError:
+        payload = {}
 
     try:
         signing_key = _get_jwk_client().get_signing_key_from_jwt(token.credentials)
@@ -96,5 +122,15 @@ async def validate_oidc_token(
                 name=payload.get("preferred_username", payload.get("sub", "User")),
             )
         return user
-    except pyjwt.InvalidTokenError:
+    except pyjwt.ExpiredSignatureError:
+        logger.warning("Token expired: sub=%s exp=%s", payload.get("sub", "?"), payload.get("exp", "?"))
+        raise HTTPException(status_code=401, detail="Token expired")
+    except pyjwt.InvalidAudienceError:
+        logger.warning("Invalid audience: token_aud=%s expected=%s", payload.get("aud", "?"), settings.oidc_client_id)
+        raise HTTPException(status_code=401, detail="Invalid audience")
+    except pyjwt.InvalidIssuerError:
+        logger.warning("Invalid issuer: token_iss=%s expected=%s", payload.get("iss", "?"), settings.oidc_issuer_url)
+        raise HTTPException(status_code=401, detail="Invalid issuer")
+    except pyjwt.InvalidTokenError as e:
+        logger.warning("Invalid token: %s", e)
         raise HTTPException(status_code=401, detail="Invalid token")
