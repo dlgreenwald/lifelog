@@ -58,9 +58,9 @@ lifelog/
 │   ├── utils/format.ts    Shared formatting helpers
 │   └── test/              Vitest + testing-library tests
 ├── firmware-ota/          ESP32-S3 OTA firmware (C++/Arduino)
-│   ├── src/               main.cpp, audio.cpp, i2s_fe.cpp, writer.cpp, upload.cpp, oauth2_client.cpp, settings.h, config.h, afe_stubs.h
+│   ├── src/               main.cpp, audio.cpp, i2s_fe.cpp, writer.cpp, upload.cpp, oauth2_client.cpp + headers (audio.h, i2s_fe.h, writer.h, upload.h, oauth2_client.h, settings.h, config.h, afe_stubs.h)
 │   ├── lib/               lifelog_core, oauth2_device_flow, taskman
-│   └── test/              Unity native tests (66 tests)
+│   └── test/              Unity native tests (69 tests)
 ├── e2e/                   End-to-end test suite (Piper TTS → upload → verify)
 ├── scripts/               generate-certs.sh (TLS cert generation)
 ├── docker-compose.yml     Orchestrates all services
@@ -118,7 +118,7 @@ npm run build        # Production build
 ```bash
 cd firmware-ota
 pio run                              # Build only
-pio test -e test                     # Run native tests (66 tests)
+pio test -e test                     # Run native tests (69 tests)
 pio device monitor                   # Serial monitor (115200 baud)
 
 # OTA update (HTTP, not ArduinoOTA):
@@ -156,7 +156,7 @@ cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 15 tests
 cd dashboard && npx vitest run                            # 83 tests
 
 # Firmware-OTA
-cd firmware-ota && pio test -e test                       # 66 tests
+cd firmware-ota && pio test -e test                       # 69 tests
 ```
 
 ## Code Conventions & Common Patterns
@@ -260,7 +260,7 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `firmware-ota/src/main.cpp` | OTA firmware: WiFi, OTA, PDM mic, SD card, runtime log levels |
 | `firmware-ota/src/audio.cpp` | Ring buffer + producer (audioInit, sdTake/sdGive) |
 | `firmware-ota/src/i2s_fe.cpp` | I2S PDM driver, AFE init, feed/fetch tasks, processAfeResult |
-| `firmware-ota/src/writer.cpp` | Consumer: Opus/OGG encode, SD write, upload queue |
+| `firmware-ota/src/writer.cpp` | Consumer: Opus/OGG encode, PSRAM-first buffering, SD fallback, upload queue |
 | `firmware-ota/src/oauth2_client.cpp` | ESP32 OAuth2 client — wires device flow library to NVS storage |
 | `firmware-ota/partitions/partitions_ota.csv` | Dual OTA partition table (3MB app slots + 1.9MB model) |
 | `firmware-ota/platformio.ini` | OTA firmware build config |
@@ -323,7 +323,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 
 ## Testing & QA
 
-**Total**: ~280 tests across 5 components (108 server + 8 diarization + 15 speaker-id + 83 dashboard + 66 firmware-ota)
+**Total**: ~283 tests across 5 components (108 server + 8 diarization + 15 speaker-id + 83 dashboard + 69 firmware-ota)
 
 ### Python test framework
 
@@ -349,7 +349,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 | Dashboard components | 7 components | `vi.mock` API client, `render` + `screen` queries |
 | API client | 8 methods | `vi.stubGlobal('fetch')` with mock responses |
 | ML pipeline | 3 functions | `sys.modules` mocking for pyannote/torch/speechbrain |
-| Firmware-OTA | 66 tests | Native Unity tests with full ESP32/FreeRTOS mock layer |
+| Firmware-OTA | 69 tests | Native Unity tests with full ESP32/FreeRTOS mock layer |
 
 ### Key testing patterns
 
@@ -385,7 +385,7 @@ Before merging any change:
 
 1. **Lint**: `ruff check src/ tests/` passes on all Python services (0 errors)
 2. **Type check**: `npx tsc --noEmit` passes on dashboard (0 errors)
-3. **Tests**: All 280 tests pass across all 5 services
+3. **Tests**: All 283 tests pass across all 5 services
 4. **No regressions**: Existing functionality not broken
 
 ### Ruff configuration
@@ -421,7 +421,7 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | `diarization/build.sh` | compile check → ruff lint → pytest (8 tests) |
 | `speaker-id/build.sh` | compile check → ruff lint → pytest (15 tests) |
 | `dashboard/build.sh` | tsc type check → vite build → vitest (83 tests) → bundle size |
-| `firmware-ota/build.sh` | pio compile check → native test (66 tests) |
+| `firmware-ota/build.sh` | pio compile check → native test (69 tests) |
 
 **Run everything:**
 
