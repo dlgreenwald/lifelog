@@ -1,0 +1,17 @@
+CompileFlags:
+  CompilationDatabase: .pio/build/esp32dev
+  Compiler: clang
+  Add:
+    - -I~/.platformio/packages/framework-arduinoespressif32/cores/esp32
+    - -I~/.platformio/packages/framework-arduinoespressif32/variants/esp32
+    - -DARDUINO_ARCH_ESP32
+    - -DESP32
+  Remove:
+    - -march=*
+    - -mlongcalls
+    - -fno-rtti
+
+---
+# Query-driver permission for the xtensa toolchain
+InlayHints:
+  Enabled: Yes

@@ -1,0 +1,20 @@
+{
+  "ignore": [
+    ".pio/**",
+    "test/**"
+  ],
+  "rules": {
+    "cpp-check": { "disable": ["cpp-check"] }
+  },
+  "serverOverrides": {
+    "clangd": {
+      "initializationOptions": {
+        "clangd.semanticHighlighting": true,
+        "clangd.diagnosticsDelay": 500
+      }
+    }
+  },
+  "warmFiles": [
+    "src/main.cpp"
+  ]
+}
