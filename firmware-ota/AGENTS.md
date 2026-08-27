@@ -20,7 +20,7 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
   → afeFeedTask [Core 0, 8KB stack]
       i2s_read() → afe_handle->feed()
   → esp-sr AFE Pipeline (AFE_TYPE_VC, LOW_COST)
-      WebRTC VAD + NSNET2 noise suppression + AGC
+      WebRTC VAD + NSNET2 noise suppression
   → afeFetchTask [Core 1, 8KB stack]
       processAfeResult() → VAD state machine → ring buffer
   → writerTask [Core 1, 48KB stack]
@@ -57,12 +57,14 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 | `uploadQueue` | FreeRTOS queue (depth 8) | `UploadRequest` structs (writer.cpp) |
 
 ### Ring Buffer
+
 - RTOS `xRingbufferCreateStatic` (NOSPLIT mode): 32 × (1024+16) bytes ≈ 33KB in PSRAM
 - Producer: `processAfeResult()` (i2s_fe.cpp) sends chunks; drops oldest on overflow
 - Consumer: `writerTask()` (writer.cpp) receives via `xRingbufferReceive()`; blocked via `ulTaskNotifyTake()`
 - Thread-safe by design — no mutex needed for xRingbuffer
 
 ### Deferred SD Open
+
 - OGG pages accumulate in `ogg_buf` (16KB PSRAM) before opening SD file
 - SD file opens only when buffer ≥4KB (~1.3s of audio)
 - Short utterances (<4KB) discarded without touching SD
@@ -72,19 +74,23 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 
 | File | Purpose |
 |---|---|
-| `src/config.h` | Pin assignments, audio format selection, Opus settings, `#include "esp_log.h"` |
+| `src/config.h` | ESP log macro restoration (overrides Arduino hijacking), pin assignments, audio format selection, Opus settings |
+| `src/settings.h` | Thin wrapper — delegates to `lib/lifelog_core/settings.h` (DeviceSettings, KnownNetwork, addKnownNetwork) |
 | `src/main.cpp` | Entry point: setup(), loop(), WiFi, OTA, SD mount, task creation, runtime log levels |
 | `src/audio.h` | Shared pipeline interface: ring buffer, extern globals, buffer health accessors |
-| `src/audio.cpp` | Ring buffer + producer: audioInit, sdTake/sdGive, startRecording, toggleVAD |
+| `src/audio.cpp` | Ring buffer + producer: audioInit, sdTake/sdGive, startRecording, toggleVAD (TAG="AUDIO") |
 | `src/i2s_fe.h` | I2S + AFE public interface |
-| `src/i2s_fe.cpp` | I2S PDM driver, AFE init, feed/fetch tasks, processAfeResult (TAG="AFE") |
+| `src/i2s_fe.cpp` | I2S PDM driver, AFE init, feed/fetch tasks, processAfeResult (TAG="AFE_FEED") |
 | `src/writer.h` | Writer public interface: writerInit, writerTask, queue depth, sample count |
 | `src/writer.cpp` | Consumer: Opus/OGG encode, SD write, upload queue, upload worker (TAG="WRITER") |
 | `src/upload.cpp` | HTTP multipart upload, file streaming, bulk re-upload (TAG="UPLOAD") |
 | `src/upload.h` | Public: uploadFile(), uploadAllRecordings() |
 | `src/oauth2_client.cpp` | ESP32 OAuth2 Preferences-backed storage for device flow |
 | `src/oauth2_client.h` | Public: oauth2ClientInit(), oauth2Client() |
-| `src/afe_stubs.h` | Weak stubs for esp-dl/FFT symbols not in precompiled libs |
+| `src/afe_stubs.h` | Weak stubs for esp-dl/FFT, wakenet, and dl/base symbols not in precompiled libs |
+| `lib/lifelog_core/settings.h` | Pure business logic: DeviceSettings struct, KnownNetwork, addKnownNetwork() (zero Arduino deps) |
+| `lib/lifelog_core/codec.h` | Opus/OGG codec helpers |
+| `lib/lifelog_core/filename.h` | Recording filename generation |
 | `test/mocks.h` | Complete ESP32/FreeRTOS/Arduino/Opus/OGG mock layer |
 | `test/test_all.cpp` | 66 Unity tests across 10 categories |
 | `partitions/partitions_ota.csv` | OTA partition table with model partition |
@@ -92,28 +98,31 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 ## Development Commands
 
 ### Build
+
 ```bash
 cd firmware-ota
 pio run -e xiao_esp32s3          # Build only
 ```
 
 ### OTA Update (HTTP, preferred)
+
 The device serves an OTA endpoint at `/update`. **Do not use `pio run -t upload`** — the device runs HTTP OTA, not ArduinoOTA.
+
 ```bash
 # Build first, then upload via curl:
 pio run -e xiao_esp32s3
 curl -X POST -F "firmware=@.pio/build/xiao_esp32s3/firmware.bin" \
   http://<device-ip>/update
 ```
+
 - Device IP: resolve via `avahi-resolve -n LifeLog.local` or check serial log
 - Response: `OK, rebooting` on success
 - The handler suspends audio tasks during flash write, reboots via a 500ms one-shot timer (not `delay()`) so the HTTP response flushes before restart
 
 ### USB Flash (when OTA unavailable)
 
-### USB Flash (when OTA unavailable)
-
 **Full clean flash** — bootloader + partitions + firmware + models (4 files):
+
 ```bash
 # 1. Erase entire flash (wipes everything including WiFi config and models)
 esptool.py --chip esp32s3 --port /dev/ttyACM1 erase_flash
@@ -135,6 +144,7 @@ esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
 ```
 
 **Firmware-only update** (models preserved):
+
 ```bash
 # Only if models are already on the device and you're not changing them
 esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
@@ -147,16 +157,19 @@ esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
 **⚠️ Port must not be held by serial monitor.** Close `pio device monitor` before flashing.
 
 ### Tests
+
 ```bash
 pio test -e test                  # Run all 66 native tests
 ```
 
 ### Serial Monitor
+
 ```bash
 pio device monitor                # 115200 baud
 ```
 
 ### WiFi Config
+
 Device creates AP `LifeLog-Setup` on first boot or connection failure. Connect and configure at `http://192.168.4.1`.
 
 ## Configuration
@@ -193,14 +206,22 @@ Device creates AP `LifeLog-Setup` on first boot or connection failure. Connect a
 | Flag | Effect |
 |---|---|
 | `-DAUDIO_FORMAT_OPUS` | Enables Opus encoder + OGG mux (current default) |
+| `-DSLOW_BOOT` | Adds boot delay for serial monitor attachment |
+| `-DBUILD_DEVELOPMENT` | Enables RisalDash web UI, taskman stats (dev env only) |
+| `-DCONFIG_SPIRAM_MODE_OCT=y` | PSRAM Octal mode (required for 8MB PSRAM) |
+| `-DCONFIG_SPIRAM_SPEED_80M=y` | PSRAM at 80MHz |
+| `-DCONFIG_SPIRAM_BOOT_INIT=y` | Initialize PSRAM at boot |
+| `-DCONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384` | Allocate small blocks from internal RAM |
+| `-DCONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` | Allow WiFi/LWIP to use PSRAM |
 | `-Wl,--unresolved-symbols=ignore-all` | Allows linking with stubs for missing esp-sr symbols |
 
 ### Log Levels
 
 ESP-IDF `esp_log.h` — runtime-adjustable per TAG via `esp_log_level_set()` in `setup()`:
-- Default: `ESP_LOG_INFO` for all TAGs
-- `SD` and `AFE`: `ESP_LOG_DEBUG` (set in main.cpp)
-- TAGs: `BOOT`, `WIFI`, `OTA`, `SYSTEM`, `SD`, `AFE`, `AUDIO`, `WRITER`, `UPLOAD`, `OAUTH`, `VAD`
+
+- Default: `ESP_LOG_DEBUG` for all TAGs (`"*"`)
+- Explicit overrides: `SD` → DEBUG, `AFE_FEED` → INFO, `WRITER` → INFO, `UPLOAD` → INFO, `WIFI` → INFO, `ASYNC_TCP` → ERROR
+- TAGs: `BOOT`, `WIFI`, `OTA`, `SD`, `AFE_FEED`, `AUDIO`, `WRITER`, `UPLOAD`, `OAUTH`, `ASYNC_TCP`
 - Format: `I (12345) AUDIO: message` with ANSI color on Serial
 
 ## Partition Table
@@ -220,12 +241,14 @@ ESP-IDF `esp_log.h` — runtime-adjustable per TAG via `esp_log_level_set()` in 
 The `model` partition stores esp-sr models (nsnet2 + multinet) as a packed binary.
 
 ### What's needed
+
 - **nsnet2** (330KB) — noise suppression
 - **mn4q8_cn** (880KB) — speech command recognition (smallest that fits)
 - WakeNet: disabled via weak stubs
 - VADNet: disabled (WebRTC fallback)
 
 ### Binary format
+
 ```
 uint32 model_count
 For each model:
@@ -241,6 +264,7 @@ For each model:
 ### Rebuild (when models are lost after erase_flash)
 
 **Step 1**: Pack the models into a binary blob:
+
 ```bash
 cd firmware-ota
 python3 -c "
@@ -289,6 +313,7 @@ print(f'Packed {len(out)/1024:.0f} KB ({len(out)} bytes)')
 ```
 
 **Step 2**: Flash the model binary to the device:
+
 ```bash
 # Device must NOT have serial monitor open (port lock conflict)
 esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
@@ -299,11 +324,13 @@ esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
 **Step 3**: Reset the device — it will load models via mmap on next boot.
 
 **When models are needed**:
+
 - After `erase_flash` (wipes entire flash including model partition)
 - After `pio run -t upload` does NOT need models (only bootloader + partitions + firmware)
 - If serial log shows `"esp_srmodel_init failed"` or `"Model partition empty"`
 
 ### Pitfalls
+
 - Full `erase_flash` wipes model partition — must reflash after erase
 - Upstream `pack_model.py` has a directory walk bug — use the script above
 - English multinets (mn5q8_en, mn7_en) are too large for 1.9MB partition
@@ -322,14 +349,29 @@ The test file (`test/test_all.cpp`) does **NOT** `#include` or link against the 
 To fix this properly: restructure tests to `#include` the actual `.cpp` files (with appropriate mocks), or use PlatformIO's `test_build_src = true` to compile source files into the test binary.
 
 ### Framework
+
 - **Unity** (throwtheswitch/Unity@^2.5.2) — native platform, no hardware needed
 - **66 tests** across 10 categories
 
 ### Categories
-WAV header generation, Opus header generation, Opus tags, filename generation, upload extension matching, addKnownNetwork, OAuth2 device code flow (registration, polling, token management, HTTP proxy)
+
+| Category | Tests | Description |
+|---|---|---|
+| WAV header | 13 | RIFF/WAVE magic, fmt chunk, sample rate, data chunk, sizes |
+| Opus Head | 8 | Magic, version, channels, preskip, sample rate, gain, mapping, size |
+| Opus Tags | 5 | Magic, vendor string, tag count, total size |
+| Filename | 5 | Opus/WAV format, increment, large index, buffer size |
+| Upload extension | 4 | Opus/WAV/mismatch/other extension matching |
+| addKnownNetwork | 3 | New, update existing, max limit |
+| OAuth2 state machine | 3 | Initial state, start transitions, stop sets idle |
+| OAuth2 device code flow | 7 | Request success/failure, poll pending/slow_down/success/expired/denied/timeout |
+| OAuth2 token management | 7 | Has valid token, clear tokens, token refresh, storage roundtrip, configure overwrites, get when not authenticated, load saved state, ensure valid token |
+| OAuth2 HTTP proxy | 5 | Post injects auth header, post retries on 401, del injects auth header, put/patch when not authenticated, malformed JSON response |
 
 ### Mock Layer (`test/mocks.h`)
+
 Complete ESP32/FreeRTOS/Arduino mock for native compilation:
+
 - FreeRTOS: queues, mutexes, tasks, notifications, delays
 - Arduino: Serial, GPIO, millis/micros
 - I2S: driver mocks
@@ -339,6 +381,7 @@ Complete ESP32/FreeRTOS/Arduino mock for native compilation:
 - SD: file system mock with in-memory directory
 
 ### Running
+
 ```bash
 pio test -e test
 ```
@@ -346,28 +389,34 @@ pio test -e test
 ## Error Handling
 
 ### Boot Rollback
+
 - `bootInit()` checks NVS `confirmed` flag and `boots` counter
 - OTA start resets both to 0
 - If `boots > MAX_BOOT (3)` and unconfirmed → device stays in current state
 - `bootConfirm()` called after successful `setup()`
 
 ### Watchdog
+
 - ESP task WDT enabled by default
 - After setup: loop task and idle task removed from WDT
 - AFE tasks yield via 100ms `i2s_read` timeouts
 
 ### AFE Failure
+
 - Tasks check `afe_handle`/`afe_data` at start; if NULL, self-delete
 - `afeInit()` logs and returns without crashing on any failure
 
 ### Ring Buffer Overflow
+
 - Oldest slot dropped, `flushDropCount++`, logged as warning
 
 ### SD Failures
+
 - Mount failure logged, SD unavailable (no retry)
 - File open failure returns null/false
 
 ### Upload Failures
+
 - Single attempt; file stays on SD on failure
 - Queue full (depth 8): file skipped
 - WiFi not connected: upload skipped silently
@@ -382,10 +431,14 @@ pio test -e test
 
 | Library | Version | Purpose |
 |---|---|---|
-| `tzapu/WiFiManager` | ^2.0.17 | Captive portal WiFi setup |
+| `shaxzod/RisalDash` | ^0.13.0 | ESP32 web dashboard (captive portal, WiFi config, OTA UI) |
+| `esp32async/ESPAsyncWebServer` | — | Async HTTP server for dashboard |
+| `esp32async/AsyncTCP` | — | Async TCP for ESPAsyncWebServer |
+| `bblanchon/ArduinoJson` | ^7.0.0 | JSON serialization for dashboard API |
 | `sh123/esp32_opus` | ^1.0.3 | Opus encoder |
 | `pschatzmann/codec-ogg` | GitHub HEAD | OGG container mux |
 | `espressif/esp-sr` | Commit `4f1b5607` | Speech recognition (AFE, NSNET2) |
+| `WiFiClientSecure` | — | TLS for server uploads |
 
 Linked esp-sr libs: `esp_audio_front_end`, `esp_audio_processor`, `dl_lib`, `vadnet`, `nsnet`, `c_speech_features`, `fst`, `hufzip`, `multinet`, `wakenet`
 
@@ -396,5 +449,5 @@ Linked esp-sr libs: `esp_audio_front_end`, `esp_audio_processor`, `dl_lib`, `vad
 3. **OGG granulepos**: Must be in 48kHz units (`frame_size × 48000 / 16kHz`), not sample count.
 4. **Opus pre-skip**: 3840 samples (80ms at 48kHz) per RFC 7845 — affects playback sync.
 5. **File index persists in RAM only**: Lost on reboot, may reuse filenames. Use `upload` command to clear old files.
-6. **OTA protocol**: `platformio.ini` defaults to `espota`. USB flash requires `esptool.py` directly with correct offsets (0x0, 0x8000, 0x10000, 0x610000).
+6. **OTA protocol**: `platformio.ini` defaults to `esptool`. USB flash requires `esptool.py` directly with correct offsets (0x0, 0x8000, 0x10000, 0x610000).
 7. **Model partition not SPIFFS**: Despite `data, spiffs` type, it's memory-mapped raw binary. Don't use SPIFFS API.
