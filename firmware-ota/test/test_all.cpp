@@ -377,7 +377,7 @@ static void test_addKnownNetwork_max_limit() {
 
 static void test_upload_from_memory_mock() {
     // Verify the uploadFileFromMemory mock records calls correctly
-    uint8_t data[] = {0x01, 0x02, 0x03, 0x04};
+    uint8_t data[4096] = {0x01, 0x02, 0x03, 0x04};
     mock_upload_mem_calls.clear();
     bool ok = uploadFileFromMemory(data, sizeof(data), "/test.opus", 42, 0, true);
     TEST_ASSERT_TRUE(ok);
@@ -386,7 +386,7 @@ static void test_upload_from_memory_mock() {
     TEST_ASSERT_EQUAL_UINT32(42, mock_upload_mem_calls[0].utteranceId);
     TEST_ASSERT_EQUAL_UINT32(0, mock_upload_mem_calls[0].chunkIndex);
     TEST_ASSERT_TRUE(mock_upload_mem_calls[0].isFinal);
-    TEST_ASSERT_EQUAL_UINT32(4, mock_upload_mem_calls[0].size);
+    TEST_ASSERT_EQUAL_UINT32(4096, mock_upload_mem_calls[0].size);
     TEST_ASSERT_EQUAL_PTR(data, mock_upload_mem_calls[0].data);
 }
 

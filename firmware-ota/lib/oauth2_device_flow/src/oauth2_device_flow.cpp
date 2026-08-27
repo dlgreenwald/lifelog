@@ -555,7 +555,9 @@ void OAuth2DeviceFlow::requestDeviceCode() {
     strlcpy(_verificationUri, resp.body["verification_uri"] | "", sizeof(_verificationUri));
     strlcpy(_verificationUriComplete, resp.body["verification_uri_complete"] | "", sizeof(_verificationUriComplete));
     int pollSec = resp.body["interval"] | 5; if (pollSec < 5) pollSec = 5; _pollInterval = static_cast<uint16_t>(pollSec) * 1000;
+#ifndef OAUTH2_TESTING
     ESP_LOGI(TAG, "Poll interval: %dms (IdP: %ds)", _pollInterval, pollSec);
+#endif
     int expires_in = resp.body["expires_in"] | 60;
     _deviceCodeExpiry = nowMs() + (expires_in * 1000);
 

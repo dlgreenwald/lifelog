@@ -283,6 +283,7 @@ inline bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
                                  const char *filename, uint32_t uttId,
                                  uint32_t chunkIdx, bool final) {
     UploadMemCall call = {data, size, std::string(filename), uttId, chunkIdx, final};
+    if (size < 4096) return true;  // Short clip — discard (matches real impl)
     mock_upload_mem_calls.push_back(call);
     return mock_upload_should_succeed;
 }
