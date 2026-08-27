@@ -142,6 +142,9 @@ logs/
 *.db
 *.db3
 
+# Compile Commands
+firmware-ota/compile_commands.json
+
 # ---------- Misc ----------
 tmp/
 temp/
