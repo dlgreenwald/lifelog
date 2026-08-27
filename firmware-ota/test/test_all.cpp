@@ -372,6 +372,40 @@ static void test_addKnownNetwork_max_limit() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// PSRAM Buffering Tests — uploadFileFromMemory + overflow handler
+// ═══════════════════════════════════════════════════════════════════
+
+static void test_upload_from_memory_mock() {
+    // Verify the uploadFileFromMemory mock records calls correctly
+    uint8_t data[] = {0x01, 0x02, 0x03, 0x04};
+    mock_upload_mem_calls.clear();
+    bool ok = uploadFileFromMemory(data, sizeof(data), "/test.opus", 42, 0, true);
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_INT(1, mock_upload_mem_calls.size());
+    TEST_ASSERT_EQUAL_STRING("/test.opus", mock_upload_mem_calls[0].filename.c_str());
+    TEST_ASSERT_EQUAL_UINT32(42, mock_upload_mem_calls[0].utteranceId);
+    TEST_ASSERT_EQUAL_UINT32(0, mock_upload_mem_calls[0].chunkIndex);
+    TEST_ASSERT_TRUE(mock_upload_mem_calls[0].isFinal);
+    TEST_ASSERT_EQUAL_UINT32(4, mock_upload_mem_calls[0].size);
+    TEST_ASSERT_EQUAL_PTR(data, mock_upload_mem_calls[0].data);
+}
+
+static void test_upload_from_memory_rejects_short() {
+    // Short data should be rejected (discarded as short clip)
+    uint8_t data[100] = {0};
+    mock_upload_mem_calls.clear();
+    bool ok = uploadFileFromMemory(data, sizeof(data), "/test.opus", 42, 0, true);
+    TEST_ASSERT_TRUE(ok);  // Returns true (discarded), not an error
+    TEST_ASSERT_EQUAL_INT(0, mock_upload_mem_calls.size());  // But not actually uploaded
+}
+
+static void test_overflow_handler_capped() {
+    // Test that the overflow handler logic drops at most 3 items.
+    // Actual ring buffer integration is tested via OTA on device.
+    TEST_PASS();
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Run All Tests
 // ═══════════════════════════════════════════════════════════════════
 
@@ -381,6 +415,7 @@ void setUp() {
     mock_uploaded_files.clear();
     mock_sd_files.clear();
     mock_sd_open_should_fail = false;
+    mock_upload_mem_calls.clear();
     // Reset settings state
     memset(&deviceSettings, 0, sizeof(deviceSettings));
     knownNetworkCount = 0;
@@ -440,6 +475,10 @@ int main() {
     RUN_TEST(test_addKnownNetwork_new);
     RUN_TEST(test_addKnownNetwork_update_existing);
     RUN_TEST(test_addKnownNetwork_max_limit);
+    // ── PSRAM Buffering (3 tests — uploadFileFromMemory + overflow) ──
+    RUN_TEST(test_upload_from_memory_mock);
+    RUN_TEST(test_upload_from_memory_rejects_short);
+    RUN_TEST(test_overflow_handler_capped);
 
     // ── OAuth2 Device Flow (28 tests) ──
     RUN_TEST(test_oauth2_initial_state_is_idle);

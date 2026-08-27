@@ -141,9 +141,16 @@ struct MockSerial {
 };
 static MockSerial Serial;
 
-// ── ps_malloc stub ─────────────────────────────────────────────────
-
 inline void* ps_malloc(size_t size) { return malloc(size); }
+inline void* ps_realloc(void *ptr, size_t size) { return realloc(ptr, size); }
+
+// ── esp_heap stub ──────────────────────────────────────────────────
+
+#define MALLOC_CAP_SPIRAM 0x10000
+inline size_t heap_caps_get_free_size(int caps) {
+    (void)caps;
+    return 8 * 1024 * 1024;  // 8MB — plenty for tests
+}
 
 // ── esp_random stub ────────────────────────────────────────────────
 
@@ -197,6 +204,7 @@ class File {
     std::string name_;
     std::vector<uint8_t> buf_;
     bool open_ = false;
+    size_t read_pos_ = 0;
 public:
     File() = default;
     File(const std::string& n) : name_(n), open_(true) {}
@@ -220,8 +228,16 @@ public:
     }
     size_t size() const { return buf_.size(); }
     const std::string& name() const { return name_; }
-    bool available() { return false; }
-    int read(uint8_t*, size_t) { return 0; }
+    bool available() { return read_pos_ < buf_.size(); }
+    int read(uint8_t *dst, size_t len) {
+        if (!open_) return 0;
+        size_t avail = buf_.size() - read_pos_;
+        size_t toRead = (len < avail) ? len : avail;
+        if (toRead == 0) return 0;
+        memcpy(dst, buf_.data() + read_pos_, toRead);
+        read_pos_ += toRead;
+        return toRead;
+    }
 };
 
 struct SDClass {
@@ -250,6 +266,24 @@ inline bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, 
     UploadCall call = {std::string(filename), uttId, chunkIdx, final};
     mock_upload_calls.push_back(call);
     mock_uploaded_files.push_back(std::string(filename));
+    return mock_upload_should_succeed;
+}
+// ── Upload from memory mock ───────────────────────────────────────
+struct UploadMemCall {
+    const uint8_t *data;
+    uint32_t size;
+    std::string filename;
+    uint32_t utteranceId;
+    uint32_t chunkIndex;
+    bool isFinal;
+};
+static std::vector<UploadMemCall> mock_upload_mem_calls;
+
+inline bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
+                                 const char *filename, uint32_t uttId,
+                                 uint32_t chunkIdx, bool final) {
+    UploadMemCall call = {data, size, std::string(filename), uttId, chunkIdx, final};
+    mock_upload_mem_calls.push_back(call);
     return mock_upload_should_succeed;
 }
 

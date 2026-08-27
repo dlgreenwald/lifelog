@@ -218,16 +218,22 @@ static void processAfeResult(afe_fetch_result_t *result) {
         // Send to ring buffer (drop oldest on overflow)
         size_t chunkBytes = chunkSamples * sizeof(int16_t);
         if (xRingbufferSend(audioRingBuf, chunk, chunkBytes, pdMS_TO_TICKS(0)) != pdTRUE) {
-            // Ring full — remove oldest item to make room
-            size_t itemSize;
-            void *oldItem = xRingbufferReceive(audioRingBuf, &itemSize, 0);
-            if (oldItem != NULL) {
+            // Ring full — drop up to 3 oldest items to make room (handles NOSPLIT fragmentation)
+            int dropped = 0;
+            while (dropped < 3) {
+                size_t itemSize;
+                void *oldItem = xRingbufferReceive(audioRingBuf, &itemSize, 0);
+                if (!oldItem) break;
                 vRingbufferReturnItem(audioRingBuf, oldItem);
+                dropped++;
                 flushDropCount++;
-                ESP_LOGW(TAG, "Ring overflow: dropped oldest chunk");
+                if (xRingbufferSend(audioRingBuf, chunk, chunkBytes, pdMS_TO_TICKS(0)) == pdTRUE) {
+                    break;  // Made room
+                }
             }
-            // Retry send
-            xRingbufferSend(audioRingBuf, chunk, chunkBytes, pdMS_TO_TICKS(0));
+            if (dropped > 0) {
+                ESP_LOGW(TAG, "Ring overflow: dropped %d chunks to make room", dropped);
+            }
         }
 
         totalSamplesCaptured += toCopy;

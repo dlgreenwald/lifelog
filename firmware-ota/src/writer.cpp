@@ -31,15 +31,22 @@ uint32_t getUploadQueueDepth() {
     return uploadQueue ? uxQueueMessagesWaiting(uploadQueue) : 0;
 }
 
+TaskHandle_t getUploadTaskHandle() {
+    return uploadTaskHandle;
+}
+
 uint32_t getTotalSamplesWritten() { return totalSamplesWritten; }
 
 // ── Upload request (metadata captured at file-close time) ──────────
 
 struct UploadRequest {
     char filename[64];
+    uint8_t *mem_ptr;        // NULL if reading from SD
+    uint32_t mem_size;
     uint32_t utteranceId;
     uint32_t chunkIndex;
     bool isFinal;
+    bool from_sd;
 };
 
 // ── Forward declarations ──────────────────────────────────────────
@@ -52,8 +59,11 @@ static void opus_file_end();
 #endif
 static void closePendingFile();
 
-// ── OGG page buffer capacity ──────────────────────────────────────
-#define OGG_BUF_CAPACITY 16384  // 16KB PSRAM buffer for accumulated OGG pages before SD open
+// ── PSRAM memory buffer constants ──────────────────────────────────
+#define MEM_BUF_INITIAL_SIZE    (64 * 1024)        // 64KB initial
+#define MEM_BUF_MAX_SIZE        (4 * 1024 * 1024)  // 4MB max
+#define MEM_BUF_GROW_SIZE       (128 * 1024)       // 128KB growth increments
+#define SD_FLUSH_THRESHOLD      (2 * 1024 * 1024)  // Flush to SD at 2MB if WiFi down
 
 // ── Opus encoder state (used when AUDIO_FORMAT_OPUS_ACTIVE) ────────
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
@@ -67,15 +77,19 @@ static uint8_t *opus_encoded_buf = NULL;
 static ogg_page ogg_page_buf;
 
 // ── Incremental Opus file state ────────────────────────────────────
-static File opus_file;                // currently open .opus file
 static ogg_int64_t opus_granulepos;   // running granule position across frames
 static ogg_int64_t opus_packetno;     // running packet number
-static uint32_t opus_encoded_bytes;   // encoded bytes since last flush
+static File opus_file;                // currently open .opus file (SD fallback only)
 
-// ── OGG page buffer — accumulates pages in memory until ≥4KB before opening SD ──
-static uint8_t *ogg_buf = NULL;       // PSRAM buffer for accumulated OGG pages
-static uint32_t ogg_buf_pos = 0;      // write position in ogg_buf
-static bool pages_flushed = false;    // true after first SD write
+// ── PSRAM memory buffer — growing buffer for entire OGG stream ────
+static uint8_t *mem_buf = NULL;       // Growing PSRAM buffer for entire OGG stream
+static uint32_t mem_buf_pos = 0;
+static uint32_t mem_buf_capacity = 0;
+static bool mem_to_sd = false;        // True if flushed to SD (fallback)
+static char sd_filename[64];
+uint32_t getMemBufUsed() { return mem_buf_pos; }
+uint32_t getMemBufCapacity() { return mem_buf_capacity; }
+bool isMemToSd() { return mem_to_sd; }
 
 // Flush one OGG page to SD file
 static void ogg_write_page(File &file) {
@@ -126,17 +140,25 @@ static void opus_deinit() {
 }
 #endif // AUDIO_FORMAT_OPUS_ACTIVE
 
-// ── Deferred SD open API ──────────────────────────────────────────
-// Call init_stream when voice begins — buffers in memory, no SD file yet.
-// OGG pages accumulate in ogg_buf until ≥4KB, then flush to SD.
-// If voice ends before 4KB, discard — no SD writes for short utterances.
+// ── PSRAM-first stream init ────────────────────────────────────────
+// Allocates growing PSRAM buffer for entire OGG stream.
+// No SD file — upload from memory after voice ends.
 
 static void opus_init_stream() {
     ogg_stream_reset_serialno(&ogg_stream, ogg_serialno);
 
     opus_granulepos = 0;
     opus_packetno = 2;      // head=0, tags=1, first audio=2
-    opus_encoded_bytes = 0;
+    mem_to_sd = false;
+    mem_buf_pos = 0;
+
+    // Allocate or reuse growing PSRAM buffer
+    if (!mem_buf || mem_buf_capacity < MEM_BUF_INITIAL_SIZE) {
+        if (mem_buf) free(mem_buf);
+        mem_buf = (uint8_t *)ps_malloc(MEM_BUF_INITIAL_SIZE);
+        assert(mem_buf);
+        mem_buf_capacity = MEM_BUF_INITIAL_SIZE;
+    }
 
     // Queue header packets so libogg generates pages with correct sequence numbers
     ogg_opus_head.b_o_s = 1;
@@ -153,50 +175,85 @@ static void opus_init_stream() {
 
     // Drain header pages into buffer immediately
     while (ogg_stream_pageout(&ogg_stream, &ogg_page_buf) != 0) {
-        memcpy(ogg_buf + ogg_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
-        ogg_buf_pos += ogg_page_buf.header_len;
-        memcpy(ogg_buf + ogg_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
-        ogg_buf_pos += ogg_page_buf.body_len;
+        int page_size = ogg_page_buf.header_len + ogg_page_buf.body_len;
+        // Ensure capacity for header pages
+        while (mem_buf_pos + page_size > mem_buf_capacity) {
+            uint32_t new_cap = mem_buf_capacity + MEM_BUF_GROW_SIZE;
+            if (new_cap > MEM_BUF_MAX_SIZE) new_cap = MEM_BUF_MAX_SIZE;
+            if (new_cap <= mem_buf_capacity) break;  // hit max
+            uint8_t *new_buf = (uint8_t *)ps_realloc(mem_buf, new_cap);
+            if (!new_buf) break;
+            mem_buf = new_buf;
+            mem_buf_capacity = new_cap;
+        }
+        memcpy(mem_buf + mem_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
+        mem_buf_pos += ogg_page_buf.header_len;
+        memcpy(mem_buf + mem_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
+        mem_buf_pos += ogg_page_buf.body_len;
     }
 
-    pages_flushed = false;
-
-    ESP_LOGD(TAG, "opus_init_stream: buffering (header=%lu bytes)",
-             (unsigned long)ogg_buf_pos);
+    ESP_LOGD(TAG, "opus_init_stream: PSRAM buffer %luKB (header=%lu bytes)",
+             (unsigned long)(mem_buf_capacity / 1024), (unsigned long)mem_buf_pos);
 }
 
-// Opens SD file, writes all buffered OGG pages (headers + audio), transitions to streaming mode.
-static void ogg_flush_buffer() {
-    if (ogg_buf_pos == 0 || pages_flushed) return;
+// Flush entire mem_buf to SD (fallback when WiFi is down).
+static void mem_flush_to_sd() {
+    if (mem_buf_pos == 0 || mem_to_sd) return;
 
-    char filename[64];
-    snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+    snprintf(sd_filename, sizeof(sd_filename), "/lifelog/rec_%05lu.opus", fileIndex++);
 
     sdTake();
-    opus_file = SD.open(filename, FILE_WRITE);
+    opus_file = SD.open(sd_filename, FILE_WRITE);
     sdGive();
 
     if (!opus_file) {
-        ESP_LOGE(TAG, "ogg_flush_buffer: failed to open %s", filename);
-        ogg_buf_pos = 0;
+        ESP_LOGE(TAG, "mem_flush_to_sd: failed to open %s", sd_filename);
         return;
     }
 
-    sdTake();
-    opus_file.write(ogg_buf, ogg_buf_pos);
-    sdGive();
+    // Write in 64KB chunks with yields to avoid watchdog
+    uint32_t written = 0;
+    while (written < mem_buf_pos) {
+        uint32_t chunk = mem_buf_pos - written;
+        if (chunk > 65536) chunk = 65536;
+        sdTake();
+        opus_file.write(mem_buf + written, chunk);
+        sdGive();
+        written += chunk;
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
 
-    ESP_LOGI(TAG, "ogg_flush_buffer: wrote %lu bytes to %s",
-             (unsigned long)ogg_buf_pos, filename);
+    strcpy(lastSavedFile, sd_filename);
+    mem_to_sd = true;
 
-    strcpy(lastSavedFile, filename);
-    pages_flushed = true;
-    ogg_buf_pos = 0;
+    ESP_LOGI(TAG, "mem_flush_to_sd: wrote %lu bytes to %s",
+             (unsigned long)mem_buf_pos, sd_filename);
 }
 
+// Grow mem_buf if needed; returns false on failure (hit max or realloc failed).
+static bool mem_buf_grow(uint32_t needed) {
+    if (mem_buf_pos + needed <= mem_buf_capacity) return true;
+    uint32_t new_cap = mem_buf_capacity + MEM_BUF_GROW_SIZE;
+    while (new_cap < mem_buf_pos + needed) {
+        new_cap += MEM_BUF_GROW_SIZE;
+    }
+    if (new_cap > MEM_BUF_MAX_SIZE) {
+        // Can't grow — caller should flush to SD
+        return false;
+    }
+    uint8_t *new_buf = (uint8_t *)ps_realloc(mem_buf, new_cap);
+    if (!new_buf) return false;
+    mem_buf = new_buf;
+    mem_buf_capacity = new_cap;
+    return true;
+}
+
+// Encode PCM into Opus, accumulate OGG pages in PSRAM mem_buf.
+// Returns unconsumed sample count (< opus_frame_size_samples).
 static int opus_encode_to_buffer(const int16_t* pcm, int samples) {
     const int16_t *ptr = pcm;
     int remaining = samples;
+    int frames_since_yield = 0;
 
     while (remaining >= opus_frame_size_samples) {
         int encoded_bytes = opus_encode(opus_encoder, ptr,
@@ -215,45 +272,50 @@ static int opus_encode_to_buffer(const int16_t* pcm, int samples) {
         }
         ptr += opus_frame_size_samples;
         remaining -= opus_frame_size_samples;
-        opus_encoded_bytes += (encoded_bytes > 0) ? encoded_bytes : 0;
+
+        // Yield every 8 frames to prevent watchdog stalls
+        frames_since_yield++;
+        if (frames_since_yield >= 8) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            frames_since_yield = 0;
+        }
     }
 
-    // Drain OGG pages from stream
+    // Drain OGG pages from stream into mem_buf
     while (ogg_stream_pageout(&ogg_stream, &ogg_page_buf) != 0) {
         int page_size = ogg_page_buf.header_len + ogg_page_buf.body_len;
 
-        if (!pages_flushed) {
-            // Buffer in memory
-            if (ogg_buf_pos + page_size > OGG_BUF_CAPACITY) {
-                ESP_LOGW(TAG, "OGG buffer full (%lu), flushing early",
-                         (unsigned long)ogg_buf_pos);
-                ogg_flush_buffer();
+        if (!mem_to_sd) {
+            // SD fallback: flush if WiFi is down and buffer exceeds threshold,
+            // or if PSRAM can't grow further.
+            if (WiFi.status() != WL_CONNECTED && mem_buf_pos > SD_FLUSH_THRESHOLD) {
+                ESP_LOGW(TAG, "WiFi down, flushing %lu bytes to SD",
+                         (unsigned long)mem_buf_pos);
+                mem_flush_to_sd();
+            } else if (!mem_buf_grow(page_size)) {
+                ESP_LOGW(TAG, "mem_buf full, flushing to SD");
+                mem_flush_to_sd();
             }
-            memcpy(ogg_buf + ogg_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
-            ogg_buf_pos += ogg_page_buf.header_len;
-            memcpy(ogg_buf + ogg_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
-            ogg_buf_pos += ogg_page_buf.body_len;
 
-            // ≥4KB threshold → open file and flush
-            if (ogg_buf_pos >= 4096 && !pages_flushed) {
-                ogg_flush_buffer();
+            if (mem_to_sd) {
+                // Write directly to SD file
+                sdTake();
+                opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
+                opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
+                sdGive();
+            } else {
+                memcpy(mem_buf + mem_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
+                mem_buf_pos += ogg_page_buf.header_len;
+                memcpy(mem_buf + mem_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
+                mem_buf_pos += ogg_page_buf.body_len;
             }
         } else {
-            // Already flushed → write directly to file
+            // Already flushed to SD — write directly
             sdTake();
             opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
             opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
             sdGive();
         }
-    }
-
-    // Periodic yield when streaming
-    if (pages_flushed && opus_encoded_bytes >= 4096) {
-        sdTake();
-        ogg_write_page(opus_file);
-        sdGive();
-        opus_encoded_bytes = 0;
-        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
     return remaining;
@@ -273,45 +335,73 @@ static void closePendingFile() {
 }
 
 static void opus_file_end() {
-    if (!pages_flushed) {
-        // Never reached 4KB — discard, prepare for next stream
-        ESP_LOGD(TAG, "opus_file_end: discarding %lu bytes (short utterance)",
-                 (unsigned long)ogg_buf_pos);
-        ogg_buf_pos = 0;
-        return;
+    if (mem_to_sd) {
+        // SD fallback — write EOS to SD file, defer close
+        closePendingFile();
+
+        sdTake();
+        ogg_write_page(opus_file);
+
+        uint8_t eos_data = 0;
+        ogg_packet eos_op = {0};
+        eos_op.packet = &eos_data;
+        eos_op.bytes = 1;
+        eos_op.b_o_s = 0;
+        eos_op.e_o_s = 1;
+        eos_op.granulepos = opus_granulepos;
+        eos_op.packetno = opus_packetno;
+        ogg_stream_packetin(&ogg_stream, &eos_op);
+
+        if (ogg_stream_flush(&ogg_stream, &ogg_page_buf) != 0) {
+            opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
+            opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
+        }
+
+        opus_file.flush();
+        pendingCloseFile = opus_file;
+        hasPendingClose = true;
+        sdGive();
+
+        ESP_LOGD(TAG, "opus_file_end: SD fallback %lu bytes, granule=%lld",
+                 (unsigned long)pendingCloseFile.size(), (long long)opus_granulepos);
+    } else if (mem_buf_pos > 0) {
+        // Memory path — finalize EOS packet in buffer, no SD touch
+        uint8_t eos_data = 0;
+        ogg_packet eos_op = {0};
+        eos_op.packet = &eos_data;
+        eos_op.bytes = 1;
+        eos_op.b_o_s = 0;
+        eos_op.e_o_s = 1;
+        eos_op.granulepos = opus_granulepos;
+        eos_op.packetno = opus_packetno;
+        ogg_stream_packetin(&ogg_stream, &eos_op);
+
+        // Flush EOS page into mem_buf
+        while (ogg_stream_pageout(&ogg_stream, &ogg_page_buf) != 0) {
+            int page_size = ogg_page_buf.header_len + ogg_page_buf.body_len;
+            if (!mem_buf_grow(page_size)) {
+                // Fallback: flush to SD if can't grow
+                mem_flush_to_sd();
+                if (mem_to_sd) {
+                    sdTake();
+                    opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
+                    opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
+                    sdGive();
+                }
+            }
+            if (!mem_to_sd) {
+                memcpy(mem_buf + mem_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
+                mem_buf_pos += ogg_page_buf.header_len;
+                memcpy(mem_buf + mem_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
+                mem_buf_pos += ogg_page_buf.body_len;
+            }
+        }
+
+        ESP_LOGD(TAG, "opus_file_end: PSRAM %lu bytes, granule=%lld",
+                 (unsigned long)mem_buf_pos, (long long)opus_granulepos);
+    } else {
+        ESP_LOGD(TAG, "opus_file_end: no data (short utterance)");
     }
-
-    // Close any previously deferred file first
-    closePendingFile();
-
-    // File open — write EOS and defer close
-    sdTake();
-    ogg_write_page(opus_file);
-
-    uint8_t eos_data = 0;
-    ogg_packet eos_op = {0};
-    eos_op.packet = &eos_data;
-    eos_op.bytes = 1;
-    eos_op.b_o_s = 0;
-    eos_op.e_o_s = 1;
-    eos_op.granulepos = opus_granulepos;
-    eos_op.packetno = opus_packetno;
-    ogg_stream_packetin(&ogg_stream, &eos_op);
-
-    if (ogg_stream_flush(&ogg_stream, &ogg_page_buf) != 0) {
-        opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
-        opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
-    }
-
-    opus_file.flush();
-
-    // Defer the close — writer returns immediately, upload task reads then we close
-    pendingCloseFile = opus_file;
-    hasPendingClose = true;
-    sdGive();
-
-    ESP_LOGD(TAG, "opus_file_end: %lu bytes, granule=%lld (close deferred)",
-             (unsigned long)pendingCloseFile.size(), (long long)opus_granulepos);
 }
 
 // ── Upload helper ──────────────────────────────────────────────────
@@ -319,19 +409,39 @@ static void opus_file_end() {
 static void upload_if_connected(const UploadRequest &req) {
     if (WiFi.status() == WL_CONNECTED) {
         delay(100);
-        ESP_LOGD(TAG, "Uploading %s (utt=%lu chunk=%lu)...",
-                 req.filename, (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex);
-        if (uploadFile(req.filename, req.utteranceId, req.chunkIndex, req.isFinal)) {
-            sdTake();
-            SD.remove(req.filename);
-            sdGive();
-            ESP_LOGD(TAG, "Uploaded and deleted %s", req.filename);
+        bool ok = false;
+        if (!req.from_sd && req.mem_ptr) {
+            // Memory path — upload from PSRAM buffer (no sdMutex)
+            ESP_LOGD(TAG, "Uploading from memory: %s (%luKB, utt=%lu chunk=%lu)...",
+                     req.filename, (unsigned long)(req.mem_size / 1024),
+                     (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex);
+            ok = uploadFileFromMemory(req.mem_ptr, req.mem_size,
+                                      req.filename, req.utteranceId,
+                                      req.chunkIndex, req.isFinal);
         } else {
+            // SD path — upload from file
+            ESP_LOGD(TAG, "Uploading from SD: %s (utt=%lu chunk=%lu)...",
+                     req.filename, (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex);
+            ok = uploadFile(req.filename, req.utteranceId, req.chunkIndex, req.isFinal);
+            if (ok) {
+                sdTake();
+                SD.remove(req.filename);
+                sdGive();
+                ESP_LOGD(TAG, "Uploaded and deleted %s", req.filename);
+            }
+        }
+        if (!ok) {
             ESP_LOGW(TAG, "Upload failed: %s", req.filename);
         }
     }
-    // Close deferred file after upload attempt (success or fail)
-    closePendingFile();
+    // Free memory buffer after upload attempt (success or fail)
+    if (!req.from_sd && req.mem_ptr) {
+        free(req.mem_ptr);
+    }
+    // Close deferred file after upload attempt (SD fallback path)
+    if (req.from_sd) {
+        closePendingFile();
+    }
 }
 
 // ── Upload worker task — non-blocking upload from queue ────────────
@@ -356,9 +466,7 @@ void writerInit() {
     opus_init();
 #endif
 
-    // Allocate OGG page buffer in PSRAM (deferred SD open — accumulates until ≥4KB)
-    ogg_buf = (uint8_t *)ps_malloc(OGG_BUF_CAPACITY);
-    assert(ogg_buf);
+    // mem_buf allocated lazily in opus_init_stream() on first voice start
 }
 
 // ── Write task (reads PSRAM, writes SD, uploads) ──────────────────
@@ -396,9 +504,27 @@ void writerTask(void *pvParameters) {
 #endif
             prev_recording = false;
 
-            if (pages_flushed) {
+            bool has_data = mem_to_sd ? (strlen(sd_filename) > 0) : (mem_buf_pos > 0);
+            if (has_data) {
                 UploadRequest req;
-                strncpy(req.filename, lastSavedFile, sizeof(req.filename) - 1);
+                memset(&req, 0, sizeof(req));
+                if (mem_to_sd) {
+                    // SD fallback path
+                    strncpy(req.filename, sd_filename, sizeof(req.filename) - 1);
+                    req.mem_ptr = NULL;
+                    req.mem_size = 0;
+                    req.from_sd = true;
+                } else {
+                    // Memory path — hand off mem_buf to upload task
+                    strncpy(req.filename, lastSavedFile, sizeof(req.filename) - 1);
+                    req.mem_ptr = mem_buf;
+                    req.mem_size = mem_buf_pos;
+                    req.from_sd = false;
+                    // Prevent double-free: clear our pointer (upload task owns it now)
+                    mem_buf = NULL;
+                    mem_buf_pos = 0;
+                    mem_buf_capacity = 0;
+                }
                 req.filename[sizeof(req.filename) - 1] = '\0';
                 req.utteranceId = utteranceId;
                 req.chunkIndex = chunkIndex;
@@ -407,9 +533,11 @@ void writerTask(void *pvParameters) {
                 if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
                     ESP_LOGW(TAG, "Upload queue full (%lu/%d), skipping %s",
                              (unsigned long)uxQueueMessagesWaiting(uploadQueue), 8, req.filename);
+                    // Free memory if queue is full
+                    if (!req.from_sd && req.mem_ptr) free(req.mem_ptr);
                 }
             } else {
-                ESP_LOGI(TAG, "writer: no file to upload (short utterance)");
+                ESP_LOGI(TAG, "writer: no data to upload (short utterance)");
             }
         } else {
             // ── Drain ring buffer into local PCM buffer ──

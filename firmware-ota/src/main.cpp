@@ -173,6 +173,8 @@ static String statusRecording;
 static String statusUploadQueue;
 static String statusFlushDrops;
 static float dashRingFill = 0;
+static String statusMemBuf;
+static String statusSdFallback;
 
 // WiFi reconnection interval
 #define WIFI_RECONNECT_INTERVAL_MS (15 * 60 * 1000)
@@ -287,6 +289,8 @@ static void setupDashboard() {
     dash.label("Upload Queue", &statusUploadQueue);
     dash.label("Flush Drops", &statusFlushDrops);
     dash.chart("Ring Fill", &dashRingFill, "/32");
+    dash.label("PSRAM Buffer", &statusMemBuf);
+    dash.label("SD Fallback", &statusSdFallback);
 }
 
 // ── OTA routes (registered AFTER dash.begin() so they override RisalDash's defaults) ──
@@ -331,9 +335,8 @@ static void setupOTA() {
                 if (feedTaskHandle) vTaskSuspend(feedTaskHandle);
                 if (fetchTaskHandle) vTaskSuspend(fetchTaskHandle);
                 if (writerTaskHandle) vTaskSuspend(writerTaskHandle);
+                if (getUploadTaskHandle()) vTaskSuspend(getUploadTaskHandle());
                 ESP_LOGI("OTA", "audio tasks suspended");
-                // Remove idle from WDT — flash erase blocks Core 0 for seconds
-                esp_task_wdt_delete(xTaskGetHandle("idle"));
                 otaInProgress = Update.begin(UPDATE_SIZE_UNKNOWN);
                 totalWritten = 0;
                 ESP_LOGI("OTA", "start: begin=%d", otaInProgress);
@@ -427,6 +430,8 @@ static void updateDashboardStatus() {
     statusUploadQueue = String(getUploadQueueDepth());
     statusFlushDrops = String(getFlushDropCount());
     dashRingFill = (float)getRingFillLevel();
+    statusMemBuf = String(getMemBufUsed() / 1024) + "KB / " + String(getMemBufCapacity() / 1024) + "KB";
+    statusSdFallback = isMemToSd() ? "Active" : "No";
 }
 
 // ── mDNS ───────────────────────────────────────────────────────────

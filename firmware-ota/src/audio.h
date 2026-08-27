@@ -8,7 +8,7 @@
 // Ring buffer — producer writes, consumer reads
 extern RingbufHandle_t audioRingBuf;
 #define RING_ITEM_BYTES  1024   // 512 samples × 2 bytes — one AFE chunk
-#define RING_NUM_ITEMS   32     // 32 × 32ms = 1024ms buffered
+#define RING_NUM_ITEMS   64     // 64 × 32ms = 2048ms buffered
 #define RING_TOTAL_BYTES ((size_t)(RING_ITEM_BYTES + 16) * RING_NUM_ITEMS)
 
 // Public state
