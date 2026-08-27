@@ -1,5 +1,8 @@
 {
   "exclude": [
     "firmware-ota/**"
-  ]
+  ],
+  "venvPath": "server",
+  "venv": ".venv",
+  "reportMissingImports": false
 }

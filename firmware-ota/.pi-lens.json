@@ -10,7 +10,7 @@
     "clangd": {
       "initializationOptions": {
         "clangd.semanticHighlighting": true,
-        "clangd.diagnosticsDelay": 500
+        "clangd.diagnosticsDelay": 60000
       }
     }
   },
