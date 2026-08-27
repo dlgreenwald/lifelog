@@ -489,7 +489,7 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                     ESP_LOGI(TAG, "Background refresh succeeded");
                 } else {
                     // Refresh failed — stay AUTHENTICATED, user must re-auth via dashboard
-                    ESP_LOGI(TAG, "Refresh failed — re-authentication required");
+                    ESP_LOGW(TAG, "Refresh failed: %s", _lastError);
                 }
                 break;  // Loop back to re-evaluate state
 #else
@@ -498,29 +498,21 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
             }
             case AUTH_ERROR:
 #ifndef OAUTH2_TESTING
-                // If config is valid, auto-recover by restarting device code flow
-                if (_config.issuer && _config.issuer[0]) {
-                    ESP_LOGI(TAG, "Error state with valid config, restarting device code flow");
-                    // Clear tokens directly (mutex already held)
-                    _accessToken[0] = '\0';
-                    _refreshToken[0] = '\0';
-                    _tokenExpiry = 0;
-                    _refreshTokenExpiry = 0;
-                    _hasTokens = false;
-                    if (_storage) {
-                        _storage->remove(NS, "access_token");
-                        _storage->remove(NS, "refresh_token");
-                        _storage->remove(NS, "token_expiry");
-                        _storage->remove(NS, "refresh_exp");
-                        _storage->putBool(NS, "has_tokens", false);
-                    }
-                    setState(AUTH_REQUESTING_CODE);
-                    _flowStartTime = nowMs();
-                } else {
-                    xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
-                    vTaskSuspend(NULL);
-                    continue;
+                // Clear tokens and go idle — user must re-auth via dashboard
+                ESP_LOGI(TAG, "Clearing tokens, returning to idle");
+                _accessToken[0] = '\0';
+                _refreshToken[0] = '\0';
+                _tokenExpiry = 0;
+                _refreshTokenExpiry = 0;
+                _hasTokens = false;
+                if (_storage) {
+                    _storage->remove(NS, "access_token");
+                    _storage->remove(NS, "refresh_token");
+                    _storage->remove(NS, "token_expiry");
+                    _storage->remove(NS, "refresh_exp");
+                    _storage->putBool(NS, "has_tokens", false);
                 }
+                setState(AUTH_IDLE);
 #endif
                 break;
             default: break;
@@ -562,7 +554,8 @@ void OAuth2DeviceFlow::requestDeviceCode() {
     strlcpy(_userCode, resp.body["user_code"] | "", sizeof(_userCode));
     strlcpy(_verificationUri, resp.body["verification_uri"] | "", sizeof(_verificationUri));
     strlcpy(_verificationUriComplete, resp.body["verification_uri_complete"] | "", sizeof(_verificationUriComplete));
-    _pollInterval = static_cast<uint16_t>(resp.body["interval"] | 5000);
+    int pollSec = resp.body["interval"] | 5; if (pollSec < 5) pollSec = 5; _pollInterval = static_cast<uint16_t>(pollSec) * 1000;
+    ESP_LOGI(TAG, "Poll interval: %dms (IdP: %ds)", _pollInterval, pollSec);
     int expires_in = resp.body["expires_in"] | 60;
     _deviceCodeExpiry = nowMs() + (expires_in * 1000);
 
@@ -682,7 +675,14 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
     OAuth2HttpResponse resp = requestInternal("POST", url, nullptr, body);
     if (resp.statusCode == 0 || resp.statusCode != 200) {
 #ifndef OAUTH2_TESTING
-        ESP_LOGI(TAG, "Token refresh failed: status=%d", resp.statusCode);
+        if (resp.statusCode == 0) {
+            ESP_LOGW(TAG, "Token refresh failed: network error (status=0)");
+        } else {
+            const char* error = resp.body["error"] | "unknown";
+            const char* errorDesc = resp.body["error_description"] | "";
+            ESP_LOGW(TAG, "Token refresh failed: status=%d error=%s description=%s",
+                     resp.statusCode, error, errorDesc);
+        }
 #endif
         strlcpy(_lastError, "Token refresh failed", sizeof(_lastError));
         _hasTokens = false;

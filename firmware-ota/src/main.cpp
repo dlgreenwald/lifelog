@@ -227,7 +227,7 @@ static void setupDashboard() {
             oauthCfg.scope = deviceSettings.oauthScope;
             oauthCfg.timeoutMs = 600000;
             oauth2Client().configure(oauthCfg);
-            oauth2Client().start();
+            oauth2Client().requestAuth();
             // Persist to "device" namespace so reboot doesn't overwrite with stale values
             Preferences p;
             p.begin("device", false);
