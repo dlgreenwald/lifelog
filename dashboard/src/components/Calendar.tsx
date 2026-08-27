@@ -5,6 +5,16 @@ import { api } from '../api/client';
 import RecordingList from './RecordingList';
 import type { Recording, CalendarDay, Todo } from '../types';
 
+/** Safely render a daily summary value that may be a nested object. */
+function renderSummaryValue(val: unknown): string {
+  if (typeof val === 'string') return val;
+  if (typeof val === 'object' && val !== null && 'summary' in val) {
+    const s = (val as Record<string, unknown>).summary;
+    if (typeof s === 'string') return s;
+  }
+  return String(val ?? '');
+}
+
 export default function Calendar() {
   const [searchParams, setSearchParams] = useSearchParams();
   const today = format(new Date(), 'yyyy-MM-dd');
@@ -61,7 +71,9 @@ export default function Calendar() {
         setLoading(false);
       });
       api.getDailySummary(selectedDate).then((data: { daily_summary: { daily_summary: Record<string, string> } | null }) => {
-        setDailySummary(data.daily_summary?.daily_summary ?? null);
+        const raw = data.daily_summary?.daily_summary ?? null;
+        // LLM may return a string instead of a structured object; normalize for Object.entries()
+        setDailySummary(typeof raw === 'string' ? { 'Summary': raw } : raw);
       }).catch(() => setDailySummary(null));
       api.getTodosForDate(selectedDate).then((data: { todos: Todo[] }) => {
         setDayTodos(data.todos);
@@ -162,7 +174,7 @@ export default function Calendar() {
               {Object.entries(dailySummary).map(([section, text]) => (
                 <div key={section}>
                   <h4>{section}</h4>
-                  <p style={{ whiteSpace: 'pre-wrap' }}>{text}</p>
+                  <p style={{ whiteSpace: 'pre-wrap' }}>{renderSummaryValue(text)}</p>
                 </div>
               ))}
             </div>
