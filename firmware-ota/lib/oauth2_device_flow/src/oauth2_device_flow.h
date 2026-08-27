@@ -64,8 +64,9 @@ public:
     void configure(const OAuth2Config& config);
 
     // ── Device code registration flow ───────────────────────────────
-    void start();
+    void start();   // Boot: create polling task, resume if already in progress
     void stop();
+    void requestAuth();  // User action: explicitly start device code flow
 
     // ── State queries ───────────────────────────────────────────────
     AuthState getState() const;

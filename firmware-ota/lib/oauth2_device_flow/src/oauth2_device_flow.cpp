@@ -33,6 +33,8 @@ void OAuth2DeviceFlow::pollOnce() {
         pollToken();
     } else if (_state == AUTH_DISPLAYING_CODE) {
         setState(AUTH_POLLING);
+    } else if (_state == AUTH_REQUESTING_CODE) {
+        requestDeviceCode();
     }
 }
 #else
@@ -129,9 +131,9 @@ void OAuth2DeviceFlow::start() {
     xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
 #endif
     if (_state == AUTH_POLLING || _state == AUTH_DISPLAYING_CODE || _state == AUTHENTICATED) {
-        // If authenticated but token expired and no refresh token, restart device code flow
-        if (_state == AUTHENTICATED && (!_hasTokens || _refreshToken[0] == '\0' ||
-            static_cast<uint32_t>(time(NULL)) >= _tokenExpiry)) {
+        // If authenticated but no refresh token available, must restart device code flow.
+        // If refresh token exists, the background task will refresh transparently.
+        if (_state == AUTHENTICATED && (!_hasTokens || _refreshToken[0] == '\0')) {
 #ifndef OAUTH2_TESTING
             ESP_LOGI(TAG, "Token expired/unavailable on startup, restarting device code flow");
 #endif
@@ -173,24 +175,59 @@ void OAuth2DeviceFlow::start() {
         }
         return;
     }
+    // AUTH_IDLE or AUTH_ERROR — just ensure polling task exists, don't start device code flow.
+    // Device code flow only starts when the user explicitly triggers authentication.
+    _lastError[0] = '\0';
+#ifndef OAUTH2_TESTING
+    xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+#endif
+    if (!_pollingTaskHandle) {
+#ifndef OAUTH2_TESTING
+        xTaskCreatePinnedToCore(pollingTaskEntry, "oauth2_poll", 8192,
+                                this, 2, reinterpret_cast<TaskHandle_t*>(&_pollingTaskHandle), 1);
+        ESP_LOGI(TAG, "Created polling task (state=%d, idle)", _state);
+#else
+        pollingTaskLoop();
+#endif
+    }
+}
+
+void OAuth2DeviceFlow::requestAuth() {
+    if (!_mutex) {
+#ifdef OAUTH2_TESTING
+        _mutex = reinterpret_cast<void*>(static_cast<intptr_t>(1));
+#else
+        _mutex = xSemaphoreCreateMutex();
+#endif
+    }
+#ifndef OAUTH2_TESTING
+    xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
+#endif
+    // Clear any stale device code info from previous attempts
+    _deviceCode[0] = '\0';
+    _userCode[0] = '\0';
+    _verificationUri[0] = '\0';
+    _verificationUriComplete[0] = '\0';
+    _deviceCodeExpiry = 0;
+    if (_storage) {
+        _storage->remove(NS, "device_code");
+        _storage->remove(NS, "user_code");
+        _storage->remove(NS, "ver_uri");
+        _storage->remove(NS, "ver_uri_full");
+    }
     setState(AUTH_REQUESTING_CODE);
     _lastError[0] = '\0';
     _flowStartTime = nowMs();
 #ifndef OAUTH2_TESTING
     xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
-#endif
     if (_pollingTaskHandle) {
-#ifndef OAUTH2_TESTING
         vTaskResume(static_cast<TaskHandle_t>(_pollingTaskHandle));
-#endif
     } else {
-#ifndef OAUTH2_TESTING
         xTaskCreatePinnedToCore(pollingTaskEntry, "oauth2_poll", 8192,
                                 this, 2, reinterpret_cast<TaskHandle_t*>(&_pollingTaskHandle), 1);
-#else
-        pollingTaskLoop();
-#endif
     }
+    ESP_LOGI(TAG, "User requested authentication — starting device code flow");
+#endif
 }
 
 void OAuth2DeviceFlow::stop() {
@@ -278,9 +315,9 @@ void OAuth2DeviceFlow::loadSavedState() {
                 ESP_LOGI(TAG, "Boot: access token expired, refresh token available");
 #endif
             } else {
-                // No refresh token → must re-authenticate from scratch
+                // No refresh token → clear stale tokens, wait for user to authenticate
 #ifndef OAUTH2_TESTING
-                ESP_LOGI(TAG, "Boot: access token expired, no refresh token — restarting auth");
+                ESP_LOGI(TAG, "Boot: access token expired, no refresh token — waiting for user auth");
 #endif
                 _accessToken[0] = '\0';
                 _tokenExpiry = 0;
@@ -290,12 +327,7 @@ void OAuth2DeviceFlow::loadSavedState() {
                 _storage->remove(NS, "token_expiry");
                 _storage->remove(NS, "refresh_exp");
                 _storage->putBool(NS, "has_tokens", false);
-                // Set state so start() goes straight to device code flow
-                if (_config.issuer && _config.issuer[0]) {
-                    _state = AUTH_REQUESTING_CODE;
-                } else {
-                    _state = AUTH_IDLE;
-                }
+                _state = AUTH_IDLE;
                 _storage->putUint32(NS, "state", static_cast<uint32_t>(_state));
             }
         }

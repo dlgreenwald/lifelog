@@ -10,8 +10,10 @@
 #include <esp_task_wdt.h>
 #include <esp_freertos_hooks.h>
 #include <freertos/task.h>
-#include <esp_additions/freertos/task_snapshot.h>
+#include <freertos/task_snapshot.h>
 #include <ArduinoJson.h>
+#include <mbedtls/platform.h>
+#include <esp_heap_caps.h>
 #include "config.h"
 #include "settings.h"
 #include "audio.h"
@@ -19,6 +21,10 @@
 #include "writer.h"
 #include "upload.h"
 #include "oauth2_client.h"
+#ifdef BUILD_DEVELOPMENT
+#define PROGRAM_NAME "LifeLog"
+#include "taskman.h"
+#endif
 
 #define MAX_BOOT 3
 #define HOSTNAME "LifeLog"
@@ -286,7 +292,7 @@ static void setupDashboard() {
 // ── OTA routes (registered AFTER dash.begin() so they override RisalDash's defaults) ──
 
 static void setupOTA() {
-    dash.server().on("/update", HTTP_GET, [](AsyncWebServerRequest* r) {
+    dash.server().on("/update", AsyncWebRequestMethod::HTTP_GET, [](AsyncWebServerRequest* r) {
         r->send(200, "text/html",
                 "<!DOCTYPE html><meta name=viewport content=\"width=device-width,initial-scale=1\">"
                 "<body style=\"font-family:sans-serif;background:#0F1115;color:#F2F4F8;padding:32px\">"
@@ -294,7 +300,7 @@ static void setupOTA() {
                 "<input type=file name=firmware> <button>Upload</button></form></body>");
     });
     dash.server().on(
-        "/update", HTTP_POST,
+        "/update", AsyncWebRequestMethod::HTTP_POST,
         [](AsyncWebServerRequest* r) {
             bool ok = !Update.hasError();
             ESP_LOGI("OTA", "result: %s", ok ? "success" : "FAILED");
@@ -461,10 +467,32 @@ static void setupSD() {
 // ── Forward declarations ──────────────────────────────────────────
 static void logStats();
 
+// ── PSRAM-aware mbedtls allocator (replaces INTERNAL_MEM_ALLOC) ──
+// ESP-IDF 5.x SDK bakes CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=1 into the
+// precompiled library.  mbedtls_platform_set_calloc_free() lets us
+// redirect allocations at runtime.  Try PSRAM first, fall back to
+// internal RAM so TLS always works even if PSRAM is fragmented.
+static void *psram_calloc(size_t n, size_t size) {
+    size_t total = n * size;
+    if (total == 0) return NULL;
+    void *ptr = heap_caps_malloc(total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!ptr) ptr = heap_caps_malloc(total, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (ptr) memset(ptr, 0, total);
+    return ptr;
+}
+static void psram_free(void *ptr) {
+    heap_caps_free(ptr);
+}
+
 // ── Main ───────────────────────────────────────────────────────────
 
 void setup() {
     Serial.begin(115200);
+
+    // Redirect mbedtls to PSRAM-aware allocators — the SDK precompiled
+    // library uses INTERNAL_MEM_ALLOC which exhausts internal SRAM when
+    // AFE + WiFi + web server are all active.
+    mbedtls_platform_set_calloc_free(psram_calloc, psram_free);
 
     // Runtime log levels — set early so all boot messages visible
     esp_log_level_set("*", ESP_LOG_DEBUG);
@@ -489,6 +517,10 @@ void setup() {
     esp_register_freertos_idle_hook_for_cpu(idleHook0, 0);
     esp_register_freertos_idle_hook_for_cpu(idleHook1, 1);
 
+#ifdef BUILD_DEVELOPMENT
+    taskman_setup();
+#endif
+
     pinMode(LED_PIN, OUTPUT);
     bootInit();
     loadDeviceSettings();
@@ -512,6 +544,11 @@ void setup() {
     // - Saved creds → STA mode, connects to known network
     dash.begin();
     setupOTA();  // Register AFTER dash.begin() so we override RisalDash's /update routes
+
+#ifdef BUILD_DEVELOPMENT
+    taskman_server_setup();
+    ESP_LOGI("SYSTEM", "Task Manager: http://%s:81/taskman", WiFi.localIP().toString().c_str());
+#endif
 
     // Start OAuth2 background task AFTER WiFi is connected
     if (deviceSettings.oauthIssuer[0] && deviceSettings.oauthClientId[0]) {

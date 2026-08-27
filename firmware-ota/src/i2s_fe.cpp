@@ -4,7 +4,8 @@
 #include "i2s_fe.h"
 #include "audio.h"
 #include "config.h"
-#include "driver/i2s.h"
+#include "driver/i2s_pdm.h"
+#include "driver/i2s_common.h"
 #include "esp_log.h"
 
 // esp-sr AFE includes
@@ -21,6 +22,9 @@ static const char* TAG = "AFE_FEED";
 static uint32_t dmaPartialCount = 0;
 uint32_t getDmaPartialCount() { return dmaPartialCount; }
 
+// ── I2S channel handle (new API) ─────────────────────────────────
+static i2s_chan_handle_t i2s_rx_chan = NULL;
+
 // ── AFE globals ──────────────────────────────────────────────────
 static const esp_afe_sr_iface_t *afe_handle = NULL;
 static esp_afe_sr_data_t *afe_data = NULL;
@@ -28,41 +32,40 @@ static esp_afe_sr_data_t *afe_data = NULL;
 // ── I2S PDM init ──────────────────────────────────────────────────
 
 static void pdmRxInit() {
-    // Direct I2S driver — PDM CLK maps to bck_io_num, DIN to data_in_num
-    i2s_config_t i2s_config = {
-        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
-        .sample_rate = SAMPLE_RATE,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 4,
-        .dma_buf_len = 1024,  // ESP-IDF max; 4 × 1024 = 4096 samples = 256ms ring buffer
-        .use_apll = false,
-        .tx_desc_auto_clear = false,
-        .fixed_mclk = 0,
-        .mclk_multiple = I2S_MCLK_MULTIPLE_DEFAULT,
-        .bits_per_chan = I2S_BITS_PER_CHAN_DEFAULT,
-    };
-    i2s_pin_config_t pin_config = {
-        .mck_io_num = I2S_PIN_NO_CHANGE,
-        .bck_io_num = I2S_PIN_NO_CHANGE,
-        .ws_io_num = I2S_MIC_CLK,    // PDM CLK = GPIO42
-        .data_out_num = I2S_PIN_NO_CHANGE,
-        .data_in_num = I2S_MIC_DIN,  // PDM DIN = GPIO41
-    };
-    esp_err_t err = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+    // ESP-IDF 5.x new I2S PDM RX API
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    chan_cfg.dma_desc_num = 6;
+    chan_cfg.dma_frame_num = 240;
+
+    esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &i2s_rx_chan);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_driver_install failed: %d", err);
+        ESP_LOGE(TAG, "i2s_new_channel failed: %d", err);
         return;
     }
-    err = i2s_set_pin(I2S_NUM_0, &pin_config);
+
+    i2s_pdm_rx_config_t pdm_rx_cfg = {
+        .clk_cfg  = I2S_PDM_RX_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+        .slot_cfg = I2S_PDM_RX_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        .gpio_cfg = {
+            .clk = (gpio_num_t)I2S_MIC_CLK,  // PDM CLK = GPIO42
+            .din = (gpio_num_t)I2S_MIC_DIN,  // PDM DIN = GPIO41
+            .invert_flags = { .clk_inv = false },
+        },
+    };
+
+    err = i2s_channel_init_pdm_rx_mode(i2s_rx_chan, &pdm_rx_cfg);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_set_pin failed: %d", err);
+        ESP_LOGE(TAG, "i2s_channel_init_pdm_rx_mode failed: %d", err);
         return;
     }
-    i2s_set_clk(I2S_NUM_0, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
-    ESP_LOGD(TAG, "PDM Mic ready (CLK=42, DIN=41) — DMA: 4 × 1024 samples");
+
+    err = i2s_channel_enable(i2s_rx_chan);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2s_channel_enable failed: %d", err);
+        return;
+    }
+
+    ESP_LOGD(TAG, "PDM Mic ready (CLK=42, DIN=41) — new I2S PDM RX API");
 }
 
 // ── AFE init — load models, configure AFE_TYPE_VC ──────────────────
@@ -150,7 +153,7 @@ void afeFeedTask(void *pvParameters) {
 
     while (true) {
         size_t bytesRead = 0;
-        i2s_read(I2S_NUM_0, buf, chunksize * nch * sizeof(int16_t), &bytesRead, pdMS_TO_TICKS(100));
+        i2s_channel_read(i2s_rx_chan, buf, chunksize * nch * sizeof(int16_t), &bytesRead, 100);
         if (bytesRead > 0) {
             int samplesRead = bytesRead / sizeof(int16_t);
             if (samplesRead < chunksize * nch) {
