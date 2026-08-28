@@ -208,25 +208,41 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
             and result["created_at"] < session_ended_at
         )
 
-        # Attach audio_filenames from session_utterances if session_id exists
+        # Attach audio_filenames derived from speaker_segments (not created_at timestamps).
+        # The segments carry audio_filename references from the transcription service,
+        # which is more reliable than session_utterances.created_at as a timeline marker.
         if result.get("session_id"):
+            segments = result.get("speaker_segments", [])
+            if segments and isinstance(segments, list):
+                # Collect audio filenames in segment order, deduplicated
+                seen, audio_filenames = set(), []
+                for seg in segments:
+                    fn = seg.get("audio_filename") if isinstance(seg, dict) else seg.get("audio_filename")
+                    if fn and fn not in seen:
+                        seen.add(fn)
+                        audio_filenames.append(fn)
+                if audio_filenames:
+                    result["audio_filenames"] = audio_filenames
+                    result.pop("speaker_segments", None)
+                    return result
+            # Fallback: use audio_range to filter session_utterances
             audio_range_start = result.get("audio_range_start")
             audio_range_end = result.get("audio_range_end")
             if audio_range_start and audio_range_end:
-                # Partition recording: only include audio files within this partition's time range
                 audio_rows = await conn.fetch(
                     """
                     SELECT audio_filename
                     FROM session_utterances
                     WHERE session_id = $1
-                      AND created_at >= $2 AT TIME ZONE 'UTC'
-                      AND created_at <= $3 AT TIME ZONE 'UTC'
+                      AND created_at > $2 AT TIME ZONE 'UTC' - INTERVAL '2 minutes'
+                      AND created_at < $3 AT TIME ZONE 'UTC' + INTERVAL '2 minutes'
                     ORDER BY created_at
                     """,
                     result["session_id"],
                     audio_range_start,
                     audio_range_end,
                 )
+                result["audio_filenames"] = [r["audio_filename"] for r in audio_rows if r["audio_filename"]]
             else:
                 audio_rows = await conn.fetch(
                     """
@@ -237,12 +253,14 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
                     """,
                     result["session_id"],
                 )
-            result["audio_filenames"] = [r["audio_filename"] for r in audio_rows if r["audio_filename"]]
+                result["audio_filenames"] = [r["audio_filename"] for r in audio_rows if r["audio_filename"]]
         else:
             # Legacy: single audio_filename
             result["audio_filenames"] = (
                 [result["audio_filename"]] if result.get("audio_filename") else []
             )
+        # Remove speaker_segments from response to avoid leaking large data
+        result.pop("speaker_segments", None)
         return result
 
 
