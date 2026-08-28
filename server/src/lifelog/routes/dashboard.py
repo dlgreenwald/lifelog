@@ -107,6 +107,19 @@ async def get_recording_detail(recording_id: int, user: dict = Depends(validate_
     return _normalize_recording(recording)
 
 
+def _detect_audio_media_type(audio_bytes: bytes) -> str:
+    """Detect MIME type from audio content magic bytes."""
+    if len(audio_bytes) < 4:
+        return "application/octet-stream"
+    if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        return "audio/wav"
+    if audio_bytes[:4] == b"OggS":
+        return "audio/ogg"
+    if audio_bytes[:4] == b"\x1aE\xdf\xa3":
+        return "audio/webm"
+    return "audio/ogg"
+
+
 @router.get("/audio/{filename}")
 async def get_audio(filename: str, user: dict = Depends(validate_oidc_token)):
     """Stream decrypted audio file."""
@@ -117,11 +130,13 @@ async def get_audio(filename: str, user: dict = Depends(validate_oidc_token)):
         )
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid filename")
+    media_type = _detect_audio_media_type(audio_bytes)
     return StreamingResponse(
         iter([audio_bytes]),
-        media_type="audio/ogg",
+        media_type=media_type,
         headers={"Content-Disposition": f"inline; filename={filename}"},
     )
+
 
 def _concatenate_wav(audio_files: list[bytes]) -> bytes:
     with tempfile.TemporaryDirectory(prefix="speaker-playback-") as directory:
