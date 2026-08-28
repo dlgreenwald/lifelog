@@ -213,8 +213,11 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
         # which is more reliable than session_utterances.created_at as a timeline marker.
         if result.get("session_id"):
             segments = result.get("speaker_segments", [])
+            # json columns are returned as strings by asyncpg — parse if needed
+            if segments and isinstance(segments, str):
+                import json
+                segments = json.loads(segments)
             if segments and isinstance(segments, list):
-                # Collect audio filenames in segment order, deduplicated
                 seen, audio_filenames = set(), []
                 for seg in segments:
                     fn = seg.get("audio_filename") if isinstance(seg, dict) else seg.get("audio_filename")
