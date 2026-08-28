@@ -499,8 +499,8 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
         except Exception:
             logger.exception("Unable to re-identify recording %s", recording.get("id"))
         return
-
     updated = []
+    labels: dict[str, str] = {}
     for segment in segments:
         item = dict(segment) if isinstance(segment, dict) else (segment.model_dump() if hasattr(segment, "model_dump") else segment)
         raw = item.get("speaker") or item.get("name") or "Unknown"
@@ -575,7 +575,6 @@ async def _finalize_completed_sessions() -> None:
             session_start = session["started_at"]
             if session_start is None:
                 session_start = datetime.now(tz=UTC)
-
 
             if len(partitions) == 1:
                 # No split — existing single-recording path
