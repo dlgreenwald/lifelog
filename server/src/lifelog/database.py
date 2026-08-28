@@ -1225,10 +1225,31 @@ async def save_session_recording(
     session_timestamp: datetime | None = None,
     category: str | None = None,
     speaker_segments: list | None = None,
+    audio_range_start: datetime | None = None,
+    audio_range_end: datetime | None = None,
 ) -> int:
     """Create or update a recording linked to a session."""
     ts = session_timestamp.replace(tzinfo=None) if session_timestamp else None
     stored_segments = speaker_segments or []
+    # Derive audio range from segments if not provided
+    if audio_range_start is None and stored_segments:
+        try:
+            first = stored_segments[0]
+            start_offset = float(first.get("start", 0))
+            if ts is not None:
+                from datetime import timedelta
+                audio_range_start = ts + timedelta(seconds=start_offset)
+        except (ValueError, TypeError):
+            pass
+    if audio_range_end is None and stored_segments:
+        try:
+            last = stored_segments[-1]
+            end_offset = float(last.get("end", 0))
+            if ts is not None:
+                from datetime import timedelta
+                audio_range_end = ts + timedelta(seconds=end_offset)
+        except (ValueError, TypeError):
+            pass
     async with pool.acquire() as conn:
         existing = await conn.fetchrow(
             "SELECT id FROM recordings WHERE session_id = $1", session_id
@@ -1241,13 +1262,14 @@ async def save_session_recording(
                     SET transcript = $1, speakers = $2, summary = $3, todos = $4,
                         calendar = $5, notes = $6, conversation_changes = $7,
                         audio_filename = $8, speaker_segments = $9::json, timestamp = $10,
-                        category = $11
+                        category = $11, audio_range_start = $13, audio_range_end = $14
                     WHERE id = $12
                     """,
                     transcript, speakers, result["summary"], result["todos"],
                     result["calendar"], result["notes"],
                     result.get("conversation_changes", []), audio_filename,
                     stored_segments, ts, category, existing["id"],
+                    audio_range_start, audio_range_end,
                 )
             else:
                 await conn.execute(
@@ -1256,30 +1278,31 @@ async def save_session_recording(
                     SET transcript = $1, speakers = $2, summary = $3, todos = $4,
                         calendar = $5, notes = $6, conversation_changes = $7,
                         audio_filename = $8, speaker_segments = $9::json,
-                        timestamp = NOW(), category = $10
+                        timestamp = NOW(), category = $10,
+                        audio_range_start = $12, audio_range_end = $13
                     WHERE id = $11
                     """,
                     transcript, speakers, result["summary"], result["todos"],
                     result["calendar"], result["notes"],
                     result.get("conversation_changes", []), audio_filename,
                     stored_segments, category, existing["id"],
+                    audio_range_start, audio_range_end,
                 )
-            return existing["id"]
-
         if ts is not None:
             row = await conn.fetchrow(
                 """
                 INSERT INTO recordings
                     (user_id, session_id, timestamp, transcript, speakers,
                      summary, todos, calendar, notes, conversation_changes,
-                     audio_filename, speaker_segments, category)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13)
+                     audio_filename, speaker_segments, category,
+                     audio_range_start, audio_range_end)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13, $14, $15)
                 RETURNING id
                 """,
                 user_id, session_id, ts, transcript, speakers, result["summary"],
                 result["todos"], result["calendar"], result["notes"],
                 result.get("conversation_changes", []), audio_filename,
-                stored_segments, category,
+                stored_segments, category, audio_range_start, audio_range_end,
             )
         else:
             row = await conn.fetchrow(
@@ -1287,14 +1310,15 @@ async def save_session_recording(
                 INSERT INTO recordings
                     (user_id, session_id, timestamp, transcript, speakers,
                      summary, todos, calendar, notes, conversation_changes,
-                     audio_filename, speaker_segments, category)
-                VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11::json, $12)
+                     audio_filename, speaker_segments, category,
+                     audio_range_start, audio_range_end)
+                VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11::json, $12, $13, $14)
                 RETURNING id
                 """,
                 user_id, session_id, transcript, speakers, result["summary"],
                 result["todos"], result["calendar"], result["notes"],
                 result.get("conversation_changes", []), audio_filename,
-                stored_segments, category,
+                stored_segments, category, audio_range_start, audio_range_end,
             )
         return row["id"]
 async def save_partition_recording(
