@@ -1,7 +1,6 @@
 """Background worker for encrypted upload and asynchronous transcription jobs."""
 
 import asyncio
-import base64
 import logging
 import os
 import subprocess
@@ -16,6 +15,7 @@ from lifelog.config import settings
 from lifelog.crypto import audio_crypto
 from lifelog.database import delete_utterance_chunks, get_utterance_chunks
 from lifelog.pipeline.llm import summarize
+
 logger = logging.getLogger("lifelog.worker")
 POLL_INTERVAL = 60.0
 _ALLOWED_AUDIO_LABELS = lambda name: name not in {"Unknown", ""}
@@ -326,6 +326,78 @@ def _shifted_segments(segments: list[dict], offset: float) -> list[dict]:
         shifted.append(item)
     return shifted
 
+def _partition_segments(
+    segments: list[dict],
+    gap_threshold_seconds: float = 300.0,
+) -> list[list[dict]]:
+    """Partition speaker_segments into groups separated by gaps >= gap_threshold_seconds.
+
+    Returns a list of partitions, each a list of segments. Partition[0] is the
+    first group of segments before any large gap. Partition[1+] are segments
+    after each >=5-minute gap.
+    """
+    if not segments:
+        return []
+    sorted_segs = sorted(segments, key=lambda s: s.get("start", 0))
+    partitions: list[list[dict]] = []
+    current: list[dict] = []
+    for seg in sorted_segs:
+        if current:
+            prev_end = current[-1].get("end", 0)
+            gap = seg.get("start", 0) - prev_end
+            if gap >= gap_threshold_seconds:
+                # Gap found — start a new partition
+                partitions.append(current)
+                current = []
+        current.append(seg)
+    if current:
+        partitions.append(current)
+    return partitions
+
+def _persist_partition_segments(
+    partition: list[dict],
+    user: dict,
+) -> list[dict]:
+    """Encrypt audio payloads and build persisted segment list for one partition."""
+    import base64
+    persisted = []
+    for segment in partition:
+        audio_payload = segment.get("audio")
+        if audio_payload:
+            try:
+                audio_filename = audio_crypto.encrypt_audio(
+                    base64.b64decode(audio_payload),
+                    user["encryption_secret"],
+                    bytes(user["key_salt"]),
+                )
+            except Exception:
+                logger.warning("Skipping invalid speaker segment audio", exc_info=True)
+                continue
+        else:
+            audio_filename = ""
+        persisted.append({
+            "speaker": segment.get("speaker", "Unknown"),
+            "start": segment.get("start", 0),
+            "end": segment.get("end", 0),
+            "text": segment.get("text", ""),
+            "audio_filename": audio_filename,
+        })
+    return persisted
+
+
+def _named_from_persisted(persisted: list[dict]) -> list[dict]:
+    """Build named segment list (for LLM) from persisted segments."""
+    return [
+        {"name": seg["speaker"], "start": seg["start"], "end": seg["end"], "text": seg["text"]}
+        for seg in persisted
+    ]
+
+
+def _offset_to_datetime(offset_seconds: float, base: datetime) -> datetime:
+    """Convert an audio offset (seconds from session start) to an absolute datetime."""
+    from datetime import timedelta
+    return base + timedelta(seconds=offset_seconds)
+
 
 def _normalise_summary(result: dict) -> dict:
     result = dict(result)
@@ -459,7 +531,12 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
 
 
 async def _finalize_completed_sessions() -> None:
-    """Persist sessions after every required full job is complete."""
+    """Persist sessions after every required full job is complete.
+
+    If a session has >5-minute gaps in its speaker_segments, the session is
+    split into multiple recordings (one per partition). The gap audio is
+    discarded — only the transcribed content is preserved.
+    """
     sessions = await db.get_sessions_for_reprocessing()
     for session in sessions:
         try:
@@ -490,66 +567,131 @@ async def _finalize_completed_sessions() -> None:
                     speaker_segments.append(item)
                 speaker_map.update(result.get("speaker_map", {}))
             speaker_segments.sort(key=lambda item: item.get("start", 0))
+
+            # Detect gap splits (>5-minute gaps between segments)
+            partitions = _partition_segments(speaker_segments)
             user = await get_user_secret(session["user_id"])
             if not user:
                 raise RuntimeError("session owner not found")
-            persisted_segments = []
-            for segment in speaker_segments:
-                audio_payload = segment.get("audio")
-                if audio_payload:
+            audio_files = await db.get_recording_audio_filenames(session["id"])
+            session_start = session["started_at"]
+            if session_start is None:
+                session_start = datetime.now(tz=UTC)
+
+
+            if len(partitions) == 1:
+                # No split — existing single-recording path
+                partition = partitions[0]
+                persisted = _persist_partition_segments(partition, user)
+                named = _named_from_persisted(persisted)
+                llm_result = _normalise_summary(summarize(named))
+                recording_id = await db.save_session_recording(
+                    session["user_id"], session["id"], {"segments": transcript_segments},
+                    named, llm_result, audio_files[0] if audio_files else "",
+                    speaker_segments=persisted, session_timestamp=session_start,
+                    category=llm_result.get("category", "not_meaningful"),
+                )
+                if llm_result.get("todos"):
+                    await db.save_todos(recording_id, session["user_id"], llm_result["todos"])
+                if llm_result.get("decisions"):
+                    await db.save_decisions(recording_id, session["user_id"], llm_result["decisions"])
+                await db.mark_session_processed(session["id"])
+                await _auto_enroll_speakers(user, persisted)
+                current = await db.get_recording(user["id"], recording_id)
+                if current:
+                    await _reidentify_recording(user, current)
+                for prior in await db.get_unknown_speakers(user["id"]):
+                    if prior.get("id") != recording_id:
+                        prior["encryption_secret"] = user["encryption_secret"]
+                        prior["key_salt"] = user["key_salt"]
+                        await _reidentify_recording(user, prior)
+                try:
+                    session_date = session["started_at"]
+                    if isinstance(session_date, datetime):
+                        session_date = session_date.date()
+                    await _daily_reprocess_user(user["id"], session_date)
+                except Exception:
+                    logger.exception("Error updating daily summary after session %d", session["id"])
+            else:
+                # Gap split — create one recording per partition
+                logger.info(
+                    "Session %d split into %d partitions (gaps > 5 min)",
+                    session["id"], len(partitions),
+                )
+                # First partition gets the existing session-level summary + todos/decisions
+                partition_0 = partitions[0]
+                persisted_0 = _persist_partition_segments(partition_0, user)
+                named_0 = _named_from_persisted(persisted_0)
+                llm_0 = _normalise_summary(summarize(named_0))
+                recording_id = await db.save_session_recording(
+                    session["user_id"], session["id"], {"segments": transcript_segments},
+                    named_0, llm_0, audio_files[0] if audio_files else "",
+                    speaker_segments=persisted_0, session_timestamp=session_start,
+                    category=llm_0.get("category", "not_meaningful"),
+                )
+                if llm_0.get("todos"):
+                    await db.save_todos(recording_id, session["user_id"], llm_0["todos"])
+                if llm_0.get("decisions"):
+                    await db.save_decisions(recording_id, session["user_id"], llm_0["decisions"])
+                await db.mark_session_processed(session["id"])
+                await _auto_enroll_speakers(user, persisted_0)
+
+                # Subsequent partitions — one new recording each, no todos/decisions
+                for idx, partition in enumerate(partitions[1:], start=1):
+                    persisted = _persist_partition_segments(partition, user)
+                    named = _named_from_persisted(persisted)
+                    llm_n = _normalise_summary(summarize(named))
+                    # Rebase segment start/end relative to this partition
+                    partition_offset = partition[0]["start"]
+                    rebased = []
+                    for seg in persisted:
+                        item = dict(seg)
+                        item["start"] = seg["start"] - partition_offset
+                        item["end"] = seg["end"] - partition_offset
+                        rebased.append(item)
+                    audio_range_start = _offset_to_datetime(partition_offset, session_start)
+                    audio_range_end = _offset_to_datetime(partition[-1]["end"], session_start)
                     try:
-                        audio_filename = audio_crypto.encrypt_audio(
-                            base64.b64decode(audio_payload), user["encryption_secret"], bytes(user["key_salt"])
+                        await db.save_partition_recording(
+                            session["user_id"],
+                            session["id"],
+                            idx,
+                            {"segments": []},  # no quick-transcript for partitions
+                            named,
+                            llm_n,
+                            audio_files[0] if audio_files else "",
+                            rebased,
+                            audio_range_start,
+                            audio_range_end,
                         )
                     except Exception:
-                        logger.warning("Skipping invalid speaker segment audio", exc_info=True)
-                        continue
-                else:
-                    audio_filename = ""
-                persisted_segments.append({
-                    "speaker": segment.get("speaker", "Unknown"),
-                    "start": segment.get("start", 0),
-                    "end": segment.get("end", 0),
-                    "text": segment.get("text", ""),
-                    "audio_filename": audio_filename,
-                })
-            named_segments = [
-                {"name": segment["speaker"], "start": segment["start"], "end": segment["end"], "text": segment["text"]}
-                for segment in persisted_segments
-            ]
-            llm_result = _normalise_summary(summarize(named_segments))
-            audio_files = await db.get_recording_audio_filenames(session["id"])
-            existing = await db.get_recording(session["user_id"], session["id"])
-            recording_id = await db.save_session_recording(
-                session["user_id"], session["id"], {"segments": transcript_segments},
-                named_segments, llm_result, audio_files[0] if audio_files else "",
-                speaker_segments=persisted_segments, session_timestamp=session["started_at"],
-                category=llm_result.get("category", "not_meaningful"),
-            )
-            if existing is None and llm_result.get("todos"):
-                await db.save_todos(recording_id, session["user_id"], llm_result["todos"])
-            if llm_result.get("decisions"):
-                await db.save_decisions(recording_id, session["user_id"], llm_result["decisions"])
-            await db.mark_session_processed(session["id"])
-            user["id"] = session["user_id"]
-            await _auto_enroll_speakers(user, persisted_segments)
-            current = await db.get_recording(session["user_id"], recording_id)
-            if current:
-                await _reidentify_recording(user, current)
-            for prior in await db.get_unknown_speakers(session["user_id"]):
-                if prior.get("id") != recording_id:
-                    prior["encryption_secret"] = user["encryption_secret"]
-                    prior["key_salt"] = user["key_salt"]
-                    await _reidentify_recording(user, prior)
-            try:
-                session_date = session["started_at"]
-                if isinstance(session_date, datetime):
-                    session_date = session_date.date()
-                await _daily_reprocess_user(session["user_id"], session_date)
-            except Exception:
-                logger.exception("Error updating daily summary after session %d", session["id"])
+                        logger.exception(
+                            "Failed to create partition %d recording for session %d",
+                            idx, session["id"],
+                        )
+
+                # Re-identify and daily summary after all partitions created
+                current = await db.get_recording(user["id"], recording_id)
+                if current:
+                    await _reidentify_recording(user, current)
+                for prior in await db.get_unknown_speakers(user["id"]):
+                    if prior.get("id") != recording_id:
+                        prior["encryption_secret"] = user["encryption_secret"]
+                        prior["key_salt"] = user["key_salt"]
+                        await _reidentify_recording(user, prior)
+                try:
+                    session_date = session["started_at"]
+                    if isinstance(session_date, datetime):
+                        session_date = session_date.date()
+                    await _daily_reprocess_user(user["id"], session_date)
+                except Exception:
+                    logger.exception("Error updating daily summary after session %d", session["id"])
+
         except Exception:
             logger.exception("Error finalizing session %d", session["id"])
+
+
+
 
 
 async def worker_loop():

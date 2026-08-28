@@ -558,3 +558,62 @@ class TestDailyReprocessing:
 
             mock_db.save_daily_summary.assert_not_called()
 
+
+
+class TestPartitionSegments:
+    """Tests for session gap-split logic."""
+
+    def test_partition_segments_no_gap(self):
+        """No split when segments are continuous."""
+        from lifelog.worker import _partition_segments
+
+        segments = [
+            {"speaker": "SPEAKER_00", "start": 0, "end": 10, "text": "hello"},
+            {"speaker": "SPEAKER_01", "start": 10, "end": 20, "text": "hi there"},
+        ]
+        result = _partition_segments(segments)
+        assert len(result) == 1
+        assert len(result[0]) == 2
+
+    def test_partition_segments_within_5_min_gap(self):
+        """No split for gap < 5 minutes."""
+        from lifelog.worker import _partition_segments
+
+        segments = [
+            {"speaker": "SPEAKER_00", "start": 0, "end": 10, "text": "hello"},
+            {"speaker": "SPEAKER_01", "start": 270, "end": 280, "text": "hi"},  # 4.5 min gap
+        ]
+        result = _partition_segments(segments)
+        assert len(result) == 1
+
+    def test_partition_segments_split_on_5_min_gap(self):
+        """Split when gap > 5 minutes."""
+        from lifelog.worker import _partition_segments
+
+        segments = [
+            {"speaker": "SPEAKER_00", "start": 0, "end": 10, "text": "hello"},
+            {"speaker": "SPEAKER_01", "start": 310, "end": 320, "text": "hi"},  # 5 min 10 sec gap
+        ]
+        result = _partition_segments(segments)
+        assert len(result) == 2
+        assert result[0][0]["start"] == 0
+        assert result[1][0]["start"] == 310
+
+    def test_partition_segments_multiple_gaps(self):
+        """Multiple splits for multiple large gaps."""
+        from lifelog.worker import _partition_segments
+
+        segments = [
+            {"speaker": "SPEAKER_00", "start": 0, "end": 10, "text": "a"},
+            {"speaker": "SPEAKER_01", "start": 310, "end": 320, "text": "b"},  # gap 1
+            {"speaker": "SPEAKER_00", "start": 620, "end": 630, "text": "c"},  # gap 2
+        ]
+        result = _partition_segments(segments)
+        assert len(result) == 3
+        assert [p[0]["text"] for p in result] == ["a", "b", "c"]
+
+    def test_partition_segments_empty(self):
+        """Empty list returns empty partitions."""
+        from lifelog.worker import _partition_segments
+
+        assert _partition_segments([]) == []

@@ -22,6 +22,10 @@ export interface Recording {
   audio_filename: string | null;
   audio_filenames?: string[];
   category?: string;
+  session_id?: number | null;
+  partition_index?: number;
+  audio_range_start?: string | null;
+  audio_range_end?: string | null;
 }
 
 export interface Speaker {

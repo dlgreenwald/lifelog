@@ -147,7 +147,8 @@ async def get_recordings_by_date(
         if category is not None:
             rows = await conn.fetch(
                 """
-                SELECT id, timestamp, summary, todos, calendar, notes, speakers, category
+                SELECT id, timestamp, summary, todos, calendar, notes, speakers, category,
+                       session_id, partition_index, audio_range_start, audio_range_end
                 FROM recordings
                 WHERE user_id = $1
                   AND DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2
@@ -161,7 +162,8 @@ async def get_recordings_by_date(
         else:
             rows = await conn.fetch(
                 """
-                SELECT id, timestamp, summary, todos, calendar, notes, speakers, category
+                SELECT id, timestamp, summary, todos, calendar, notes, speakers, category,
+                       session_id, partition_index, audio_range_start, audio_range_end
                 FROM recordings
                 WHERE user_id = $1
                   AND DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2
@@ -208,16 +210,35 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
 
         # Attach audio_filenames from session_utterances if session_id exists
         if result.get("session_id"):
-            audio_rows = await conn.fetch(
-                """
-                SELECT audio_filename
-                FROM session_utterances
-                WHERE session_id = $1
-                ORDER BY created_at
-                """,
-                result["session_id"],
-            )
-            result["audio_filenames"] = [r["audio_filename"] for r in audio_rows]
+            audio_range_start = result.get("audio_range_start")
+            audio_range_end = result.get("audio_range_end")
+            partition_index = result.get("partition_index", 0)
+            if partition_index > 0 and audio_range_start and audio_range_end:
+                # Partition recording: only include audio files within this partition's time range
+                audio_rows = await conn.fetch(
+                    """
+                    SELECT audio_filename
+                    FROM session_utterances
+                    WHERE session_id = $1
+                      AND created_at >= $2 AT TIME ZONE 'UTC'
+                      AND created_at <= $3 AT TIME ZONE 'UTC'
+                    ORDER BY created_at
+                    """,
+                    result["session_id"],
+                    audio_range_start,
+                    audio_range_end,
+                )
+            else:
+                audio_rows = await conn.fetch(
+                    """
+                    SELECT audio_filename
+                    FROM session_utterances
+                    WHERE session_id = $1
+                    ORDER BY created_at
+                    """,
+                    result["session_id"],
+                )
+            result["audio_filenames"] = [r["audio_filename"] for r in audio_rows if r["audio_filename"]]
         else:
             # Legacy: single audio_filename
             result["audio_filenames"] = (
@@ -1275,6 +1296,57 @@ async def save_session_recording(
                 result.get("conversation_changes", []), audio_filename,
                 stored_segments, category,
             )
+        return row["id"]
+async def save_partition_recording(
+    user_id: int,
+    session_id: int,
+    partition_index: int,
+    transcript: dict,
+    speakers: list,
+    result: dict,
+    audio_filename: str,
+    stored_segments: list,
+    partition_start: datetime,
+    partition_end: datetime,
+    category: str | None = None,
+) -> int:
+    """Insert a new partition recording for an existing session (gap-split path).
+
+    Does NOT update an existing recording — always inserts. partition_index
+    must be >= 1 (partition 0 is created by save_session_recording).
+    """
+    import json
+
+    stored_segments_json = json.dumps(stored_segments)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO recordings
+                (user_id, session_id, partition_index, timestamp, transcript, speakers,
+                 summary, todos, calendar, notes, conversation_changes,
+                 audio_filename, speaker_segments, category,
+                 audio_range_start, audio_range_end)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::json, $14,
+                    $15, $16)
+            RETURNING id
+            """,
+            user_id,
+            session_id,
+            partition_index,
+            partition_start,
+            transcript,
+            speakers,
+            result["summary"],
+            result["todos"],
+            result["calendar"],
+            result["notes"],
+            result.get("conversation_changes", []),
+            audio_filename,
+            stored_segments_json,
+            category,
+            partition_start,
+            partition_end,
+        )
         return row["id"]
 
 

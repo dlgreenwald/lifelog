@@ -456,3 +456,28 @@ async def test_completed_quick_jobs_are_unapplied(mock_conn):
         result = await get_completed_quick_jobs()
     assert result[0]["id"] == 3
     assert "job_type = 'quick'" in mock_conn.fetch.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_save_partition_recording_inserts_with_partition_index(mock_conn):
+    from lifelog.database import save_partition_recording
+
+    mock_conn.fetchrow.return_value = {"id": 42}
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        recording_id = await save_partition_recording(
+            user_id=1,
+            session_id=10,
+            partition_index=2,
+            transcript={"segments": []},
+            speakers=[{"name": "SPEAKER_00", "start": 0, "end": 5, "text": "hello"}],
+            result={"summary": "test", "todos": [], "calendar": [], "notes": []},
+            audio_filename="audio.enc",
+            stored_segments=[{"speaker": "SPEAKER_00", "start": 0, "end": 5, "text": "hello", "audio_filename": "seg.enc"}],
+            partition_start=datetime(2025, 1, 1, 10, 0, 0),
+            partition_end=datetime(2025, 1, 1, 10, 5, 0),
+            category="work",
+        )
+    assert recording_id == 42
+    sql = mock_conn.fetchrow.call_args.args[0]
+    assert "$2" in sql  # session_id
+    assert "$3" in sql  # partition_index
