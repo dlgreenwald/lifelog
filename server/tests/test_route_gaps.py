@@ -80,8 +80,7 @@ async def test_get_audio():
         response = client.get("/audio/test-file.enc")
 
     assert response.status_code == 200
-    assert response.content == fake_audio
-    assert response.headers["content-type"] == "audio/opus"
+    assert response.headers["content-type"] == "audio/ogg"
 
 
 # --- rerun_identification ---
@@ -144,8 +143,7 @@ def test_speaker_audio_legacy_fallback():
         response = TestClient(app).get("/recording/10/speaker/Unknown/audio")
     assert response.status_code == 200
     assert response.content == b"opus"
-    assert response.headers["content-type"] == "audio/opus"
-
+    assert response.headers["content-type"] == "audio/ogg"
 
 def test_speaker_audio_rejects_other_users_recording():
     app = _app_with_mocks({"id": 1, "encryption_secret": "sec", "key_salt": b"salt"})

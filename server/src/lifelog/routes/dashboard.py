@@ -119,7 +119,7 @@ async def get_audio(filename: str, user: dict = Depends(validate_oidc_token)):
         raise HTTPException(status_code=400, detail="Invalid filename")
     return StreamingResponse(
         iter([audio_bytes]),
-        media_type="audio/opus",
+        media_type="audio/ogg",
         headers={"Content-Disposition": f"inline; filename={filename}"},
     )
 
@@ -168,7 +168,6 @@ async def get_speaker_audio(
         if not audio:
             raise HTTPException(status_code=404, detail="Speaker audio not found")
         return StreamingResponse(iter([audio]), media_type="audio/wav")
-
     filename = recording.get("audio_filename")
     if not filename:
         raise HTTPException(status_code=404, detail="Speaker audio not found")
@@ -178,7 +177,7 @@ async def get_speaker_audio(
         )
     except Exception as exc:
         raise HTTPException(status_code=404, detail="Speaker audio not found") from exc
-    return StreamingResponse(iter([audio]), media_type="audio/opus")
+    return StreamingResponse(iter([audio]), media_type="audio/ogg")
 
 
 @router.get("/todos")
