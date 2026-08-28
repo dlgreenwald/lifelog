@@ -105,6 +105,8 @@ static void afeInit() {
         free(afe_config->vad_model_name);
         afe_config->vad_model_name = NULL;
     }
+    // Cache 512ms of audio before VAD reports speech onset — fixes front-of-clip truncation
+    afe_config->vad_delay_ms = 512;
 
     // Enable AGC — default is off, audio too faint without it
     afe_config->agc_init = false;

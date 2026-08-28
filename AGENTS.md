@@ -10,14 +10,14 @@
 
 ## Project Overview
 
-LifeLog is a voice-activated life journal. A wearable recorder (XIAO ESP32-S3 + PDM mic) captures audio, compresses it with Opus, and uploads via HTTPS. A FastAPI orchestrator runs a pipeline: transcribe + diarize (whisperx via whisper-asr), identify speakers (ECAPA-TDNN), summarize (local LLM via OpenAI-compatible API), and store results in PostgreSQL. A React dashboard provides calendar browsing, recording playback with speaker segments, TODO/decision views, and speaker labeling with retroactive re-identification.
+LifeLog is a voice-activated life journal. A wearable recorder (XIAO ESP32-S3 + PDM mic) captures audio, compresses it with Opus, and uploads via HTTPS. A FastAPI orchestrator encrypts uploads, groups utterances into sessions, queues quick/full transcription jobs, finalizes completed jobs, identifies speakers (ECAPA-TDNN), summarizes (local LLM via OpenAI-compatible API), and stores results in PostgreSQL. A standalone GPU transcription worker runs WhisperX ASR/diarization through the internal job API. A React dashboard provides calendar browsing, recording playback with speaker segments, TODO/decision views, and speaker labeling with retroactive re-identification.
 
 ## Architecture & Data Flow
 
 ```mermaid
 graph LR
     ESP32[Wearable<br/>ESP32-S3] -->|HTTPS + OAuth2 Bearer| ORCH[Orchestrator<br/>FastAPI :8443]
-    ORCH -->|HTTPS| WHISPER[whisper-asr<br/>whisperx GPU :9000]
+    ORCH -->|Internal job API| TRANS[Transcription Worker<br/>WhisperX GPU]
     ORCH -->|HTTPS| SPK[Speaker ID<br/>ECAPA-TDNN GPU :8443]
     ORCH -->|OpenAI-compat API| LLM[Local LLM]
     ORCH -->|SSL| PG[(PostgreSQL)]
@@ -26,9 +26,10 @@ graph LR
 
 **Key architectural decisions:**
 
-- **Integrated ASR + diarization**: whisper-asr runs whisperx which handles both transcription and speaker diarization in one service (no separate diarization microservice)
-- **Background worker**: `worker.py` polls for pending utterances and runs the full pipeline asynchronously
-- **Stateless GPU services**: Voiceprints are passed in HTTP request bodies, not fetched from DB
+- **Asynchronous transcription**: the server owns encrypted audio, job state, session finalization, and persistence; the standalone transcription worker owns WhisperX ASR/diarization
+- **Quick/full jobs**: uploads queue ASR-only quick jobs for live transcript display; ended sessions queue ten-minute full jobs for diarization, speaker audio, and finalization
+- **Background worker**: `worker.py` polls uploads, applies quick results, queues full jobs, and finalizes completed sessions
+- **Stateless GPU services**: Voiceprints and audio are passed in HTTP request bodies, not fetched from DB
 - **Per-user encryption**: Audio encrypted with Fernet keys derived via PBKDF2 from user-specific secrets
 - **Independent auth**: Device uploads use OAuth2 device code flow; dashboard uses OIDC JWT. Both map to the same user row
 - **DB isolation**: Only the orchestrator connects to PostgreSQL. GPU services have zero DB access
@@ -39,15 +40,15 @@ graph LR
 ```
 lifelog/
 ├── server/src/lifelog/    FastAPI orchestrator (Python)
-│   ├── routes/            upload.py, dashboard.py, speakers.py
-│   ├── pipeline/          transcribe.py, speaker_client.py, llm.py
-│   ├── worker.py          Background pipeline orchestrator (polls queue)
+│   ├── routes/            upload.py, dashboard.py, speakers.py, transcription.py
+│   ├── pipeline/          speaker_client.py, llm.py
+│   ├── worker.py          Upload/session/job orchestrator
 │   ├── models.py          Pydantic request/response models
 │   ├── database.py        PostgreSQL (asyncpg, only DB-connected service)
 │   ├── auth.py            API key + OIDC validation
 │   ├── crypto.py          Per-user Fernet audio encryption
 │   └── rate_limit.py      Shared rate limiter instance (slowapi)
-├── whisper-asr/           whisperx ASR + diarization service (GPU)
+├── transcription-worker/  Standalone WhisperX ASR + diarization GPU worker
 ├── speaker-id/src/        ECAPA-TDNN microservice (Python)
 ├── dashboard/src/         React SPA (TypeScript)
 │   ├── components/        AudioPlayer, Calendar, DecisionsList, RecordingDetail, RecordingList, SpeakerLabel, TodoList
@@ -81,16 +82,16 @@ uvicorn lifelog.main:app --reload --host 0.0.0.0 --port 8443 \
   --ssl-keyfile=certs/server.key --ssl-certfile=certs/server.crt
 ```
 
-### Whisper ASR
+### Transcription worker
 
 ```bash
-cd whisper-asr
-docker build -t whisper-asr .
-# Run with GPU (requires nvidia-docker):
-docker run --gpus all -p 9000:9000 whisper-asr
-# Or via docker-compose (includes GPU reservation):
-docker-compose up whisper-asr
+cd transcription-worker
+uv venv .venv && uv pip install -e ".[dev]"
+.venv/bin/python -m pytest -q
+uvicorn main:app --host 0.0.0.0 --port 9000  # requires CUDA, HF_TOKEN, and model cache
 ```
+
+The worker owns WhisperX model inference and polls the server's internal job API every five seconds by default.
 
 ### Speaker ID service
 
@@ -148,12 +149,13 @@ docker-compose logs -f server  # Tail orchestrator logs
 
 ```bash
 # Python services (each in its own venv)
-cd server && .venv/bin/python -m pytest tests/ -q        # 108 tests
+cd server && .venv/bin/python -m pytest tests/ -q        # 114 tests
 cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
-cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 15 tests
+cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 16 tests
+cd transcription-worker && python -m pytest -q           # 10 tests
 
 # Dashboard
-cd dashboard && npx vitest run                            # 83 tests
+cd dashboard && npx vitest run                            # 86 tests
 
 # Firmware-OTA
 cd firmware-ota && pio test -e test                       # 69 tests
@@ -165,7 +167,7 @@ cd firmware-ota && pio test -e test                       # 69 tests
 
 **Async pattern**: All DB and HTTP operations use `async/await`. FastAPI routes are `async def`. Database access uses `asyncpg` with `async with pool.acquire() as conn:`.
 
-**Background worker**: `worker.py` runs a polling loop (`POLL_INTERVAL = 60s`) that claims pending utterances from the queue, runs the full pipeline (transcribe → identify → summarize), and saves the recording. Uses `claim_utterance()` with atomic DB update to prevent duplicate processing.
+**Background worker**: `worker.py` claims upload queue entries, encrypts and groups utterances, applies quick results, queues ten-minute full jobs, and finalizes completed sessions. The separate `transcription-worker` claims GPU jobs and reports ASR/diarization results.
 
 **Config**: `pydantic-settings` `BaseSettings` with `.env` file support. Settings are a module-level singleton:
 
@@ -231,18 +233,21 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | File | Purpose |
 |------|---------|
 | `server/src/lifelog/routes/upload.py` | Chunked upload endpoint — receives audio chunks, creates utterance queue entries |
-| `server/src/lifelog/worker.py` | Background pipeline orchestrator — polls queue, runs transcribe→identify→summarize |
-| `server/src/lifelog/database.py` | All PostgreSQL queries (only DB-connected service) |
+| `server/src/lifelog/routes/transcription.py` | Internal claim/audio/stage/complete/fail API for the GPU transcription worker |
+| `server/src/lifelog/worker.py` | Upload/session/job orchestrator — quick transcript application and full-session finalization |
+| `server/src/lifelog/database.py` | All PostgreSQL queries, including transcription job state transitions |
 | `server/src/lifelog/models.py` | Pydantic request/response models (UserCreate, RecordingResponse, etc.) |
 | `server/src/lifelog/auth.py` | API key + OIDC validation with `Depends()` |
-| `server/src/lifelog/crypto.py` | Per-user Fernet encryption (PBKDF2 key derivation) |
+| `server/src/lifelog/crypto.py` | Per-user Fernet audio encryption (PBKDF2 key derivation) |
 | `server/src/lifelog/rate_limit.py` | Shared rate limiter instance (slowapi) |
-| `server/src/lifelog/routes/speakers.py` | Speaker labeling + retroactive re-ID |
-| `server/src/lifelog/pipeline/transcribe.py` | Whisper transcription client |
-| `server/src/lifelog/pipeline/speaker_client.py` | Speaker identification client |
+| `server/src/lifelog/routes/speakers.py` | Speaker labeling, encrypted segment extraction, and retroactive re-ID |
+| `server/src/lifelog/pipeline/speaker_client.py` | Audio-bearing speaker identification client |
 | `server/src/lifelog/pipeline/llm.py` | LLM prompt template + `summarize()` |
-| `whisper-asr/Dockerfile` | whisperx ASR + diarization service (replaces separate diarization) |
-| `speaker-id/src/speaker_id/routes.py` | `cosine_similarity()`, `match_voiceprint()`, `/identify` + `/enroll` |
+| `transcription-worker/audio.py` | ffmpeg decoding and timestamp-aware waveform assembly |
+| `transcription-worker/pipeline.py` | Process-global WhisperX ASR/alignment/diarization and segment extraction |
+| `transcription-worker/main.py` | GPU job poller and health endpoint |
+| `transcription-worker/Dockerfile` | CUDA worker image |
+| `speaker-id/src/speaker_id/routes.py` | `cosine_similarity()`, `match_voiceprint()`, audio-aware `/identify` + `/enroll` |
 | `speaker-id/src/speaker_id/embeddings.py` | ECAPA-TDNN `SpeakerEncoder` class |
 | `dashboard/src/api/client.ts` | API client (all `fetchApi` calls, oidc-client-ts integration) |
 | `dashboard/src/types.ts` | All TypeScript interfaces |
@@ -293,6 +298,11 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - `009_decisions_table.py` — Adds decisions table
 - `010_nullable_recording_id.py` — Makes recording_id nullable
 - `011_user_key_salt.py` — Adds user key salt for encryption
+- `012_transcription_jobs.py` — Adds asynchronous transcription job state
+- `013_transcription_job_retry.py` — Adds bounded transcription retries
+- `014_cleanup_duplicate_transcription_jobs.py` — Cleans duplicate jobs
+- `015_quick_transcription_job_type.py` — Distinguishes quick and full jobs
+- `016_speaker_segments.py` — Adds encrypted speaker segment metadata to recordings
 
 **Running migrations:**
 
@@ -306,7 +316,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 |-----------|---------|----------------|------------|
 | Server | Python 3.11+ | `uv` (preferred) / pip | hatchling |
 | Speaker ID | Python 3.11+ | `uv` / pip | hatchling |
-| Whisper ASR | Python 3.11+ | pip | whisperx + pyannote |
+| Transcription worker | Python 3.11+ | `uv` / pip | WhisperX + CUDA Torch |
 | Dashboard | Node.js 20+ | npm | Vite 5 |
 | Firmware-OTA | PlatformIO | pio lib | Arduino framework (2.x) |
 | Docker | Docker Compose v3.8 | — | Multi-stage builds |
@@ -317,13 +327,13 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - No Python lockfiles exist — builds use floating `>=` constraints
 - Dashboard has `package-lock.json` for reproducible npm installs
 - Firmware targets `seeed_xiao_esp32s3` board with `partitions_ota.csv` (dual 3MB app slots + 1.9MB model)
-- Docker images use `python:3.11-slim` base; dashboard uses `node:20-alpine` → `nginx:alpine`
+- Docker images use CUDA runtime for GPU services; dashboard uses `node:20-alpine` → `nginx:alpine`
 - GPU services require NVIDIA runtime with CUDA
 - SSL certs are generated at compose level (command overrides), not baked into Dockerfiles
 
 ## Testing & QA
 
-**Total**: ~283 tests across 5 components (108 server + 8 diarization + 15 speaker-id + 83 dashboard + 69 firmware-ota)
+**Total**: ~303 tests across 6 components (114 server + 8 diarization + 16 speaker-id + 10 transcription-worker + 86 dashboard + 69 firmware-ota)
 
 ### Python test framework
 
@@ -368,6 +378,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 |---------|------|---------|
 | Server (Python) | ruff | `cd server && .venv/bin/ruff check src/ tests/` |
 | Speaker ID (Python) | ruff | `cd speaker-id && .venv/bin/ruff check src/ tests/` |
+| Transcription worker (Python) | ruff | `cd transcription-worker && ruff check .` |
 | Dashboard (TypeScript) | tsc | `cd dashboard && npx tsc --noEmit` |
 | Firmware-OTA (C++) | — | PlatformIO compiler warnings |
 
@@ -376,6 +387,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 Every code change MUST be followed by running the relevant test suite before yielding. If tests fail, fix in the same pass — never deliver with broken tests.
 
 - **Python services**: `cd <service> && .venv/bin/python -m pytest tests/ -q`
+- **Transcription worker**: `cd transcription-worker && python -m pytest -q`
 - **Dashboard**: `cd dashboard && npx vitest run`
 - **Firmware-OTA**: `cd firmware-ota && pio test -e test`
 
@@ -385,7 +397,7 @@ Before merging any change:
 
 1. **Lint**: `ruff check src/ tests/` passes on all Python services (0 errors)
 2. **Type check**: `npx tsc --noEmit` passes on dashboard (0 errors)
-3. **Tests**: All 283 tests pass across all 5 services
+3. **Tests**: All ~303 tests pass across all 6 components
 4. **No regressions**: Existing functionality not broken
 
 ### Ruff configuration
@@ -420,7 +432,7 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | `server/build.sh` | compile check → ruff lint → pytest (108 tests) |
 | `diarization/build.sh` | compile check → ruff lint → pytest (8 tests) |
 | `speaker-id/build.sh` | compile check → ruff lint → pytest (15 tests) |
-| `dashboard/build.sh` | tsc type check → vite build → vitest (83 tests) → bundle size |
+| `dashboard/build.sh` | tsc type check → vite build → vitest (86 tests) → bundle size |
 | `firmware-ota/build.sh` | pio compile check → native test (69 tests) |
 
 **Run everything:**

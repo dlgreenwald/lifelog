@@ -21,8 +21,8 @@ Wear a small recorder, forget about it, and review your days through a web dashb
 - **Wearable recording** — XIAO ESP32-S3 with built-in PDM mic, esp-sr AFE (noise suppression + VAD), Opus/OGG compression, SD card offline queue
 - **Chunked upload** — Device streams audio in chunks; server tracks utterances and processes on completion
 - **Background pipeline** — Worker polls for pending utterances and runs transcription, speaker identification, and summarization asynchronously
-- **Session grouping** — Utterances grouped into sessions with live transcription windows and hourly reprocessing
-- **Automatic transcription + diarization** — WhisperX handles both transcription and speaker diarization in one service (runs on your GPU)
+- **Session grouping** — Utterances grouped into sessions; quick ASR keeps active transcripts responsive and hourly reprocessing queues ten-minute full jobs
+- **Asynchronous transcription + diarization** — A standalone GPU transcription-worker runs WhisperX; the server finalizes results and persists encrypted speaker audio
 - **Speaker identification** — ECAPA-TDNN voiceprint matching with one-shot enrollment
 - **LLM summarization** — Extracts summaries, TODOs, decisions, calendar events, and notes from conversations
 
@@ -60,21 +60,21 @@ High-level:
 ```mermaid
 graph LR
     ESP32[Wearable<br/>ESP32-S3] -->|HTTPS + X-API-Key| ORCH[Orchestrator<br/>FastAPI :8443]
-    ORCH -->|HTTPS| WHISPER[whisper-asr<br/>whisperx GPU :9000]
+    ORCH -->|Internal job API| TRANS[Transcription Worker<br/>WhisperX GPU]
     ORCH -->|HTTPS| SPK[Speaker ID<br/>ECAPA-TDNN GPU :8443]
     ORCH -->|OpenAI-compat API| LLM[Local LLM<br/>Ollama/llama.cpp]
     ORCH -->|SSL| PG[(PostgreSQL)]
     DASH[Dashboard<br/>React :3000] -->|OIDC Bearer| ORCH
 ```
 
-GPU services (whisper-asr, speaker-id) run on dedicated machines. The orchestrator, database, and dashboard run in Docker on the main server. **Nothing runs in the cloud.**
+GPU services (transcription-worker, speaker-id) run on dedicated machines. The orchestrator, database, and dashboard run in Docker on the main server. **Nothing runs in the cloud.**
 
 ## Getting Started
 
 ### Prerequisites
 
 - **Docker** with Docker Compose v2+
-- **NVIDIA GPU** (for whisper-asr and speaker-id services)
+- **NVIDIA GPU** (for transcription-worker and speaker-id services)
 - A machine running an **OpenAI-compatible LLM** (Ollama, llama.cpp, vLLM)
 - An **OIDC provider** (Keycloak, Auth0, Authelia, etc.)
 - **Node.js 20+** (only for dashboard dev without Docker)
@@ -97,7 +97,7 @@ Edit `.env` and fill in:
 | `POSTGRES_PASSWORD` | Any strong password |
 | `OPENAI_BASE_URL` | Your LLM endpoint (e.g. `http://192.168.1.50:11434/v1`) |
 | `OPENAI_MODEL` | Model name (e.g. `qwen2.5:7b`) |
-| `WHISPER_ASR_URL` | URL of your whisper-asr service (e.g. `http://192.168.1.50:9000`) |
+| `HF_TOKEN` | Hugging Face token for the transcription-worker diarization model |
 | `OIDC_ISSUER_URL` | Your OIDC provider URL |
 | `OIDC_CLIENT_ID` | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | OIDC client secret |
@@ -122,7 +122,7 @@ Services started:
 |---------|-----|-------|
 | **Dashboard** | `http://localhost:3000` | React SPA |
 | **Orchestrator** | `https://localhost:8444` | FastAPI, HTTPS |
-| **whisper-asr** | `http://localhost:9000` | WhisperX transcription + diarization, GPU |
+| **Transcription worker** | `http://localhost:9001/health` | WhisperX transcription + diarization, GPU |
 | **Speaker ID** | `https://localhost:8445` | ECAPA-TDNN, GPU |
 | **PostgreSQL** | `localhost:5432` | SSL enabled |
 
@@ -262,18 +262,19 @@ npm test          # Run vitest
 
 ```bash
 # Python services
-cd server && .venv/bin/python -m pytest tests/ -q        # 75 tests
+cd server && .venv/bin/python -m pytest tests/ -q        # 114 tests
 cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
-cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 15 tests
+cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 16 tests
+cd transcription-worker && python -m pytest -q           # 10 tests
 
 # Dashboard
-cd dashboard && npx vitest run                            # 83 tests
+cd dashboard && npx vitest run                            # 85 tests
 
 # Firmware (native tests, no hardware required)
-cd firmware-ota && pio test -e test                       # 108 tests
+cd firmware-ota && pio test -e test                       # 69 tests
 ```
 
-**Total: ~289 tests** across 5 components.
+**Total: ~302 tests** across 6 components.
 
 ## Project Structure
 
@@ -281,7 +282,7 @@ cd firmware-ota && pio test -e test                       # 108 tests
 lifelog/
 ├── firmware-ota/       ESP32-S3 FreeRTOS firmware (C++/Arduino)
 ├── server/             FastAPI orchestrator (Python)
-├── whisper-asr/        WhisperX ASR + diarization service (GPU)
+├── transcription-worker/ Standalone WhisperX ASR + diarization worker (GPU)
 ├── speaker-id/         ECAPA-TDNN microservice (Python)
 ├── dashboard/          React SPA (TypeScript)
 ├── diarization/        Legacy pyannote.audio microservice (Python)

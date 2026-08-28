@@ -1,7 +1,4 @@
 import logging
-import os
-import subprocess
-import tempfile
 import time
 
 import httpx
@@ -27,39 +24,20 @@ router = APIRouter()
 
 
 def extract_speaker_audio(recording: dict, speaker_id: str) -> bytes:
-    """Decrypt and concatenate matching stored speaker segments.
+    """Decrypt and return the first matching stored speaker segment.
 
     Legacy recordings without segment metadata use the full recording audio.
     """
     secret = recording["encryption_secret"]
     salt = bytes(recording["key_salt"])
-    segment_files = []
     for segment in recording.get("speaker_segments") or []:
         label = segment.get("speaker") or segment.get("name")
         if label != speaker_id or not segment.get("audio_filename"):
             continue
         try:
-            segment_files.append(audio_crypto.decrypt_audio(segment["audio_filename"], secret, salt))
+            return audio_crypto.decrypt_audio(segment["audio_filename"], secret, salt)
         except Exception:
             logger.warning("Skipping unavailable speaker segment %s", segment.get("audio_filename"), exc_info=True)
-    if segment_files:
-        with tempfile.TemporaryDirectory(prefix="speaker-label-") as directory:
-            paths = []
-            for index, data in enumerate(segment_files):
-                path = os.path.join(directory, f"segment-{index}.wav")
-                with open(path, "wb") as output:
-                    output.write(data)
-                paths.append(path)
-            list_path = os.path.join(directory, "concat.txt")
-            with open(list_path, "w") as output:
-                for path in paths:
-                    output.write(f"file '{path}'\n")
-            process = subprocess.run(
-                ["ffmpeg", "-v", "error", "-f", "concat", "-safe", "0", "-i", list_path,
-                 "-f", "wav", "pipe:1"], capture_output=True, check=False,
-            )
-            if process.returncode == 0 and process.stdout:
-                return process.stdout
     if recording.get("speaker_segments"):
         raise ValueError("speaker has no stored audio")
     filename = recording.get("audio_filename")
@@ -101,7 +79,7 @@ async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_
         response = await client.post(
             f"{settings.speaker_id_url}/enroll",
             params={"name": label.label},
-            files={"file": ("segment.wav", segment_audio, "audio/wav")},
+            files={"file": ("segment.opus", segment_audio, "audio/opus")},
         )
         response.raise_for_status()
         embedding = response.json()["embedding"]

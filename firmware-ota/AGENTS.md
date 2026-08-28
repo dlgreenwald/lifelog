@@ -189,7 +189,8 @@ Device creates AP `LifeLog-Setup` on first boot or connection failure. Connect a
 | Sample rate | 16000 Hz | `SAMPLE_RATE` |
 | Opus frame | 20ms (320 samples) | `AUDIO_OPUS_FRAME_MS` |
 | Opus bitrate | 24 kbps | `AUDIO_OPUS_BITRATE` |
-| Opus complexity | 5 | `AUDIO_OPUS_COMPLEXITY` |
+| VAD pre-cache | 512ms | `vad_delay_ms` in `i2s_fe.cpp` |
+| VAD mode | WebRTC | `vad_model_name = NULL` in `i2s_fe.cpp` |
 | SD SPI clock | 25 MHz | `SD.begin(SD_CS_PIN, SPI, 25000000)` |
 
 ### Server

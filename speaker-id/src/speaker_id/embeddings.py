@@ -24,15 +24,35 @@ class SpeakerEncoder:
 
     def extract_embedding(self, audio_bytes: bytes) -> np.ndarray:
         """Extract ECAPA-TDNN embedding from audio segment."""
-        import tempfile
+        import tempfile, os, soundfile
 
-        # Convert to wav if needed
+        # Write to temp file and load with soundfile
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_bytes)
             f.flush()
             wav_path = f.name
 
-        embeddings = self.encoder.encode_batch(wav_path)
+        try:
+            waveform, sample_rate = soundfile.read(wav_path, dtype="float32")
+        finally:
+            os.unlink(wav_path)
+
+        # Ensure mono: average channels if stereo
+        if waveform.ndim > 1:
+            waveform = waveform.mean(axis=1)
+
+        # Resample to 16000 Hz if needed
+        if sample_rate != 16000:
+            import scipy.signal
+            num_samples = int(len(waveform) * 16000 / sample_rate)
+            waveform = scipy.signal.resample(waveform, num_samples)
+            sample_rate = 16000
+
+        # Convert to torch tensor [batch, time]
+        import torch
+        waveform_tensor = torch.from_numpy(waveform).unsqueeze(0)  # [1, time]
+
+        embeddings = self.encoder.encode_batch(waveform_tensor)
         return embeddings.squeeze().cpu().numpy()
 
 

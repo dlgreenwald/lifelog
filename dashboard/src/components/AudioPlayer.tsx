@@ -66,8 +66,9 @@ export default function AudioPlayer({ src, segments, sources }: AudioPlayerProps
   };
 
   const currentSpeaker = getCurrentSpeaker();
+  const minStart = playableSegments.length > 0 ? Math.min(...playableSegments.map((s) => s.start)) : 0;
   const maxEnd = playableSegments.length > 0 ? Math.max(...playableSegments.map((s) => s.end)) : 1;
-
+  const visibleRange = maxEnd - minStart || 1;
   if (allSources.length === 0) return null;
 
   return (
@@ -92,8 +93,8 @@ export default function AudioPlayer({ src, segments, sources }: AudioPlayerProps
             key={i}
             className={`segment ${segment.name === 'Unknown' ? 'unknown' : ''}`}
             style={{
-              left: `${(segment.start / maxEnd) * 100}%`,
-              width: `${((segment.end - segment.start) / maxEnd) * 100}%`,
+              left: `${((segment.start - minStart) / visibleRange) * 100}%`,
+              width: `${((segment.end - segment.start) / visibleRange) * 100}%`,
             }}
             onClick={() => seekTo(segment.start)}
             title={`${segment.name}: ${segment.start.toFixed(1)}s - ${segment.end.toFixed(1)}s`}

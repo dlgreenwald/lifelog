@@ -675,6 +675,12 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
     ESP_LOGI(TAG, "Refreshing token via %s", url);
 #endif
     OAuth2HttpResponse resp = requestInternal("POST", url, nullptr, body);
+#ifndef OAUTH2_TESTING
+    // Always log the raw response body so we can see what the server actually sent
+    char respBuf[1024] = {};
+    serializeJson(resp.body, respBuf, sizeof(respBuf));
+    ESP_LOGI(TAG, "Refresh response: status=%d body=%.900s", resp.statusCode, respBuf);
+#endif
     if (resp.statusCode == 0 || resp.statusCode != 200) {
 #ifndef OAUTH2_TESTING
         if (resp.statusCode == 0) {
@@ -682,7 +688,7 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
         } else {
             const char* error = resp.body["error"] | "unknown";
             const char* errorDesc = resp.body["error_description"] | "";
-            ESP_LOGW(TAG, "Token refresh failed: status=%d error=%s description=%s",
+            ESP_LOGW(TAG, "Token refresh HTTP error: status=%d error=%s description=%s",
                      resp.statusCode, error, errorDesc);
         }
 #endif
@@ -696,7 +702,17 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
     const char* refreshToken = resp.body["refresh_token"] | "";
     int expiresIn = resp.body["expires_in"] | 0;
     int refreshExpiresIn = resp.body["refresh_expires_in"] | 0;
-    if (accessToken[0] == '\0') { strlcpy(_lastError, "No token in refresh", sizeof(_lastError)); _hasTokens = false; setState(AUTH_ERROR); return; }
+#ifndef OAUTH2_TESTING
+    ESP_LOGI(TAG, "Refresh token field in response: present=%d value_len=%d",
+             refreshToken[0] != '\0', (int)strlen(refreshToken));
+#endif
+    if (accessToken[0] == '\0') {
+#ifndef OAUTH2_TESTING
+        ESP_LOGW(TAG, "No access_token in refresh response — full body logged above");
+#endif
+        strlcpy(_lastError, "No token in refresh", sizeof(_lastError)); _hasTokens = false; setState(AUTH_ERROR); return;
+    }
+
 
     strlcpy(_accessToken, accessToken, sizeof(_accessToken));
     if (refreshToken[0] != '\0') strlcpy(_refreshToken, refreshToken, sizeof(_refreshToken));

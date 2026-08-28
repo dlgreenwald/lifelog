@@ -69,15 +69,17 @@ graph TB
         WORKER[Background Worker<br/>Polls queue] --> QUEUE
     end
 
-    subgraph Pipeline["Worker Pipeline (async)"]
-        WORKER -->|HTTPS POST| WHISPER[whisper-asr<br/>WhisperX GPU]
-        WORKER -->|HTTPS POST| SPEAKER_SVC[Speaker ID Service]
+    subgraph Pipeline["Asynchronous Pipeline"]
+        WORKER[Background Worker<br/>Upload/session orchestration] --> QUEUE
+        WORKER -->|POST /internal/transcription/claim| TRANS[Transcription Worker<br/>WhisperX GPU]
+        TRANS -->|complete/fail| WORKER
+        WORKER -->|HTTPS| SPEAKER_SVC[Speaker ID Service]
         WORKER -->|OpenAI-compatible API| LLM[Local LLM Summarization]
         WORKER -->|Write| DB[(PostgreSQL)]
     end
 
     subgraph GPU["GPU Services"]
-        WHISPER -->|Transcription + Diarization| RESULT[Text + Speakers]
+        TRANS -->|ASR + alignment + diarization| RESULT[Raw text + speaker labels]
         SPEAKER_SVC -->|ECAPA-TDNN| NAMED[Named Speakers]
     end
 
@@ -109,43 +111,32 @@ sequenceDiagram
     participant Device as Wearable
     participant Server as Orchestrator
     participant Worker as Background Worker
-    participant Whisper as whisper-asr (GPU)
+    participant Transcriber as Transcription Worker (GPU)
     participant SID as Speaker ID Svc
     participant LLM as Local LLM (Ollama/llama.cpp)
     participant DB as PostgreSQL
 
-    Device->>Server: POST /api/v1/upload<br/>X-API-Key + chunk data<br/>(utterance_id, chunk_index, is_final)
-    Server->>Server: Validate API key → user<br/>Assign server utterance ID
-    Server->>Server: Encrypt chunk with user's Fernet key<br/>Store on disk
+    Device->>Server: POST /api/v1/upload<br/>X-API-Key + chunk data
+    Server->>Server: Validate user, encrypt chunk, store audio
+    Server->>DB: INSERT utterance_queue
+    Server-->>Device: 200 {status: "enqueued"}
+    Worker->>DB: Claim pending utterance, assign session
+    Worker->>DB: INSERT quick transcription job
+    Transcriber->>Server: POST /internal/transcription/claim
+    Transcriber->>Server: GET /internal/transcription/audio/{job_id}
+    Transcriber->>Transcriber: Quick ASR-only transcription
+    Transcriber->>Server: POST /internal/transcription/complete/{job_id}
+    Worker->>DB: Apply quick transcript to session utterance
+    Worker->>DB: End idle session and queue ten-minute full jobs
+    Transcriber->>Server: Claim full job, fetch timestamped audio
+    Transcriber->>Transcriber: Concatenate, transcribe, align, diarize
+    Transcriber->>Server: POST stage and complete with speaker WAV segments
+    Worker->>Worker: Encrypt speaker segments and auto-enroll raw labels
+    Worker->>SID: POST /identify with audio + voiceprints
+    Worker->>LLM: Chat completion with chronological transcript
+    Worker->>DB: Save recording, todos/decisions, and daily summary
+    Worker->>DB: Mark session processed
 
-    alt is_final = true
-        Server->>DB: INSERT INTO utterance_queue<br/>(user_id, utterance_id, status='pending')
-        Server-->>Device: 200 { status: "processed" }
-    else is_final = false
-        Server-->>Device: 200 { status: "chunk_received" }
-    end
-
-    Worker->>DB: Poll for pending utterances
-    Worker->>Worker: Claim utterance (atomic UPDATE)
-
-    par Pipeline steps
-        Worker->>Whisper: POST /transcribe<br/>Audio bytes
-        Whisper-->>Worker: { text, segments[]<br/>(transcription + diarization) }
-    and
-        Worker->>DB: Fetch user's voiceprints
-    end
-
-    Worker->>SID: POST /identify<br/>JSON: {segments, voiceprints}
-    SID-->>Worker: { speakers[{name, start, end}] }
-
-    Worker->>Worker: merge_speakers():<br/>Overlap transcript text<br/>with speaker names
-
-    Worker->>LLM: Chat completion<br/>Transcript + speaker names
-    LLM-->>Worker: { summary, todos, decisions,<br/>calendar, notes, category }
-
-    Worker->>DB: INSERT INTO recordings<br/>(user_id, transcript, speakers,<br/>summary, todos, calendar, notes,<br/>category, audio_filename)
-
-    Worker->>DB: UPDATE utterance_queue<br/>SET status='done'
 ```
 
 ### Data Flow: Dashboard Access
@@ -379,18 +370,18 @@ Accepts Opus audio chunks from a wearable device. The device sends multiple chun
 { "status": "processed", "utterance_id": 123 }
 ```
 
-**Background pipeline** (executed asynchronously by worker):
+**Background pipeline** (executed asynchronously by separate workers):
 
 | Step | Service | Protocol | Description |
 |------|---------|----------|-------------|
-| 1 | Orchestrator | — | Concatenate chunks, encrypt audio |
-| 2 | whisper-asr | HTTPS | Transcribe + diarize → `{text, segments[]}` |
-| 3 | Speaker ID service | HTTPS | Match segments to known speakers → `[{name, ...}]` |
-| 4 | Orchestrator | — | `merge_speakers()`: overlap transcript text with speaker names |
-| 5 | OpenAI-compatible API | HTTPS | Summarize → `{summary, todos, decisions, calendar, notes, category}` |
-| 6 | PostgreSQL | SSL | Store recording, update daily summary |
+| 1 | Orchestrator | — | Encrypt chunks, assign sessions, queue quick ASR jobs |
+| 2 | Transcription worker | Internal HTTPS | Claim jobs, decode timestamped audio, run ASR/alignment/diarization |
+| 3 | Orchestrator | — | Apply quick transcripts; persist encrypted full-job speaker segments |
+| 4 | Speaker ID service | HTTPS | Match segment audio to user voiceprints |
+| 5 | OpenAI-compatible API | HTTPS | Summarize chronological named segments |
+| 6 | PostgreSQL | SSL | Store recording, todos/decisions, and daily summary |
 
-**Non-obvious behavior**: Steps 2 and the voiceprint fetch run in parallel. Step 3 waits for step 2 (needs diarized segments before identification). The worker groups utterances into sessions and runs hourly reprocessing to update live transcription windows.
+**Non-obvious behavior**: quick jobs update active utterances as soon as ASR completes. Idle sessions are split into ten-minute full jobs, and finalization waits for every required job before persisting a recording. The server is the only DB-connected service; GPU workers receive audio and voiceprints in request bodies.
 
 ---
 
@@ -758,19 +749,19 @@ graph TB
     subgraph Docker["docker-compose up -d"]
         PG[postgres:16-alpine<br/>:5432<br/>SSL on]
         SRV[server<br/>:8444→8443<br/>HTTPS]
-        WHISPER[whisper-asr<br/>:9000<br/>GPU]
+        TRANS[transcription-worker<br/>:9001→9000<br/>GPU]
         SPK[speaker-id<br/>:8445→8443<br/>GPU]
         DASH[dashboard<br/>:3000→80<br/>nginx]
     end
 
     SRV --> PG
-    SRV --> WHISPER
+    SRV --> TRANS
     SRV --> SPK
     DASH --> SRV
 
     style PG fill:#336791,color:#fff
     style SRV fill:#2c3e50,color:#fff
-    style WHISPER fill:#e74c3c,color:#fff
+    style TRANS fill:#e74c3c,color:#fff
     style SPK fill:#8e44ad,color:#fff
     style DASH fill:#2980b9,color:#fff
 ```
@@ -778,8 +769,8 @@ graph TB
 | Service | External Port | Internal Port | GPU | Dependencies |
 |---------|--------------|---------------|-----|--------------|
 | postgres | 5432 | 5432 | No | — |
-| server | 8444 | 8443 | No | postgres (healthy), whisper-asr, speaker-id |
-| whisper-asr | 9000 | 9000 | Yes | — |
+| server | 8444 | 8443 | No | postgres (healthy), speaker-id |
+| transcription-worker | 9001 | 9000 | Yes | server (healthy) |
 | speaker-id | 8445 | 8443 | Yes | — |
 | dashboard | 3000 | 80 | No | server |
 
@@ -802,12 +793,11 @@ Each service mounts its certs as read-only. The server also mounts the CA cert t
 | `OPENAI_BASE_URL` | Yes | server | Local LLM endpoint (Ollama, llama.cpp, etc.) |
 | `OPENAI_API_KEY` | No (default: ollama) | server | LLM API key |
 | `OPENAI_MODEL` | No (default: qwen2.5:7b) | server | LLM model name |
-| `HF_TOKEN` | Yes | whisper-asr | HuggingFace token for pyannote models |
+| `HF_TOKEN` | Yes | transcription-worker | Hugging Face token for pyannote models |
 | `OIDC_ISSUER_URL` | Yes | server | OIDC provider issuer URL |
 | `OIDC_CLIENT_ID` | Yes | server | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | Yes | server | OIDC client secret |
 | `OIDC_REDIRECT_URI` | Yes | server | OIDC redirect URI |
-| `WHISPER_ASR_URL` | No (default: http://whisper-asr:9000) | server | Whisper ASR service URL |
 | `SPEAKER_ID_URL` | No (default: http://speaker-id:8443) | server | Speaker ID service URL |
 | `AUDIO_STORAGE_PATH` | No (default: /data/audio) | server | Encrypted audio file storage |
 | `POSTGRES_HOST` | No (default: localhost) | server | Database host |
@@ -859,7 +849,7 @@ graph TB
 
 5. **API key ≠ OIDC identity**: Device uploads (API key) and dashboard access (OIDC) are independent auth mechanisms that map to the same user record. A compromised API key cannot access the dashboard, and vice versa.
 
-6. **GPU services are stateless**: The whisper-asr and speaker-id services hold no persistent state. They receive audio + voiceprints, return results, and forget. Compromising them exposes neither the database nor stored audio.
+6. **GPU services are stateless**: the transcription-worker and speaker-id services hold no persistent state. They receive audio + voiceprints, return results, and forget. Compromising them exposes neither the database nor stored audio.
 
 ---
 
@@ -869,7 +859,7 @@ graph TB
 
 Replace static API key authentication with [RFC 8628 OAuth Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628). Three key constraints:
 
-1. **TTS code readout**: A dedicated TTS service generates an audio recording of the authorization code, which the device plays through its speaker. The user hears the code and authorizes it in their browser — no screen needed on the device. **Hardware note**: This requires a speaker and I2S amplifier (e.g. MAX98357A) connected to the ESP32-S3. The XIAO ESP32-S3 dev board does not include audio output hardware, so TTS playback is limited to custom board designs that add the amplifier and speaker.
+1. **Device authorization flow**: device credentials are obtained through OAuth device authorization rather than being embedded in the firmware.
 
 2. **Flash storage for tokens**: Refresh tokens are stored in ESP32 flash memory (persists across restarts and power failures), **not** on the SD card. SD cards are removable and less secure; flash is soldered to the board.
 

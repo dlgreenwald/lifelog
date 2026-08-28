@@ -306,7 +306,7 @@ export default function RecordingDetail() {
               <li key={i} className={!isLive && speaker.name === 'Unknown' ? 'unknown' : ''}>
                 {!isLive && <span className="speaker-name">{speaker.name}: </span>}
                 {speaker.text}
-                {!isLive && speaker.name === 'Unknown' && (
+                {!isLive && (speaker.name === 'Unknown' || speaker.name.startsWith('SPEAKER_')) && (
                   <button onClick={() => labelSpeaker(speaker)}>Label</button>
                 )}
               </li>
@@ -467,7 +467,13 @@ export default function RecordingDetail() {
     </div>
   );
 
-  function labelSpeaker(speaker: { id: number; name: string }) {
-    console.log('Label speaker:', speaker);
+  async function labelSpeaker(speaker: { id: number; name: string }) {
+    const name = prompt(`Enter a name for ${speaker.name}:`);
+    if (!name?.trim()) return;
+    const recordingId = recording!.id as number;
+    await api.labelSpeaker(recordingId, speaker.name as string, name.trim());
+    // Reload recording to reflect updated labels
+    const updated = await api.getRecording(String(recordingId));
+    setRecording(updated);
   }
 }
