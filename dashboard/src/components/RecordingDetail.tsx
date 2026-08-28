@@ -1,9 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { formatDateTime } from '../utils/format';
 import AudioPlayer from './AudioPlayer';
-import type { Recording, Todo, Decision } from '../types';
+import type { Recording, Todo, Decision, Speaker } from '../types';
+
+function revokeAudioUrl(url: string): void {
+  if (typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(url);
+}
 
 export default function RecordingDetail() {
   const { id } = useParams<{ id: string }>();
@@ -12,7 +16,6 @@ export default function RecordingDetail() {
   const [audioUrls, setAudioUrls] = useState<string[]>([]);
   const [recordingTodos, setRecordingTodos] = useState<Todo[]>([]);
   const [recordingDecisions, setRecordingDecisions] = useState<Decision[]>([]);
-
   const [showTodoForm, setShowTodoForm] = useState(false);
   const [todoFormTask, setTodoFormTask] = useState('');
   const [todoFormOwner, setTodoFormOwner] = useState('Me');
@@ -27,6 +30,71 @@ export default function RecordingDetail() {
 
   const isLive = id?.startsWith('active-');
   const numericRecordingId = id && !isLive ? Number(id) : undefined;
+  const audioUrlsByFilename = useRef(new Map<string, string>());
+  const pendingAudioFilenames = useRef(new Set<string>());
+  const audioRecordingId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!recording) return;
+    const recordingKey = id ?? null;
+    if (audioRecordingId.current !== recordingKey) {
+      audioUrlsByFilename.current.forEach(revokeAudioUrl);
+      audioUrlsByFilename.current.clear();
+      pendingAudioFilenames.current.clear();
+      audioRecordingId.current = recordingKey;
+      setAudioUrls([]);
+    }
+
+    const filenames = recording.audio_filenames?.length
+      ? recording.audio_filenames
+      : recording.audio_filename ? [recording.audio_filename] : [];
+    if (filenames.length === 0) {
+      setAudioUrls([]);
+      return;
+    }
+
+    const missing = filenames.filter(
+      (filename) => !audioUrlsByFilename.current.has(filename) &&
+        !pendingAudioFilenames.current.has(filename),
+    );
+    missing.forEach((filename) => pendingAudioFilenames.current.add(filename));
+    let cancelled = false;
+    Promise.allSettled(missing.map(async (filename) => {
+      try {
+        const url = await api.fetchAudio(`/dashboard/audio/${filename}`);
+        return { filename, url };
+      } finally {
+        pendingAudioFilenames.current.delete(filename);
+      }
+    })).then((results) => {
+      const newlyFetched: string[] = [];
+      if (cancelled) {
+        results.forEach((result) => {
+          if (result.status === 'fulfilled') newlyFetched.push(result.value.url);
+        });
+        newlyFetched.forEach(revokeAudioUrl);
+        return;
+      }
+      results.forEach((result) => {
+        if (result.status === 'fulfilled') {
+          audioUrlsByFilename.current.set(result.value.filename, result.value.url);
+        }
+      });
+      setAudioUrls(
+        filenames.flatMap((filename) => {
+          const url = audioUrlsByFilename.current.get(filename);
+          return url ? [url] : [];
+        }),
+      );
+    });
+
+    return () => { cancelled = true; };
+  }, [recording, id]);
+
+  useEffect(() => () => {
+    audioUrlsByFilename.current.forEach(revokeAudioUrl);
+    audioUrlsByFilename.current.clear();
+  }, []);
+
 
   const loadRecording = useCallback(() => {
     if (!id) return;
@@ -46,21 +114,6 @@ export default function RecordingDetail() {
     return () => clearInterval(interval);
   }, [isLive, loadRecording]);
 
-  useEffect(() => {
-    if (!recording) return;
-    const filenames = recording.audio_filenames?.length
-      ? recording.audio_filenames
-      : recording.audio_filename
-        ? [recording.audio_filename]
-        : [];
-    if (filenames.length === 0) return;
-
-    Promise.all(
-      filenames.map((f) => api.fetchAudio(`/dashboard/audio/${f}`))
-    ).then(setAudioUrls);
-
-    return () => audioUrls.forEach((url) => URL.revokeObjectURL(url));
-  }, [recording]);
 
   // Fetch todos for this recording
   useEffect(() => {
@@ -194,6 +247,16 @@ export default function RecordingDetail() {
     setRecording(prev => prev ? { ...prev, category } : null);
   };
 
+  const displaySpeakers: Speaker[] = recording?.speakers?.length
+    ? recording.speakers
+    : (recording?.transcript?.segments ?? []).map((segment, index) => ({
+      id: index,
+      name: segment.name ?? segment.speaker ?? 'Unknown',
+      start: typeof segment.start === 'number' ? segment.start : 0,
+      end: typeof segment.end === 'number' ? segment.end : 0,
+      text: segment.text ?? '',
+    }));
+
   if (!recording) return <div>Loading...</div>;
 
   return (
@@ -235,14 +298,15 @@ export default function RecordingDetail() {
         </div>
       )}
 
-      {recording.speakers && recording.speakers.length > 0 && (
+      {displaySpeakers.length > 0 && (
         <div className="speakers">
           <h3>Transcript</h3>
           <ul>
-            {recording.speakers.map((speaker, i) => (
-              <li key={i} className={speaker.name === 'Unknown' ? 'unknown' : ''}>
-                {speaker.name}: {speaker.text}
-                {speaker.name === 'Unknown' && (
+            {displaySpeakers.map((speaker, i) => (
+              <li key={i} className={!isLive && speaker.name === 'Unknown' ? 'unknown' : ''}>
+                {!isLive && <span className="speaker-name">{speaker.name}: </span>}
+                {speaker.text}
+                {!isLive && speaker.name === 'Unknown' && (
                   <button onClick={() => labelSpeaker(speaker)}>Label</button>
                 )}
               </li>
@@ -256,7 +320,7 @@ export default function RecordingDetail() {
           <h3>Audio</h3>
           <AudioPlayer
             sources={audioUrls}
-            segments={recording.speakers || []}
+            segments={displaySpeakers}
           />
         </div>
       )}

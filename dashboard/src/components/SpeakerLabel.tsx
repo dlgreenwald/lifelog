@@ -13,10 +13,17 @@ export default function SpeakerLabel() {
     });
   }, []);
 
+  const unresolvedSpeakerId = (recording: UnknownSpeaker): string => {
+    const speaker = (recording.speakers ?? []).find(
+      (item) => item.name === 'Unknown' || item.name.startsWith('SPEAKER_'),
+    );
+    return speaker?.name ?? 'Unknown';
+  };
+
   const handleLabel = async () => {
     if (!selectedSegment || !label.trim()) return;
 
-    await api.labelSpeaker(selectedSegment.id, 'Unknown', label);
+    await api.labelSpeaker(selectedSegment.id, unresolvedSpeakerId(selectedSegment), label);
 
     const updated = await api.getUnknownSpeakers();
     setUnknownSegments(updated.recordings);
@@ -38,7 +45,7 @@ export default function SpeakerLabel() {
             <span>{segment.timestamp}</span>
             <span>Unknown Speaker</span>
             <audio
-              src={`/api/v1/dashboard/audio/${segment.audio_filename}`}
+              src={`/api/v1/dashboard/recording/${segment.id}/speaker/${encodeURIComponent(unresolvedSpeakerId(segment))}/audio`}
               controls
             />
           </div>

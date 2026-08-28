@@ -188,4 +188,48 @@ describe('RecordingDetail', () => {
       expect(mockApi.getRecording).toHaveBeenCalledWith('42');
     });
   });
+
+  it('renders active quick transcripts when speaker segments are empty', async () => {
+    mockApi.getActiveRecording.mockResolvedValue({
+      ...mockRecording,
+      id: 'active-1',
+      speakers: [],
+      transcript: { segments: [{ start: 0, end: 2, text: 'Quick transcript text' }] },
+      audio_filename: null,
+    });
+
+    renderDetail('active-1');
+
+    await waitFor(() => {
+      expect(screen.getByText(/Quick transcript text/)).toBeInTheDocument();
+    });
+  });
+
+  it('hides speaker names and Label buttons during live recording', async () => {
+    mockApi.getActiveRecording.mockResolvedValue({
+      ...mockRecording,
+      id: 'active-1',
+      speakers: [],
+      transcript: {
+        segments: [
+          { start: 0, end: 2, speaker: 'SPEAKER_00', text: 'Live transcript text' },
+          { start: 2, end: 4, speaker: 'SPEAKER_01', text: 'More live text' },
+        ],
+      },
+      audio_filename: null,
+    });
+
+    renderDetail('active-1');
+
+    await waitFor(() => {
+      expect(screen.getByText('Live transcript text')).toBeInTheDocument();
+      expect(screen.getByText('More live text')).toBeInTheDocument();
+    });
+
+    // Speaker names suppressed during live recording
+    expect(screen.queryByText(/SPEAKER_00/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/SPEAKER_01/)).not.toBeInTheDocument();
+    // Label button suppressed during live recording
+    expect(screen.queryByRole('button', { name: 'Label' })).not.toBeInTheDocument();
+  });
 });

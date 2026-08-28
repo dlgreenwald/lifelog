@@ -1,7 +1,16 @@
+export interface TranscriptSegment {
+  start?: number;
+  end?: number;
+  text?: string;
+  speaker?: string;
+  name?: string;
+}
+
 export interface Recording {
   id: number | string;
   timestamp: string;
   summary: string | null;
+  transcript?: { segments?: TranscriptSegment[] };
   speakers: Speaker[] | null;
   todos: Todo[] | null;
   is_live?: boolean;

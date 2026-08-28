@@ -25,7 +25,6 @@ services:
       - "8444:8443"
     environment:
 
-      - WHISPER_ASR_URL=${WHISPER_ASR_URL:-http://whisper-asr:9000}
       - SPEAKER_ID_URL=${SPEAKER_ID_URL:-http://speaker-id:8443}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:11434/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-ollama}
@@ -54,25 +53,22 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      whisper-asr:
-        condition: service_healthy
       speaker-id:
         condition: service_started
 
-  # Whisper ASR — transcription + diarization via whisperx
-  # Uses v1.9.1-gpu base (v1.10.0 broke whisperx: lightning/pyannote conflict)
-  whisper-asr:
-    build: ./whisper-asr
+  # Standalone GPU transcription worker — no database access
+  transcription-worker:
+    build: ./transcription-worker
     ports:
-      - "9000:9000"
+      - "9001:9000"
     environment:
+      - SERVER_URL=${TRANSCRIPTION_SERVER_URL:-http://server:8443}
+      - POLL_INTERVAL=${TRANSCRIPTION_WORKER_POLL_INTERVAL:-5}
       - ASR_MODEL=large-v3
-      - ASR_ENGINE=whisperx
       - ASR_DEVICE=cuda
-      - MODEL_IDLE_TIMEOUT=300
-      - PYTHONWARNINGS=ignore::SyntaxWarning
+      - MODEL_CACHE_DIR=/root/.cache/huggingface
+      - HF_TOKEN=${HF_TOKEN}
     volumes:
-      - ./whisper-asr/models:/app/whisper_models
       - ./whisper-asr/hf-cache:/root/.cache/huggingface
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health')"]
@@ -80,6 +76,9 @@ services:
       timeout: 5s
       retries: 10
       start_period: 120s
+    depends_on:
+      server:
+        condition: service_healthy
     deploy:
       resources:
         reservations:
@@ -87,6 +86,7 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
 
   # Speaker identification - No DB access
   speaker-id:

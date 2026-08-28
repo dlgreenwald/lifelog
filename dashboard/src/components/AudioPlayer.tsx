@@ -15,6 +15,12 @@ export default function AudioPlayer({ src, segments, sources }: AudioPlayerProps
 
   // Build the effective list of sources
   const allSources = sources && sources.length > 0 ? sources : src ? [src] : [];
+  const playableSegments = segments.filter((segment) =>
+    Number.isFinite(segment.start) &&
+    Number.isFinite(segment.end) &&
+    segment.start >= 0 &&
+    segment.end > segment.start,
+  );
 
   useEffect(() => {
     // Reset when sources change
@@ -56,11 +62,11 @@ export default function AudioPlayer({ src, segments, sources }: AudioPlayerProps
   };
 
   const getCurrentSpeaker = (): Speaker | undefined => {
-    return segments.find((s) => currentTime >= s.start && currentTime <= s.end);
+    return playableSegments.find((s) => currentTime >= s.start && currentTime <= s.end);
   };
 
   const currentSpeaker = getCurrentSpeaker();
-  const maxEnd = segments.length > 0 ? Math.max(...segments.map((s) => s.end)) : 1;
+  const maxEnd = playableSegments.length > 0 ? Math.max(...playableSegments.map((s) => s.end)) : 1;
 
   if (allSources.length === 0) return null;
 
@@ -81,7 +87,7 @@ export default function AudioPlayer({ src, segments, sources }: AudioPlayerProps
       )}
 
       <div className="timeline">
-        {segments.map((segment, i) => (
+        {playableSegments.map((segment, i) => (
           <div
             key={i}
             className={`segment ${segment.name === 'Unknown' ? 'unknown' : ''}`}

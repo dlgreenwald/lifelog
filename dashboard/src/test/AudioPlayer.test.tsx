@@ -14,6 +14,11 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+const malformedSegments = [
+  { id: 0, name: 'Unknown' } as unknown as Speaker,
+  { id: 1, name: 'Alice', start: 0, end: 1, text: 'Hello' },
+];
+
 describe('AudioPlayer', () => {
   it('renders play button', () => {
     render(<AudioPlayer src="test.opus" segments={mockSegments} />);
@@ -81,5 +86,10 @@ describe('AudioPlayer', () => {
 
     const timeline = container.querySelector('.timeline');
     expect(timeline).toBeEmptyDOMElement();
+  });
+
+  it('ignores segments without valid time bounds', () => {
+    const { container } = render(<AudioPlayer src="test.opus" segments={malformedSegments} />);
+    expect(container.querySelectorAll('.timeline .segment')).toHaveLength(1);
   });
 });
