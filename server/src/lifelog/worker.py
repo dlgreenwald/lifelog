@@ -83,11 +83,10 @@ async def get_user_secret(user_id: int) -> dict | None:
     """Get user's encryption_secret and key_salt for audio encryption."""
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT encryption_secret, key_salt FROM users WHERE id = $1",
+            "SELECT id, encryption_secret, key_salt FROM users WHERE id = $1",
             user_id,
         )
         return dict(row) if row else None
-
 
 async def process_utterance(user_id: int, utterance_id: int):
     """Encrypt audio and assign to a session for later quick transcription."""
@@ -502,9 +501,8 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
         return
 
     updated = []
-    labels: dict[str, str] = {}
     for segment in segments:
-        item = dict(segment)
+        item = dict(segment) if isinstance(segment, dict) else (segment.model_dump() if hasattr(segment, "model_dump") else segment)
         raw = item.get("speaker") or item.get("name") or "Unknown"
         filename = item.get("audio_filename")
         if filename:

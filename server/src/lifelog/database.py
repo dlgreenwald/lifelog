@@ -523,7 +523,7 @@ async def save_decisions(recording_id: int, user_id: int, decisions: list[dict])
                     user_id,
                     recording_id,
                     d["decision"],
-                    d.get("made_by", "Unknown"),
+                    d.get("made_by") or "Unknown",
                     d.get("context"),
                     d.get("reason"),
                 )
