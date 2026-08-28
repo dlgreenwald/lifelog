@@ -1,4 +1,7 @@
 import logging
+import os
+import subprocess
+import tempfile
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -119,6 +122,63 @@ async def get_audio(filename: str, user: dict = Depends(validate_oidc_token)):
         media_type="audio/opus",
         headers={"Content-Disposition": f"inline; filename={filename}"},
     )
+
+def _concatenate_wav(audio_files: list[bytes]) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="speaker-playback-") as directory:
+        paths = []
+        for index, audio in enumerate(audio_files):
+            path = os.path.join(directory, f"segment-{index}.wav")
+            with open(path, "wb") as output:
+                output.write(audio)
+            paths.append(path)
+        list_path = os.path.join(directory, "concat.txt")
+        with open(list_path, "w") as output:
+            for path in paths:
+                output.write(f"file '{path}'\n")
+        process = subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "concat", "-safe", "0", "-i", list_path,
+             "-f", "wav", "pipe:1"], capture_output=True, check=False,
+        )
+        return process.stdout if process.returncode == 0 else b""
+
+
+@router.get("/recording/{recording_id}/speaker/{speaker_label}/audio")
+async def get_speaker_audio(
+    recording_id: int, speaker_label: str, user: dict = Depends(validate_oidc_token)
+):
+    """Stream chronological audio for one owned speaker."""
+    recording = await get_recording(user["id"], recording_id)
+    if not recording:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    speaker_segments = recording.get("speaker_segments") or []
+    if speaker_segments:
+        audio_files = []
+        for segment in sorted(speaker_segments, key=lambda item: item.get("start", 0)):
+            label = segment.get("speaker") or segment.get("name")
+            filename = segment.get("audio_filename")
+            if label != speaker_label or not filename:
+                continue
+            try:
+                audio_files.append(audio_crypto.decrypt_audio(
+                    filename, user["encryption_secret"], bytes(user["key_salt"])
+                ))
+            except Exception:
+                logger.warning("Skipping unavailable speaker playback file %s", filename, exc_info=True)
+        audio = _concatenate_wav(audio_files) if audio_files else b""
+        if not audio:
+            raise HTTPException(status_code=404, detail="Speaker audio not found")
+        return StreamingResponse(iter([audio]), media_type="audio/wav")
+
+    filename = recording.get("audio_filename")
+    if not filename:
+        raise HTTPException(status_code=404, detail="Speaker audio not found")
+    try:
+        audio = audio_crypto.decrypt_audio(
+            filename, user["encryption_secret"], bytes(user["key_salt"])
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Speaker audio not found") from exc
+    return StreamingResponse(iter([audio]), media_type="audio/opus")
 
 
 @router.get("/todos")

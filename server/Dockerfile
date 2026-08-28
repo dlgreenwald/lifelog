@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     ffmpeg \
+    opus-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency files and install deps via stub

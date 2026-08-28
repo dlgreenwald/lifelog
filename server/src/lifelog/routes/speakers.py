@@ -1,4 +1,7 @@
 import logging
+import os
+import subprocess
+import tempfile
 import time
 
 import httpx
@@ -11,11 +14,12 @@ from lifelog.database import (
     get_recording,
     get_unknown_speakers,
     save_voiceprint,
+    update_recording_speaker_data,
     update_recording_speakers,
     update_speaker_name,
 )
 from lifelog.models import SpeakerLabel
-from lifelog.pipeline.speaker_client import identify_speakers
+from lifelog.pipeline.speaker_client import identify_speakers, serialize_embedding
 
 logger = logging.getLogger("lifelog.speakers")
 
@@ -23,14 +27,48 @@ router = APIRouter()
 
 
 def extract_speaker_audio(recording: dict, speaker_id: str) -> bytes:
-    """Extract audio for a specific speaker segment from the recording."""
-    # Decrypt the full audio
-    audio_bytes = audio_crypto.decrypt_audio(
-        recording["audio_filename"],
-        recording["encryption_secret"],
-        bytes(recording["key_salt"]),
-    )
-    return audio_bytes
+    """Decrypt and concatenate matching stored speaker segments.
+
+    Legacy recordings without segment metadata use the full recording audio.
+    """
+    secret = recording["encryption_secret"]
+    salt = bytes(recording["key_salt"])
+    segment_files = []
+    for segment in recording.get("speaker_segments") or []:
+        label = segment.get("speaker") or segment.get("name")
+        if label != speaker_id or not segment.get("audio_filename"):
+            continue
+        try:
+            segment_files.append(audio_crypto.decrypt_audio(segment["audio_filename"], secret, salt))
+        except Exception:
+            logger.warning("Skipping unavailable speaker segment %s", segment.get("audio_filename"), exc_info=True)
+    if segment_files:
+        with tempfile.TemporaryDirectory(prefix="speaker-label-") as directory:
+            paths = []
+            for index, data in enumerate(segment_files):
+                path = os.path.join(directory, f"segment-{index}.wav")
+                with open(path, "wb") as output:
+                    output.write(data)
+                paths.append(path)
+            list_path = os.path.join(directory, "concat.txt")
+            with open(list_path, "w") as output:
+                for path in paths:
+                    output.write(f"file '{path}'\n")
+            process = subprocess.run(
+                ["ffmpeg", "-v", "error", "-f", "concat", "-safe", "0", "-i", list_path,
+                 "-f", "wav", "pipe:1"], capture_output=True, check=False,
+            )
+            if process.returncode == 0 and process.stdout:
+                return process.stdout
+    if recording.get("speaker_segments"):
+        raise ValueError("speaker has no stored audio")
+    filename = recording.get("audio_filename")
+    if not filename:
+        filenames = recording.get("audio_filenames") or []
+        filename = filenames[0] if filenames else None
+    if not filename:
+        raise ValueError("recording has no audio")
+    return audio_crypto.decrypt_audio(filename, secret, salt)
 
 
 @router.post("/label")
@@ -52,8 +90,11 @@ async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_
     # Update speaker name in database
     await update_speaker_name(label.recording_id, label.speaker_id, label.label)
 
-    # Extract audio for this speaker segment
-    segment_audio = extract_speaker_audio(recording, label.speaker_id)
+    # Keep credentials private to this in-memory copy; never return them to the dashboard.
+    recording_for_audio = dict(recording)
+    recording_for_audio["encryption_secret"] = user["encryption_secret"]
+    recording_for_audio["key_salt"] = user.get("key_salt", recording.get("key_salt", b""))
+    segment_audio = extract_speaker_audio(recording_for_audio, label.speaker_id)
     logger.info("Enrolling voiceprint for '%s' (%d bytes audio)", label.label, len(segment_audio))
 
     async with httpx.AsyncClient(timeout=300) as client:
@@ -66,7 +107,7 @@ async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_
         embedding = response.json()["embedding"]
 
     # Save voiceprint to database (orchestrator owns DB)
-    await save_voiceprint(user["id"], label.label, bytes(embedding))
+    await save_voiceprint(user["id"], label.label, serialize_embedding(embedding))
     logger.info("Voiceprint saved for '%s'", label.label)
 
     # Re-run identification on all recordings with unknowns
@@ -85,18 +126,42 @@ async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_
 
 
 async def rerun_identification(user: dict):
-    """Re-run speaker identification on all recordings with unknowns."""
+    """Re-run identification on unresolved recordings and segment audio."""
     recordings = await get_unknown_speakers(user["id"])
     logger.info("Re-identifying speakers on %d recordings", len(recordings))
-
-    for i, recording in enumerate(recordings):
-        audio_bytes = audio_crypto.decrypt_audio(
-            recording["audio_filename"],
-            user["encryption_secret"],
-            bytes(user["key_salt"]),
-        )
-        speakers = recording["speakers"]
-
-        identified = await identify_speakers(speakers, audio_bytes, user["id"])
-        await update_recording_speakers(recording["id"], identified)
-        logger.debug("Re-identified recording %d/%d (id=%d)", i + 1, len(recordings), recording["id"])
+    for index, recording in enumerate(recordings):
+        segments = recording.get("speaker_segments") or []
+        if not segments:
+            audio_bytes = audio_crypto.decrypt_audio(
+                recording["audio_filename"], user["encryption_secret"], bytes(user["key_salt"])
+            )
+            identified = await identify_speakers(recording["speakers"], audio_bytes, user["id"])
+            await update_recording_speakers(recording["id"], identified)
+        else:
+            updated_segments = []
+            for segment in segments:
+                item = dict(segment)
+                raw = item.get("speaker") or item.get("name") or "Unknown"
+                if item.get("audio_filename"):
+                    try:
+                        audio = audio_crypto.decrypt_audio(
+                            item["audio_filename"], user["encryption_secret"], bytes(user["key_salt"])
+                        )
+                        identified = await identify_speakers(
+                            [{"speaker": raw, "start": 0, "end": 1}],
+                            audio, user["id"], audio_format="wav",
+                        )
+                        item["speaker"] = identified[0].get("name", raw) if identified else raw
+                    except Exception:
+                        logger.warning("Unable to re-identify segment for '%s'", raw, exc_info=True)
+                updated_segments.append(item)
+            await update_recording_speaker_data(
+                recording["id"],
+                [
+                    {"id": index, "name": segment["speaker"], "start": segment.get("start", 0),
+                     "end": segment.get("end", 0), "text": segment.get("text", "")}
+                    for index, segment in enumerate(updated_segments)
+                ],
+                updated_segments,
+            )
+        logger.debug("Re-identified recording %d/%d (id=%d)", index + 1, len(recordings), recording["id"])

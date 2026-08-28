@@ -1,11 +1,48 @@
 import logging
 import time
 
+
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, UploadFile
 
 from lifelog import database
 from lifelog.auth import validate_bearer_token
 from lifelog.database import save_utterance_chunk
+
+
+def _opus_sample_rate(audio_bytes: bytes) -> int | None:
+    """Extract the original sample rate from an OGG/Opus file using opusinfo.
+
+    Parses opusinfo output for "Original sample rate: XXXX Hz".
+    Falls back to None if opusinfo is unavailable or parsing fails.
+    """
+    if len(audio_bytes) < 100:
+        return None
+    import subprocess, tempfile, os, re
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".opus", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        try:
+            result = subprocess.run(
+                ["opusinfo", tmp_path],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            output = result.stdout + result.stderr
+            match = re.search(r"Original sample rate:\s*(\d+)\s*Hz", output)
+            if match:
+                return int(match.group(1))
+        finally:
+            os.unlink(tmp_path)
+    except Exception:
+        pass
+    return None
+
+
+logger = logging.getLogger("lifelog.upload")
+
+router = APIRouter()
 
 
 async def validate_upload_auth(
@@ -17,9 +54,7 @@ async def validate_upload_auth(
     token = authorization[7:]
     return await validate_bearer_token(token)
 
-logger = logging.getLogger("lifelog.upload")
 
-router = APIRouter()
 
 # Maximum chunk size: 10 MB
 MAX_CHUNK_SIZE = 10 * 1024 * 1024
@@ -147,6 +182,13 @@ async def upload_audio(
     )
 
     if is_final:
+        rate = _opus_sample_rate(audio_bytes)
+        logger.info(
+            "Upload final: user=%d, device_utt=%d, server_utt=%d, "
+            "size=%d bytes, sample_rate=%s",
+            user_id, utterance_id, server_utt_id,
+            len(audio_bytes), rate,
+        )
         await _finalize_utterance(user_id, server_utt_id)
         user_utterances.pop(device_utt, None)
         return {"status": "enqueued", "utterance_id": server_utt_id}

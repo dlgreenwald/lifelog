@@ -2,8 +2,6 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Whisper ASR (transcription + diarization)
-    whisper_asr_url: str = "http://localhost:9000"
 
     # Speaker ID Service
     speaker_id_url: str = "http://localhost:8443"
@@ -45,9 +43,11 @@ class Settings(BaseSettings):
     garbled_segment_ratio: float = 0.4
     hourly_reprocess_interval_minutes: int = 1
 
-    # Live transcription sliding window
-    live_transcribe_window_seconds: int = 300  # 5-minute window
-    live_transcribe_overlap_seconds: int = 60  # 1-minute overlap
+    # Async transcription worker compatibility and polling
+    encryption_secret: str = ""
+    verify_audio_writes: bool = False
+    reprocess_chunk_minutes: int = 10
+    transcription_worker_poll_interval: int = 5
 
     class Config:
         env_file = ".env"

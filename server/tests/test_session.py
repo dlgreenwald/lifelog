@@ -402,77 +402,114 @@ class TestSessionCRUD:
 
 class TestHourlyReprocessing:
     @pytest.mark.asyncio
-    async def test_reprocess_session_creates_recording(self, mock_conn):
-        """Hourly reprocess creates a recording for an ended session."""
+    async def test_reprocess_session_queues_full_jobs(self):
+        """Ended sessions enqueue missing full jobs without inline inference."""
         from lifelog.worker import _reprocess_session
 
-        # Mock get_session_all_utterances — deferred transcription model
-        utterances = [
-            {
-                "utterance_id": 1,
-                "audio_filename": "utt1.opus",
-                "transcript": {},
-                "named_segments": [],
-                "created_at": datetime(2025, 1, 1, 10, 0, 0),
-            }
-        ]
-
-        fake_window_result = {
-            "all_named_segments": [
-                {"id": 0, "name": "Alice", "start": 0.0, "end": 5.0, "text": "hello world"},
-            ],
-            "full_transcript": {
-                "segments": [{"start": 0.0, "end": 5.0, "text": "hello world", "speaker": "Alice"}],
-            },
-            "speaker_map": {"SPEAKER_00": "Alice"},
-        }
-
-        fake_llm_result = {
-            "summary": "Test summary",
-            "todos": [],
-            "calendar": [],
-            "notes": [],
-        }
-
-        with (
-            patch("lifelog.worker.db") as mock_db,
-            patch("lifelog.worker.transcribe_window", new_callable=AsyncMock, return_value=fake_window_result),
-            patch("lifelog.worker.summarize", return_value=fake_llm_result),
-        ):
+        utterances = [{
+            "utterance_id": 1,
+            "audio_filename": "utt1.opus",
+            "transcript": {},
+            "named_segments": [],
+            "created_at": datetime(2025, 1, 1, 10, 0, 0),
+        }]
+        with patch("lifelog.worker.db") as mock_db:
             mock_db.get_session_all_utterances = AsyncMock(return_value=utterances)
-            mock_db.get_recording_audio_filenames = AsyncMock(return_value=["utt1.opus"])
-            mock_db.get_recording = AsyncMock(return_value=None)  # first processing
-            mock_db.save_session_recording = AsyncMock(return_value=99)
-            mock_db.save_todos = AsyncMock()
-            mock_db.mark_session_processed = AsyncMock()
+            mock_db.get_transcription_jobs = AsyncMock(return_value=[])
+            mock_db.create_transcription_job = AsyncMock()
+            await _reprocess_session({
+                "id": 1, "user_id": 1, "started_at": datetime(2025, 1, 1, 10, 0, 0)
+            })
 
-            session = {"id": 1, "user_id": 1, "started_at": datetime(2025, 1, 1, 10, 0, 0)}
-            await _reprocess_session(session)
-
-            mock_db.save_session_recording.assert_called_once()
-            # No todos in llm_result, so save_todos should not be called
-            mock_db.save_todos.assert_not_called()
-            mock_db.mark_session_processed.assert_called_once_with(1)
+        mock_db.create_transcription_job.assert_awaited_once_with(
+            1, datetime(2025, 1, 1, 10, 0, 0), datetime(2025, 1, 1, 10, 0, 1), 0
+        )
 
     @pytest.mark.asyncio
-    async def test_reprocess_session_no_utterances(self, mock_conn):
-        """Hourly reprocess marks session processed when it has no utterances."""
+    async def test_reprocess_session_no_utterances(self):
+        """Hourly reprocess marks an empty session processed."""
         from lifelog.worker import _reprocess_session
 
-        with (
-            patch("lifelog.worker.db") as mock_db,
-        ):
+        with patch("lifelog.worker.db") as mock_db:
             mock_db.get_session_all_utterances = AsyncMock(return_value=[])
             mock_db.mark_session_processed = AsyncMock()
-
-            session = {"id": 1, "user_id": 1}
-            await _reprocess_session(session)
-
-            # Should mark as processed to avoid infinite reprocessing
+            await _reprocess_session({"id": 1, "user_id": 1})
             mock_db.mark_session_processed.assert_awaited_once_with(1)
-            # Should not attempt to save
-            mock_db.save_session_recording.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_process_utterance_queues_quick_job(self):
+        from lifelog.worker import process_utterance
+
+        timestamp = datetime(2025, 1, 1, 10)
+        with (
+            patch("lifelog.worker.get_utterance_chunks", new_callable=AsyncMock, return_value=[{"audio_bytes": b"opus"}]),
+            patch("lifelog.worker.get_user_secret", new_callable=AsyncMock, return_value={"encryption_secret": "s", "key_salt": b"salt"}),
+            patch("lifelog.worker.audio_crypto.encrypt_audio", return_value="audio.enc"),
+            patch("lifelog.worker.delete_utterance_chunks", new_callable=AsyncMock),
+            patch("lifelog.worker.complete_utterance", new_callable=AsyncMock),
+            patch("lifelog.worker.db") as mock_db,
+        ):
+            mock_db.get_utterance_queue_entry = AsyncMock(return_value={"created_at": timestamp})
+            mock_db.get_active_session = AsyncMock(return_value=None)
+            mock_db.create_session = AsyncMock(return_value=7)
+            mock_db.append_session_utterance = AsyncMock()
+            await process_utterance(1, 9)
+        mock_db.append_session_utterance.assert_awaited_once()
+        mock_db.create_session.assert_awaited_once_with(1, timestamp)
+
+    @pytest.mark.asyncio
+    async def test_apply_quick_transcript_updates_utterance(self):
+        from lifelog.worker import _apply_quick_transcripts
+
+        with patch("lifelog.worker.db") as mock_db:
+            mock_db.get_completed_quick_jobs = AsyncMock(return_value=[
+                {"id": 4, "session_id": 1, "chunk_index": 9, "result": {"segments": [{"text": "hello"}]}}
+            ])
+            mock_db.update_session_utterance_transcript = AsyncMock()
+            mock_db.mark_quick_job_applied = AsyncMock()
+            await _apply_quick_transcripts()
+        mock_db.update_session_utterance_transcript.assert_awaited_once_with(
+            1, 9, {"segments": [{"text": "hello"}]}
+        )
+        mock_db.mark_quick_job_applied.assert_awaited_once_with(4)
+
+    @pytest.mark.asyncio
+    async def test_finalize_completed_session_persists_encrypted_segments(self):
+        from lifelog.worker import _finalize_completed_sessions
+
+        session = {"id": 1, "user_id": 2, "started_at": datetime(2025, 1, 1, 10)}
+        jobs = [{
+            "id": 4,
+            "chunk_index": 0,
+            "window_start": datetime(2025, 1, 1, 10),
+            "status": "done",
+            "job_type": "full",
+            "result": {
+                "segments": [{"start": 0, "end": 1, "text": "hello", "speaker": "SPEAKER_00"}],
+                "speaker_map": {},
+                "speaker_segments": [{"speaker": "SPEAKER_00", "start": 0, "end": 1, "text": "hello", "audio": "YQ=="}],
+            },
+        }]
+        with (
+            patch("lifelog.worker.db") as mock_db,
+            patch("lifelog.worker.get_user_secret", new_callable=AsyncMock, return_value={"encryption_secret": "s", "key_salt": b"salt"}),
+            patch("lifelog.worker.audio_crypto.encrypt_audio", return_value="segment.enc"),
+            patch("lifelog.worker.summarize", return_value={"summary": "s", "todos": [], "calendar": [], "notes": []}),
+            patch("lifelog.worker._auto_enroll_speakers", new_callable=AsyncMock),
+            patch("lifelog.worker._daily_reprocess_user", new_callable=AsyncMock),
+        ):
+            mock_db.get_sessions_for_reprocessing = AsyncMock(return_value=[session])
+            mock_db.get_transcription_jobs = AsyncMock(return_value=jobs)
+            mock_db.get_recording_audio_filenames = AsyncMock(return_value=["full.enc"])
+            mock_db.get_recording = AsyncMock(return_value=None)
+            mock_db.save_session_recording = AsyncMock(return_value=99)
+            mock_db.mark_session_processed = AsyncMock()
+            mock_db.get_unknown_speakers = AsyncMock(return_value=[])
+            await _finalize_completed_sessions()
+        saved = mock_db.save_session_recording.call_args.kwargs["speaker_segments"]
+        assert saved == [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "hello", "audio_filename": "segment.enc"}]
+        assert "audio" not in saved[0]
+        mock_db.mark_session_processed.assert_awaited_once_with(1)
 
 class TestDailyReprocessing:
     @pytest.mark.asyncio

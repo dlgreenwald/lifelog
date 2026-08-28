@@ -405,3 +405,54 @@ async def test_update_recording_speakers(mock_conn):
 
     sql = mock_conn.execute.call_args.args[0]
     assert "UPDATE recordings" in sql
+
+
+@pytest.mark.asyncio
+async def test_create_transcription_job(mock_conn):
+    from lifelog.database import create_transcription_job
+
+    mock_conn.fetchrow.return_value = {"id": 7}
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await create_transcription_job(
+            2, datetime(2025, 1, 1, 10), datetime(2025, 1, 1, 10, 10), 0
+        )
+    assert result == 7
+    assert "INSERT INTO transcription_jobs" in mock_conn.fetchrow.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_claim_transcription_job_updates_processing(mock_conn):
+    from lifelog.database import claim_transcription_job
+
+    mock_conn.fetchrow.return_value = {
+        "id": 8, "session_id": 2, "window_start": datetime(2025, 1, 1, 10),
+        "window_end": datetime(2025, 1, 1, 10, 10), "chunk_index": 0,
+        "status": "pending", "job_type": "full", "result": {},
+    }
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await claim_transcription_job()
+    assert result["status"] == "processing"
+    assert result["id"] == 8
+    assert "status = 'processing'" in mock_conn.execute.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_transcription_job_failure_is_retried(mock_conn):
+    from lifelog.database import fail_transcription_job
+
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        await fail_transcription_job(8, "cuda error")
+    sql = mock_conn.execute.call_args.args[0]
+    assert "failed_count = failed_count + 1" in sql
+    assert "status = CASE" in sql
+
+
+@pytest.mark.asyncio
+async def test_completed_quick_jobs_are_unapplied(mock_conn):
+    from lifelog.database import get_completed_quick_jobs
+
+    mock_conn.fetch.return_value = [{"id": 3, "session_id": 2, "result": {"segments": []}}]
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_completed_quick_jobs()
+    assert result[0]["id"] == 3
+    assert "job_type = 'quick'" in mock_conn.fetch.call_args.args[0]

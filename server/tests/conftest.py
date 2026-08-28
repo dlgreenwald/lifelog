@@ -35,7 +35,6 @@ def mock_pool():
 def mock_settings():
     """Return a mock settings object with test values."""
     return MagicMock(
-        whisper_asr_url="http://localhost:9000",
         speaker_id_url="http://localhost:8443",
         openai_base_url="http://localhost:11434/v1",
         openai_api_key="ollama",

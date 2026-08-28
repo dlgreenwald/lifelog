@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -15,8 +16,8 @@ pool: asyncpg.Pool = None
 
 
 async def _init_connection(conn):
-    """Register JSONB codec so asyncpg returns parsed Python objects, not strings."""
-    await conn.set_type_codec('jsonb', encoder=__import__('json').dumps, decoder=__import__('json').loads, schema='pg_catalog')
+    await conn.set_type_codec("json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+    await conn.set_type_codec("jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
 
 
 async def init_pool():
@@ -303,15 +304,15 @@ async def get_active_session_recording(user_id: int) -> dict | None:
 
 
 async def get_unknown_speakers(user_id: int) -> list[dict]:
-    """Get all recordings with unknown speakers for labeling."""
+    """Get recordings containing unresolved raw or Unknown speaker labels."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, timestamp, speakers, audio_filename
+            SELECT id, timestamp, speakers, audio_filename, speaker_segments
             FROM recordings
             WHERE user_id = $1
-            AND speakers::text LIKE '%Unknown%'
-        """,
+              AND (speakers::text LIKE '%Unknown%' OR speakers::text LIKE '%SPEAKER_%')
+            """,
             user_id,
         )
         return [dict(row) for row in rows]
@@ -639,6 +640,21 @@ async def update_recording_speakers(recording_id: int, speakers: list):
             speakers,
             recording_id,
         )
+async def update_recording_speaker_data(
+    recording_id: int, speakers: list, speaker_segments: list
+) -> None:
+    """Update speaker labels and encrypted segment metadata together."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE recordings
+            SET speakers = $2, speaker_segments = $3::jsonb
+            WHERE id = $1
+            """,
+            recording_id,
+            speakers,
+            speaker_segments,
+        )
 
 
 async def update_recording_category(recording_id: int, category: str):
@@ -920,6 +936,262 @@ async def get_utterance_queue_entry(user_id: int, utterance_id: int) -> dict | N
             utterance_id,
         )
         return dict(row) if row else None
+async def create_transcription_job(
+    session_id: int,
+    window_start: datetime,
+    window_end: datetime,
+    chunk_index: int,
+) -> int:
+    """Queue one full transcription job for a session window."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO transcription_jobs
+                (session_id, window_start, window_end, chunk_index, status, stage, job_type)
+            VALUES ($1, $2, $3, $4, 'pending', 'queued', 'full')
+            RETURNING id
+            """,
+            session_id,
+            window_start.replace(tzinfo=None),
+            window_end.replace(tzinfo=None),
+            chunk_index,
+        )
+        return row["id"]
+
+
+async def create_quick_transcription_job(
+    session_id: int,
+    audio_filename: str,
+    utterance_id: int,
+    created_at: datetime,
+) -> int:
+    """Queue an ASR-only job for one newly stored session utterance."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO transcription_jobs
+                (session_id, window_start, window_end, chunk_index, status, stage,
+                 job_type, result)
+            VALUES ($1, $4, $4, $3, 'pending', 'queued', 'quick', $2::jsonb)
+            RETURNING id
+            """,
+            session_id,
+            {"audio_filename": audio_filename, "utterance_id": utterance_id},
+            utterance_id,
+            created_at.replace(tzinfo=None),
+        )
+        return row["id"]
+
+
+async def create_session_quick_job(
+    session_id: int,
+    utterance_ids: list[int],
+    window_start: datetime,
+    window_end: datetime,
+) -> int:
+    """Create one quick job covering all given utterances in a session (sliding window batch)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO transcription_jobs
+                (session_id, window_start, window_end, chunk_index, status, stage,
+                 job_type, result)
+            VALUES ($1, $2, $3, $1, 'pending', 'queued', 'quick',
+                    jsonb_build_object('session_id', $1, 'utterance_ids', $4::jsonb))
+            RETURNING id
+            """,
+            session_id,
+            window_start.replace(tzinfo=None),
+            window_end.replace(tzinfo=None),
+            utterance_ids,
+        )
+        return row["id"]
+
+
+async def get_pending_session_quick_job(session_id: int) -> dict | None:
+    """Return a pending quick job for the session, if one exists."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, session_id, window_start, window_end, chunk_index,
+                   status, stage, job_type, result, created_at
+            FROM transcription_jobs
+            WHERE session_id = $1 AND job_type = 'quick' AND status = 'pending'
+            LIMIT 1
+            """,
+            session_id,
+        )
+        return dict(row) if row else None
+
+
+
+async def get_session_user_id(session_id: int) -> int | None:
+    """Get the user_id for a session."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT user_id FROM sessions WHERE id = $1",
+            session_id,
+        )
+        return row["user_id"] if row else None
+
+async def get_transcription_jobs(session_id: int) -> list[dict]:
+    """Return all transcription jobs for a session in chunk order."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, session_id, window_start, window_end, chunk_index,
+                   status, stage, job_type, result, error, failed_count,
+                   created_at, started_at, completed_at
+            FROM transcription_jobs
+            WHERE session_id = $1
+            ORDER BY chunk_index NULLS LAST, id
+            """,
+            session_id,
+        )
+        return [dict(row) for row in rows]
+
+
+async def claim_transcription_job() -> dict | None:
+    """Atomically claim one pending transcription job."""
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            """
+            SELECT id, session_id, window_start, window_end, chunk_index,
+                   status, stage, job_type, result, error, failed_count,
+                   created_at, started_at, completed_at
+            FROM transcription_jobs
+            WHERE status = 'pending'
+            ORDER BY created_at, id
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+            """
+        )
+        if not row:
+            return None
+        await conn.execute(
+            "UPDATE transcription_jobs SET status = 'processing', started_at = NOW() WHERE id = $1",
+            row["id"],
+        )
+        claimed = dict(row)
+        claimed["status"] = "processing"
+        return claimed
+
+
+async def get_transcription_job(job_id: int) -> dict | None:
+    """Fetch one transcription job."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, session_id, window_start, window_end, chunk_index,
+                   status, stage, job_type, result, error, failed_count,
+                   created_at, started_at, completed_at
+            FROM transcription_jobs WHERE id = $1
+            """,
+            job_id,
+        )
+        return dict(row) if row else None
+
+
+async def update_job_stage(job_id: int, stage: str) -> None:
+    """Persist worker progress for a claimed job."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE transcription_jobs SET stage = $2 WHERE id = $1",
+            job_id,
+            stage,
+        )
+
+
+async def complete_transcription_job(job_id: int, result: dict) -> None:
+    """Persist a completed transcription result."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE transcription_jobs
+            SET result = $2::jsonb, status = 'done', stage = 'done', completed_at = NOW()
+            WHERE id = $1
+            """,
+            job_id,
+            result,
+        )
+
+
+async def fail_transcription_job(job_id: int, error: str) -> None:
+    """Retry a failed job at most twice; leave the third failure terminal."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE transcription_jobs
+            SET failed_count = failed_count + 1,
+                error = $2,
+                status = CASE WHEN failed_count + 1 >= 3 THEN 'failed' ELSE 'pending' END,
+                stage = CASE WHEN failed_count + 1 >= 3 THEN 'failed' ELSE 'queued' END,
+                completed_at = CASE WHEN failed_count + 1 >= 3 THEN NOW() ELSE NULL END
+            WHERE id = $1
+            """,
+            job_id,
+            error,
+        )
+
+
+async def get_completed_quick_jobs() -> list[dict]:
+    """Return completed quick jobs whose result is not yet applied."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, session_id, chunk_index, result, completed_at
+            FROM transcription_jobs
+            WHERE job_type = 'quick' AND status = 'done'
+              AND COALESCE((result->>'applied')::boolean, false) = false
+            ORDER BY completed_at, id
+            """
+        )
+        return [dict(row) for row in rows]
+
+
+async def mark_quick_job_applied(job_id: int) -> None:
+    """Mark one completed quick result as consumed."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE transcription_jobs
+            SET result = jsonb_set(COALESCE(result, '{}'::jsonb), '{applied}', 'true'::jsonb)
+            WHERE id = $1 AND job_type = 'quick' AND status = 'done'
+            """,
+            job_id,
+        )
+
+
+async def update_session_utterance_transcript(
+    session_id: int, utterance_id: int, transcript: dict
+) -> None:
+    """Update only the transcript JSON for one session utterance."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE session_utterances SET transcript = $3::jsonb
+            WHERE session_id = $1 AND utterance_id = $2
+            """,
+            session_id,
+            utterance_id,
+            transcript,
+        )
+
+
+async def get_speaker_segments_for_recording(recording_id: int) -> list[dict]:
+    """Return persisted speaker segments, tolerating legacy null values."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT speaker_segments FROM recordings WHERE id = $1",
+            recording_id,
+        )
+        if not row:
+            return []
+        segments = row.get("speaker_segments")
+        if isinstance(segments, str):
+            import json
+            segments = json.loads(segments)
+        return segments if isinstance(segments, list) else []
 
 
 async def save_session_recording(
@@ -931,18 +1203,14 @@ async def save_session_recording(
     audio_filename: str,
     session_timestamp: datetime | None = None,
     category: str | None = None,
+    speaker_segments: list | None = None,
 ) -> int:
-    """Create or update a recording linked to a session (UPSERT on session_id).
-
-    If session_timestamp is provided, it's used as the recording's timestamp
-    instead of NOW(). This preserves the original session start time.
-    """
+    """Create or update a recording linked to a session."""
     ts = session_timestamp.replace(tzinfo=None) if session_timestamp else None
+    stored_segments = speaker_segments or []
     async with pool.acquire() as conn:
-        # Check if recording already exists for this session
         existing = await conn.fetchrow(
-            "SELECT id FROM recordings WHERE session_id = $1",
-            session_id,
+            "SELECT id FROM recordings WHERE session_id = $1", session_id
         )
         if existing:
             if ts is not None:
@@ -951,20 +1219,14 @@ async def save_session_recording(
                     UPDATE recordings
                     SET transcript = $1, speakers = $2, summary = $3, todos = $4,
                         calendar = $5, notes = $6, conversation_changes = $7,
-                        audio_filename = $8, timestamp = $9, category = $10
-                    WHERE id = $11
+                        audio_filename = $8, speaker_segments = $9::json, timestamp = $10,
+                        category = $11
+                    WHERE id = $12
                     """,
-                    transcript,
-                    speakers,
-                    result["summary"],
-                    result["todos"],
-                    result["calendar"],
-                    result["notes"],
-                    result.get("conversation_changes", []),
-                    audio_filename,
-                    ts,
-                    category,
-                    existing["id"],
+                    transcript, speakers, result["summary"], result["todos"],
+                    result["calendar"], result["notes"],
+                    result.get("conversation_changes", []), audio_filename,
+                    stored_segments, ts, category, existing["id"],
                 )
             else:
                 await conn.execute(
@@ -972,68 +1234,48 @@ async def save_session_recording(
                     UPDATE recordings
                     SET transcript = $1, speakers = $2, summary = $3, todos = $4,
                         calendar = $5, notes = $6, conversation_changes = $7,
-                        audio_filename = $8, timestamp = NOW(), category = $9
-                    WHERE id = $10
+                        audio_filename = $8, speaker_segments = $9::json,
+                        timestamp = NOW(), category = $10
+                    WHERE id = $11
                     """,
-                    transcript,
-                    speakers,
-                    result["summary"],
-                    result["todos"],
-                    result["calendar"],
-                    result["notes"],
-                    result.get("conversation_changes", []),
-                    audio_filename,
-                    category,
-                    existing["id"],
+                    transcript, speakers, result["summary"], result["todos"],
+                    result["calendar"], result["notes"],
+                    result.get("conversation_changes", []), audio_filename,
+                    stored_segments, category, existing["id"],
                 )
             return existing["id"]
+
+        if ts is not None:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO recordings
+                    (user_id, session_id, timestamp, transcript, speakers,
+                     summary, todos, calendar, notes, conversation_changes,
+                     audio_filename, speaker_segments, category)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13)
+                RETURNING id
+                """,
+                user_id, session_id, ts, transcript, speakers, result["summary"],
+                result["todos"], result["calendar"], result["notes"],
+                result.get("conversation_changes", []), audio_filename,
+                stored_segments, category,
+            )
         else:
-            if ts is not None:
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO recordings
-                        (user_id, session_id, timestamp, transcript, speakers,
-                         summary, todos, calendar, notes, conversation_changes,
-                         audio_filename, category)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                    RETURNING id
-                    """,
-                    user_id,
-                    session_id,
-                    ts,
-                    transcript,
-                    speakers,
-                    result["summary"],
-                    result["todos"],
-                    result["calendar"],
-                    result["notes"],
-                    result.get("conversation_changes", []),
-                    audio_filename,
-                    category,
-                )
-            else:
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO recordings
-                        (user_id, session_id, timestamp, transcript, speakers,
-                         summary, todos, calendar, notes, conversation_changes,
-                         audio_filename, category)
-                    VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                    RETURNING id
-                    """,
-                    user_id,
-                    session_id,
-                    transcript,
-                    speakers,
-                    result["summary"],
-                    result["todos"],
-                    result["calendar"],
-                    result["notes"],
-                    result.get("conversation_changes", []),
-                    audio_filename,
-                    category,
-                )
-            return row["id"]
+            row = await conn.fetchrow(
+                """
+                INSERT INTO recordings
+                    (user_id, session_id, timestamp, transcript, speakers,
+                     summary, todos, calendar, notes, conversation_changes,
+                     audio_filename, speaker_segments, category)
+                VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11::json, $12)
+                RETURNING id
+                """,
+                user_id, session_id, transcript, speakers, result["summary"],
+                result["todos"], result["calendar"], result["notes"],
+                result.get("conversation_changes", []), audio_filename,
+                stored_segments, category,
+            )
+        return row["id"]
 
 
 async def get_sessions_for_reprocessing(user_id: int | None = None) -> list[dict]:

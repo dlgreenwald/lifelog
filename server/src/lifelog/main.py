@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import logging.config
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,7 +14,7 @@ from slowapi.errors import RateLimitExceeded
 from lifelog.config import settings
 from lifelog.database import init_pool
 from lifelog.rate_limit import limiter
-from lifelog.routes import dashboard, speakers, upload
+from lifelog.routes import dashboard, speakers, transcription, upload
 from lifelog.worker import hourly_reprocess_loop, worker_loop
 
 logger = logging.getLogger("lifelog")
@@ -41,8 +42,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting LifeLog server")
     logger.info(
-        "Config: whisper_asr=%s, speaker_id=%s, llm=%s/%s",
-        settings.whisper_asr_url,
+        "Config: speaker_id=%s, llm=%s/%s",
         settings.speaker_id_url,
         settings.openai_base_url,
         settings.openai_model,
@@ -61,6 +61,14 @@ async def lifespan(app: FastAPI):
         logger.exception("Failed to start hourly reprocess loop")
 
     yield
+
+    for task in (_worker_task, _hourly_task):
+        if task is not None:
+            task.cancel()
+    await asyncio.gather(
+        *[task for task in (_worker_task, _hourly_task) if task is not None],
+        return_exceptions=True,
+    )
 
 
 app = FastAPI(title="LifeLog", lifespan=lifespan)
@@ -105,4 +113,5 @@ app.add_middleware(
 app.include_router(upload.router, prefix="/api/v1", tags=["upload"])
 app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["dashboard"])
 app.include_router(speakers.router, prefix="/api/v1/speakers", tags=["speakers"])
+app.include_router(transcription.router, prefix="/internal/transcription", tags=["transcription"])
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

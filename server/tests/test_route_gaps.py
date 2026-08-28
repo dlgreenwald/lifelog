@@ -132,3 +132,44 @@ async def test_rerun_identification_no_unknowns():
     mock_crypto.decrypt_audio.assert_not_called()
     mock_identify.assert_not_awaited()
     mock_update.assert_not_awaited()
+
+
+def test_speaker_audio_legacy_fallback():
+    recording = {"id": 10, "audio_filename": "legacy.enc", "speaker_segments": []}
+    app = _app_with_mocks({"id": 1, "encryption_secret": "sec", "key_salt": b"salt"})
+    with (
+        patch("lifelog.routes.dashboard.get_recording", new_callable=AsyncMock, return_value=recording),
+        patch("lifelog.routes.dashboard.audio_crypto.decrypt_audio", return_value=b"opus"),
+    ):
+        response = TestClient(app).get("/recording/10/speaker/Unknown/audio")
+    assert response.status_code == 200
+    assert response.content == b"opus"
+    assert response.headers["content-type"] == "audio/opus"
+
+
+def test_speaker_audio_rejects_other_users_recording():
+    app = _app_with_mocks({"id": 1, "encryption_secret": "sec", "key_salt": b"salt"})
+    with patch("lifelog.routes.dashboard.get_recording", new_callable=AsyncMock, return_value=None):
+        response = TestClient(app).get("/recording/10/speaker/Alice/audio")
+    assert response.status_code == 404
+
+
+def test_speaker_audio_uses_owned_matching_segments():
+    recording = {
+        "id": 10,
+        "speaker_segments": [
+            {"speaker": "Alice", "start": 2, "audio_filename": "late.enc"},
+            {"speaker": "Alice", "start": 1, "audio_filename": "early.enc"},
+        ],
+    }
+    app = _app_with_mocks({"id": 1, "encryption_secret": "sec", "key_salt": b"salt"})
+    with (
+        patch("lifelog.routes.dashboard.get_recording", new_callable=AsyncMock, return_value=recording),
+        patch("lifelog.routes.dashboard.audio_crypto.decrypt_audio", side_effect=[b"early", b"late"]) as decrypt,
+        patch("lifelog.routes.dashboard._concatenate_wav", return_value=b"RIFF") as concat,
+    ):
+        response = TestClient(app).get("/recording/10/speaker/Alice/audio")
+    assert response.status_code == 200
+    assert response.content == b"RIFF"
+    assert [call.args[0] for call in decrypt.call_args_list] == ["early.enc", "late.enc"]
+    concat.assert_called_once_with([b"early", b"late"])
