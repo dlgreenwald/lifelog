@@ -212,8 +212,7 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
         if result.get("session_id"):
             audio_range_start = result.get("audio_range_start")
             audio_range_end = result.get("audio_range_end")
-            partition_index = result.get("partition_index", 0)
-            if partition_index > 0 and audio_range_start and audio_range_end:
+            if audio_range_start and audio_range_end:
                 # Partition recording: only include audio files within this partition's time range
                 audio_rows = await conn.fetch(
                     """
