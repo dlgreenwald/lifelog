@@ -42,7 +42,7 @@ LifeLog is designed so that **your voice data never touches the outside internet
 |-------|------------|
 | **At rest** | Audio files encrypted with per-user Fernet keys (PBKDF2-derived). Even if someone accesses the disk, they cannot read your recordings |
 | **In transit** | HTTPS with mutual TLS between all services. No plaintext on the wire |
-| **Database** | PostgreSQL with SSL connections. Only the orchestrator has direct access — GPU services are stateless and hold no data |
+| **Database** | PostgreSQL with SSL connections. Only the orchestrator has direct DB access — GPU services have no DB credentials and receive audio/transcripts via HTTP request bodies, not DB queries |
 | **LLM** | Runs locally on your hardware via Ollama/llama.cpp. No audio or transcripts are sent to OpenAI, Anthropic, or any cloud provider |
 | **STT & Diarization** | WhisperX runs on your own GPU machines. No audio leaves your network |
 | **Dashboard** | OIDC authentication against your own identity provider. No third-party analytics or tracking |
