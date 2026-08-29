@@ -42,13 +42,14 @@ LifeLog is designed so that **your voice data never touches the outside internet
 |-------|------------|
 | **At rest** | Audio files encrypted with per-user Fernet keys (PBKDF2-derived). Even if someone accesses the disk, they cannot read your recordings |
 | **In transit** | HTTPS with mutual TLS between all services. No plaintext on the wire |
-| **Database** | PostgreSQL with SSL connections. Only the orchestrator has direct DB access — GPU services have no DB credentials and receive audio/transcripts via HTTP request bodies, not DB queries |
+| **Database** | PostgreSQL with SSL connections. Only the orchestrator has direct DB access — GPU services have no DB credentials and receive audio/transcripts via HTTP request bodies, not DB queries. **Note**: PostgreSQL data files are not encrypted at rest. For full protection, enable whole-disk encryption (LUKS, BitLocker, FileVault, or cloud-provider encryption) on the host machine |
 | **LLM** | Runs locally on your hardware via Ollama/llama.cpp. No audio or transcripts are sent to OpenAI, Anthropic, or any cloud provider |
 | **STT & Diarization** | WhisperX runs on your own GPU machines. No audio leaves your network |
 | **Dashboard** | OIDC authentication against your own identity provider. No third-party analytics or tracking |
 | **Device auth** | OAuth2 device code flow (RFC 8628). ESP32 obtains JWT access tokens from your OIDC provider via device authorization. Tokens stored in ESP32 flash (Preferences/NVS), not SD card. Dashboard uses OIDC authorization code with PKCE. No API keys stored in firmware or database |
 
 The only external network call the system makes is to your own LLM endpoint — which you control.
+> **Encryption at rest**: Application-level encryption (Fernet) protects audio files on disk. PostgreSQL data files are stored unencrypted. For complete data-at-rest protection, enable whole-disk encryption on the server hosting this stack. LUKS (Linux), BitLocker (Windows), or FileVault (macOS) are recommended. Cloud providers offer volume-level encryption (AWS EBS encryption, GCP Persistent Disk encryption, Azure Disk Encryption) that requires no application changes.
 
 ## Architecture
 
@@ -59,13 +60,13 @@ High-level:
 ```mermaid
 graph LR
     ESP32[Wearable<br/>ESP32-S3] -->|OAuth2 Bearer| ORCH[Orchestrator<br/>FastAPI :8443]
+    ESP32 -.->|OIDC Device Code| IDP[Identity Provider<br/>Keycloak/Authelia]
     ORCH -->|Internal job API| TRANS[Transcription Worker<br/>WhisperX GPU]
     ORCH -->|HTTPS| SPK[Speaker ID<br/>ECAPA-TDNN GPU :8443]
     ORCH -->|OpenAI-compat API| LLM[Local LLM<br/>Ollama/llama.cpp]
     ORCH -->|SSL| PG[(PostgreSQL)]
     DASH[Dashboard<br/>React :3000] -->|OIDC Bearer| ORCH
-    DASH -->|OIDC Device Code| IDP[Identity Provider<br/>Keycloak/Authelia]
-    ESP32 -->|OIDC Device Code| IDP
+    DASH -.->|OIDC Auth Code + PKCE| IDP
 ```
 
 GPU services (transcription-worker, speaker-id) run on dedicated machines. The orchestrator, database, and dashboard run in Docker on the main server. **Nothing runs in the cloud.**
@@ -293,4 +294,12 @@ TBD
 
 ## Roadmap
 
-- [ ] **OAuth Device Flow** — ESP32-side RFC 8628 device code flow is implemented (tokens stored in ESP32 flash). Server-side scope enforcement is not yet implemented. TTS readout is not applicable to the XIAO ESP32-S3 Sense (no audio output). See [ARCHITECTURE.md#roadmap](ARCHITECTURE.md#roadmap) for details.
+- [x] **OAuth Device Flow** — ESP32-side RFC 8628 device code flow is implemented. Tokens stored in ESP32 flash (Preferences/NVS), not SD card. TTS readout not applicable to XIAO ESP32-S3 Sense (no audio output).
+- [ ] **Least privilege / server-side scope enforcement** — ESP32 device tokens should be scoped to only the upload endpoint. Currently no server-side scope enforcement on device tokens.
+- [ ] **Output format: OGG not WAV** — Final audio files should be stored as OGG (Opus) rather than WAV to reduce storage size.
+- [ ] **User disk limits with automatic cleanup** — Implement per-user storage quotas. When quota is exceeded, automatically delete audio files (freeing disk space) while preserving the recording metadata, transcript, and speaker segments.
+- [ ] **Age limits on recordings** — Allow users to configure how long recordings are retained before automatic deletion.
+- [ ] **Improved conversation gap detection** — Better detection of conversation pauses to automatically split sessions.
+- [ ] **Improved firmware upload** — Over-the-air firmware update UX and reliability improvements.
+- [ ] **Out-of-order upload handling** — The server currently expects chunks to be uploaded in order. Handle the case where the device disconnects from WiFi, collects many utterances offline, then reconnects and uploads a large batch. The server needs to reconstruct the correct ordering and timing.
+- [ ] **Firmware RTC clock** — Bare minimum firmware should have an RTC clock that is set via NTP when WiFi is available, and that timestamp used in the utterance filename. Utterances recorded before first WiFi connect will use the server-received timestamp as the conversation start time (best available approximation).
