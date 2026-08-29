@@ -853,26 +853,18 @@ graph TB
 
 ## Roadmap
 
-### OAuth Device Flow (planned)
+### OAuth Device Flow (partial)
 
-Replace static API key authentication with [RFC 8628 OAuth Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628). Three key constraints:
+RFC 8628 OAuth Device Authorization Grant is implemented on the ESP32 side. Three key constraints:
 
 1. **Device authorization flow**: device credentials are obtained through OAuth device authorization rather than being embedded in the firmware.
 
-2. **Flash storage for tokens**: Refresh tokens are stored in ESP32 flash memory (persists across restarts and power failures), **not** on the SD card. SD cards are removable and less secure; flash is soldered to the board.
+2. **Flash storage for tokens**: Refresh tokens are stored in ESP32 flash memory (persists across restarts and power failures), not on the SD card. SD cards are removable and less secure; flash is soldered to the board.
 
 3. **Minimal scope**: Tokens are granted the narrowest scope required for their role. A compromised token cannot access endpoints outside its scope.
 
-#### Token Scopes
+**Current state**: ESP32-side implementation complete (firmware-ota/lib/oauth2_device_flow/). The ESP32 uses OAuth2 device code flow to obtain JWT access tokens from the OIDC provider, which are then sent as Bearer tokens on upload requests. The server validates these JWTs via the OIDC provider's JWKS.
 
-| Token | Scope | Access |
-|-------|-------|--------|
-| Device | `write:recordings` | POST to upload endpoint only |
-| Dashboard (user) | `read:recordings`, `read:calendar`, `read:todos`, `read:decisions`, `write:speakers` | View recordings, calendar, TODOs, decisions; label unknown speakers |
-| Dashboard (admin) | `manage:users` | Create/revoke users only. No access to any user data |
+**Note on TTS**: The roadmap originally included TTS playback for the user authorization code. This is not applicable to the XIAO ESP32-S3 Sense board, which has no audio output. Device authorization requires an external screen or SSH tunnel for the user to enter the code manually. The token storage and refresh logic is fully implemented regardless.
 
-The admin token has **no** access to user data — it can only create and revoke user accounts. Recordings, transcripts, TODOs, and decisions are invisible to administrators. The device token has **no** read access — it cannot list recordings, view TODOs, enumerate other users' data, or access the dashboard in any way. The dashboard (user) token has **no** write access to recordings — it can only read and label speakers. Each role is a strict subset of what it needs, nothing more.
-
-**Why this matters**: Static API keys baked into firmware are revocable but not rotatable without reflashing. OAuth tokens can be refreshed and revoked independently. The TTS readout eliminates the need for a display on the device, keeping the hardware minimal and power-efficient.
-
-**Current state**: Not implemented. The static API key approach is sufficient for v1. See `firmware-ota/src/config.h` for the current `API_KEY` configuration.
+**Token scope enforcement** (write:recordings, read:recordings, etc.) at the server level is not yet implemented — this is a v2 item.

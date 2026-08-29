@@ -18,7 +18,6 @@ Wear a small recorder, forget about it, and review your days through a web dashb
 - **Local LLM only** — Summarization runs on your own GPU via Ollama, llama.cpp, or any OpenAI-compatible endpoint
 
 **Recording & Processing**
-- **Wearable recording** — XIAO ESP32-S3 with built-in PDM mic, esp-sr AFE (noise suppression + VAD), Opus/OGG compression, SD card offline queue
 - **Chunked upload** — Device streams audio in chunks; server tracks utterances and processes on completion
 - **Background pipeline** — Worker polls for pending utterances and runs transcription, speaker identification, and summarization asynchronously
 - **Session grouping** — Utterances grouped into sessions; quick ASR keeps active transcripts responsive and hourly reprocessing queues ten-minute full jobs
@@ -47,7 +46,7 @@ LifeLog is designed so that **your voice data never touches the outside internet
 | **LLM** | Runs locally on your hardware via Ollama/llama.cpp. No audio or transcripts are sent to OpenAI, Anthropic, or any cloud provider |
 | **STT & Diarization** | WhisperX runs on your own GPU machines. No audio leaves your network |
 | **Dashboard** | OIDC authentication against your own identity provider. No third-party analytics or tracking |
-| **API keys** | Device authentication via API keys stored in your database. No external auth service required for device uploads |
+| **Device auth** | OAuth2 device code flow (RFC 8628). ESP32 obtains JWT access tokens from your OIDC provider via device authorization. Tokens stored in ESP32 flash (Preferences/NVS), not SD card. Dashboard uses OIDC authorization code with PKCE. No API keys stored in firmware or database |
 
 The only external network call the system makes is to your own LLM endpoint — which you control.
 
@@ -59,12 +58,14 @@ High-level:
 
 ```mermaid
 graph LR
-    ESP32[Wearable<br/>ESP32-S3] -->|HTTPS + X-API-Key| ORCH[Orchestrator<br/>FastAPI :8443]
+    ESP32[Wearable<br/>ESP32-S3] -->|OAuth2 Bearer| ORCH[Orchestrator<br/>FastAPI :8443]
     ORCH -->|Internal job API| TRANS[Transcription Worker<br/>WhisperX GPU]
     ORCH -->|HTTPS| SPK[Speaker ID<br/>ECAPA-TDNN GPU :8443]
     ORCH -->|OpenAI-compat API| LLM[Local LLM<br/>Ollama/llama.cpp]
     ORCH -->|SSL| PG[(PostgreSQL)]
     DASH[Dashboard<br/>React :3000] -->|OIDC Bearer| ORCH
+    DASH -->|OIDC Device Code| IDP[Identity Provider<br/>Keycloak/Authelia]
+    ESP32 -->|OIDC Device Code| IDP
 ```
 
 GPU services (transcription-worker, speaker-id) run on dedicated machines. The orchestrator, database, and dashboard run in Docker on the main server. **Nothing runs in the cloud.**
@@ -100,7 +101,6 @@ Edit `.env` and fill in:
 | `HF_TOKEN` | Hugging Face token for the transcription-worker diarization model |
 | `OIDC_ISSUER_URL` | Your OIDC provider URL |
 | `OIDC_CLIENT_ID` | OIDC client ID |
-| `OIDC_CLIENT_SECRET` | OIDC client secret |
 | `OIDC_REDIRECT_URI` | Dashboard URL (e.g. `https://localhost:3000`) |
 
 ### 2. Generate TLS certificates
@@ -130,16 +130,9 @@ Services started:
 
 Navigate to `http://localhost:3000` and log in via your OIDC provider.
 
-### 5. Create a user
+### 5. Configure the ESP32
 
-```bash
-# Create a user with an API key for device uploads
-curl -k -X POST "https://localhost:8444/api/v1/users" \
-  -H "Content-Type: application/json" \
-  -d '{"api_key": "my-device-key", "oidc_sub": "your-oidc-subject", "name": "Your Name"}'
-```
-
-Use this API key when flashing the firmware.
+On first boot, the ESP32 creates a WiFi access point. Connect to it and navigate to `192.168.4.1` to enter your OIDC provider credentials and device code. The device uses RFC 8628 device code flow to obtain access tokens, which are stored in internal flash — no API keys need to be programmed into the firmware.
 
 ## Firmware
 
@@ -235,7 +228,7 @@ For firmware-only updates (models already on device), see [firmware-ota/README.m
 3. Processes through esp-sr AFE (noise suppression + voice activity detection)
 4. Encodes to Opus/OGG at ~24kbps
 5. Stores on SD card (offline queue)
-6. Uploads chunks via HTTPS to the server with API key
+6. Uploads chunks via HTTPS to the server with OAuth2 Bearer token
 7. Server processes utterances in background (transcription → speaker ID → summarization)
 
 ## Development
@@ -300,4 +293,4 @@ TBD
 
 ## Roadmap
 
-- [ ] **OAuth Device Flow** — Replace static API keys with RFC 8628 device authorization. TTS service reads the auth code aloud on the device speaker. Refresh tokens stored in ESP32 flash (not SD card). Token scopes: device gets write:recordings only; dashboard gets read:recordings, read:calendar, read:todos, read:decisions, write:speakers; admin gets manage:users only (no data access). See [ARCHITECTURE.md#roadmap](ARCHITECTURE.md#roadmap) for details. **Note**: TTS playback requires a speaker + I2S amplifier (MAX98357A), limiting this feature to custom board designs — the XIAO dev board has no audio output.
+- [ ] **OAuth Device Flow** — ESP32-side RFC 8628 device code flow is implemented (tokens stored in ESP32 flash). Server-side scope enforcement is not yet implemented. TTS readout is not applicable to the XIAO ESP32-S3 Sense (no audio output). See [ARCHITECTURE.md#roadmap](ARCHITECTURE.md#roadmap) for details.
