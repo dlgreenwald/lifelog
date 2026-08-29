@@ -290,7 +290,7 @@ lifelog/
 
 ## License
 
-TBD
+Licensed under the [MIT License](LICENSE).
 
 ## Roadmap
 
