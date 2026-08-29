@@ -257,6 +257,11 @@ export default function RecordingDetail() {
       text: segment.text ?? '',
     }));
 
+  const uniqueSpeakers = displaySpeakers.reduce<Speaker[]>((acc, s) => {
+    if (!acc.some(a => a.name === s.name)) acc.push(s);
+    return acc;
+  }, []);
+
   if (!recording) return <div>Loading...</div>;
 
   return (
@@ -299,20 +304,34 @@ export default function RecordingDetail() {
       )}
 
       {displaySpeakers.length > 0 && (
-        <div className="speakers">
-          <h3>Transcript</h3>
-          <ul>
-            {displaySpeakers.map((speaker, i) => (
-              <li key={i} className={!isLive && speaker.name === 'Unknown' ? 'unknown' : ''}>
-                {!isLive && <span className="speaker-name">{speaker.name}: </span>}
-                {speaker.text}
-                {!isLive && (speaker.name === 'Unknown' || speaker.name.startsWith('SPEAKER_')) && (
-                  <button onClick={() => labelSpeaker(speaker)}>Label</button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
+        <>
+          <div className="speakers">
+            <h3>Transcript</h3>
+            <ul>
+              {displaySpeakers.map((speaker, i) => (
+                <li key={i} className={!isLive && speaker.name === 'Unknown' ? 'unknown' : ''}>
+                  {!isLive && <span className="speaker-name">{speaker.name}: </span>}
+                  {speaker.text}
+                </li>
+              ))}
+            </ul>
+          </div>
+          {!isLive && uniqueSpeakers.filter(s => s.name === 'Unknown' || s.name.startsWith('SPEAKER_')).length > 0 && (
+            <div className="speaker-labels">
+              <h4>Label speakers:</h4>
+              <ul>
+                {uniqueSpeakers
+                  .filter(s => s.name === 'Unknown' || s.name.startsWith('SPEAKER_'))
+                  .map((speaker, i) => (
+                    <li key={i}>
+                      <span>{speaker.name}</span>
+                      <button onClick={() => labelSpeaker(speaker)}>Label</button>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+        </>
       )}
 
       {audioUrls.length > 0 && (

@@ -6,6 +6,17 @@ interface RecordingListProps {
   recordings: Recording[];
 }
 
+function getEndTime(rec: Recording): string | null {
+  const speakers = rec.speakers;
+  if (!speakers || speakers.length === 0) return null;
+  const maxEnd = Math.max(...speakers.map(s => s.end ?? 0));
+  if (maxEnd <= 0) return null;
+  const start = new Date(rec.timestamp.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(rec.timestamp)
+    ? rec.timestamp : rec.timestamp + 'Z');
+  const end = new Date(start.getTime() + maxEnd * 1000);
+  return end.toLocaleTimeString('en-US', { timeZone: 'America/New_York' });
+}
+
 export default function RecordingList({ recordings }: RecordingListProps) {
   // Group recordings by session for split display
   const withSessionKey = recordings.map((r) => ({
@@ -32,9 +43,7 @@ export default function RecordingList({ recordings }: RecordingListProps) {
   return (
     <div className="recording-list">
       {withSessionKey.map(({ recording, sessionKey }) => {
-        const isSplit = (sessionCounts.get(sessionKey) ?? 0) > 1;
         const partitionIndex = recording.partition_index ?? 0;
-        const totalParts = sessionCounts.get(sessionKey) ?? 1;
         return (
           <div key={recording.id}>
             {showDividerBefore.has(sessionKey) && (
@@ -46,18 +55,17 @@ export default function RecordingList({ recordings }: RecordingListProps) {
             >
               <div className="recording-time">
                 {formatTime(recording.timestamp)}
-                {isSplit && (
-                  <span className="partition-badge">
-                    Part {(partitionIndex || 0) + 1} of {totalParts}
-                  </span>
-                )}
+                {(() => {
+                  const endTime = getEndTime(recording);
+                  return endTime ? <> to {endTime}</> : null;
+                })()}
               </div>
               <div className="recording-summary">
                 {recording.summary || 'No summary'}
               </div>
               {recording.speakers && recording.speakers.length > 0 && (
                 <div className="recording-speakers">
-                  {recording.speakers.length} speaker(s)
+                  {new Set(recording.speakers.map(s => s.name)).size} speaker(s)
                 </div>
               )}
             </Link>

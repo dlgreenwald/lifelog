@@ -1,60 +1,81 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api/client';
-import type { UnknownSpeaker } from '../types';
+
+interface SpeakerEntry {
+  name: string;
+  labeled: boolean;
+  recording_id: number;
+  speaker_label: string;
+}
 
 export default function SpeakerLabel() {
-  const [unknownSegments, setUnknownSegments] = useState<UnknownSpeaker[]>([]);
-  const [selectedSegment, setSelectedSegment] = useState<UnknownSpeaker | null>(null);
+  const [speakers, setSpeakers] = useState<SpeakerEntry[]>([]);
+  const [selected, setSelected] = useState<SpeakerEntry | null>(null);
   const [label, setLabel] = useState('');
 
   useEffect(() => {
-    api.getUnknownSpeakers().then((data: { recordings: UnknownSpeaker[] }) => {
-      setUnknownSegments(data.recordings);
+    api.getAllSpeakers().then((data: { speakers: SpeakerEntry[] }) => {
+      setSpeakers(data.speakers);
     });
   }, []);
 
-  const unresolvedSpeakerId = (recording: UnknownSpeaker): string => {
-    const speaker = (recording.speakers ?? []).find(
-      (item) => item.name === 'Unknown' || item.name.startsWith('SPEAKER_'),
-    );
-    return speaker?.name ?? 'Unknown';
-  };
-
   const handleLabel = async () => {
-    if (!selectedSegment || !label.trim()) return;
-
-    await api.labelSpeaker(selectedSegment.id, unresolvedSpeakerId(selectedSegment), label);
-
-    const updated = await api.getUnknownSpeakers();
-    setUnknownSegments(updated.recordings);
-    setSelectedSegment(null);
+    if (!selected || !label.trim()) return;
+    await api.labelSpeaker(selected.recording_id, selected.speaker_label, label.trim());
+    const updated = await api.getAllSpeakers();
+    setSpeakers(updated.speakers);
+    setSelected(null);
     setLabel('');
   };
 
+  const unlabeled = speakers.filter(s => !s.labeled);
+  const labeled = speakers.filter(s => s.labeled);
+
   return (
     <div className="speaker-label">
-      <h2>Label Unknown Speakers</h2>
+      <h2>Speakers</h2>
 
-      <div className="unknown-list">
-        {unknownSegments.map((segment) => (
-          <div
-            key={segment.id}
-            className={`segment ${selectedSegment?.id === segment.id ? 'selected' : ''}`}
-            onClick={() => setSelectedSegment(segment)}
-          >
-            <span>{segment.timestamp}</span>
-            <span>Unknown Speaker</span>
-            <audio
-              src={`/api/v1/dashboard/recording/${segment.id}/speaker/${encodeURIComponent(unresolvedSpeakerId(segment))}/audio`}
-              controls
-            />
+      {unlabeled.length > 0 && (
+        <>
+          <h3>Unlabeled ({unlabeled.length})</h3>
+          <div className="unknown-list">
+            {unlabeled.map((speaker) => (
+              <div
+                key={speaker.name}
+                className={`segment ${selected?.name === speaker.name ? 'selected' : ''}`}
+                onClick={() => setSelected(speaker)}
+              >
+                <span className="speaker-name">{speaker.name}</span>
+                <audio
+                  src={`/api/v1/dashboard/recording/${speaker.recording_id}/speaker/${encodeURIComponent(speaker.speaker_label)}/audio`}
+                  controls
+                />
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
 
-      {selectedSegment && (
+      {labeled.length > 0 && (
+        <>
+          <h3>Labeled ({labeled.length})</h3>
+          <div className="labeled-list">
+            {labeled.map((speaker) => (
+              <div key={speaker.name} className="segment labeled">
+                <span className="speaker-name">{speaker.name}</span>
+                <audio
+                  src={`/api/v1/dashboard/recording/${speaker.recording_id}/speaker/${encodeURIComponent(speaker.speaker_label)}/audio`}
+                  controls
+                />
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {selected && (
         <div className="label-form">
-          <h3>Label Speaker</h3>
+          <h3>Label Speaker: {selected.name}</h3>
           <input
             type="text"
             value={label}
