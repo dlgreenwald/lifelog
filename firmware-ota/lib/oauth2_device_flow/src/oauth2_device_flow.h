@@ -169,6 +169,7 @@ private:
     uint32_t _lastPollTime = 0;
     uint32_t _flowStartTime = 0;
     uint32_t _deviceCodeExpiry = 0;  // Epoch millis when device code expires
+    uint32_t _refreshRetryMs = 0;  // >0: retry countdown — set on transient refresh failure
     bool _hasTokens = false;
 
     void* _pollingTaskHandle = nullptr;

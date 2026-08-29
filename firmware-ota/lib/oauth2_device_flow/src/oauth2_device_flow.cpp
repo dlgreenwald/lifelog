@@ -445,7 +445,7 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                         delayMs = (_tokenExpiry - nowSec) * 1000;
 #ifndef OAUTH2_TESTING
                         ESP_LOGI(TAG, "No refresh token, token expires in %lus",
-                                      _tokenExpiry - nowSec);
+                                     _tokenExpiry - nowSec);
 #endif
                     } else {
                         // Token already expired — nothing to do, wait for dashboard re-auth
@@ -461,25 +461,51 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
 #endif
                     break;
                 }
-                // Have refresh token — sleep until halfway to expiry, then refresh
+
+                // Compute normal delay before checking retry — retry decision needs it
                 uint32_t delayMs = 3600000;  // Default 1 hour
-                if (_tokenExpiry > 0) {
+                {
                     uint32_t nowSec = static_cast<uint32_t>(time(NULL));
                     if (_tokenExpiry > nowSec) {
                         uint32_t remainingSec = _tokenExpiry - nowSec;
                         delayMs = (remainingSec / 2) * 1000;  // Wake at halfway
-#ifndef OAUTH2_TESTING
-                        ESP_LOGI(TAG, "Token valid for %lus, sleeping %lus before refresh",
-                                      remainingSec, remainingSec / 2);
-#endif
                     } else {
                         delayMs = 0;  // Already expired, refresh immediately
-#ifndef OAUTH2_TESTING
-                        ESP_LOGI(TAG, "Token expired, refreshing now");
-#endif
                     }
                 }
+
+                // Transient refresh failure: only retry if the normal delay is >= 30s.
+                // If delay is already small, the token is near expiry — don't extend it;
+                // let the access token run out and re-auth naturally.
+                if (_refreshRetryMs > 0 && delayMs >= 30000) {
+                    uint32_t retryMs = _refreshRetryMs;
+                    _refreshRetryMs = 0;  // Consume it; next loop sees normal delay calc
 #ifndef OAUTH2_TESTING
+                    ESP_LOGI(TAG, "Transient refresh failure, sleeping %lu ms before retry", retryMs);
+                    xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+                    vTaskDelay(pdMS_TO_TICKS(retryMs));
+                    xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
+#endif
+                    // Fall through to attempt refresh immediately
+                } else if (_refreshRetryMs > 0) {
+                    // Delay was already small — don't retry, consume and let token expire
+#ifndef OAUTH2_TESTING
+                    ESP_LOGW(TAG, "Transient refresh failure but delay < 30s, not retrying");
+#endif
+                    _refreshRetryMs = 0;
+                }
+
+                // Sleep until halfway to expiry, then refresh
+#ifndef OAUTH2_TESTING
+                {
+                    uint32_t nowSec = static_cast<uint32_t>(time(NULL));
+                    if (_tokenExpiry > nowSec) {
+                        ESP_LOGI(TAG, "Token valid for %lus, sleeping %lus before refresh",
+                                     _tokenExpiry - nowSec, (_tokenExpiry - nowSec) / 2);
+                    } else {
+                        ESP_LOGI(TAG, "Token expired, refreshing now");
+                    }
+                }
                 xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
                 vTaskDelay(pdMS_TO_TICKS(delayMs));
                 xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
@@ -488,7 +514,8 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                 if (_hasTokens) {
                     ESP_LOGI(TAG, "Background refresh succeeded");
                 } else {
-                    // Refresh failed — stay AUTHENTICATED, user must re-auth via dashboard
+                    // Refresh failed — if transient, _refreshRetryMs is set and we retry in 60s;
+                    // if fatal, we transition to AUTH_ERROR and loop will handle it
                     ESP_LOGW(TAG, "Refresh failed: %s", _lastError);
                 }
                 break;  // Loop back to re-evaluate state
@@ -496,7 +523,6 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                 return;
 #endif
             }
-            case AUTH_ERROR:
 #ifndef OAUTH2_TESTING
                 // Clear tokens and go idle — user must re-auth via dashboard
                 ESP_LOGI(TAG, "Clearing tokens, returning to idle");
@@ -674,71 +700,110 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
 #ifndef OAUTH2_TESTING
     ESP_LOGI(TAG, "Refreshing token via %s", url);
 #endif
-    OAuth2HttpResponse resp = requestInternal("POST", url, nullptr, body);
+
+    while (true) {
+        OAuth2HttpResponse resp = requestInternal("POST", url, nullptr, body);
 #ifndef OAUTH2_TESTING
-    // Always log the raw response body so we can see what the server actually sent
-    char respBuf[1024] = {};
-    serializeJson(resp.body, respBuf, sizeof(respBuf));
-    ESP_LOGI(TAG, "Refresh response: status=%d body=%.900s", resp.statusCode, respBuf);
+        // Always log the raw response body so we can see what the server actually sent
+        char respBuf[1024] = {};
+        serializeJson(resp.body, respBuf, sizeof(respBuf));
+        ESP_LOGI(TAG, "Refresh response: status=%d body=%.900s", resp.statusCode, respBuf);
 #endif
-    if (resp.statusCode == 0 || resp.statusCode != 200) {
+
+        // Transient failures: null body (status 200 but no access_token) or network error (status 0)
+        // Retry with 60s backoff until the access token expires.
+        bool nullBody = (resp.statusCode == 200 && resp.body["access_token"].isNull());
+        if (resp.statusCode == 0 || nullBody) {
 #ifndef OAUTH2_TESTING
-        if (resp.statusCode == 0) {
-            ESP_LOGW(TAG, "Token refresh failed: network error (status=0)");
-        } else {
+            if (resp.statusCode == 0) {
+                ESP_LOGW(TAG, "Token refresh network error — retrying in 60s");
+            } else {
+                ESP_LOGW(TAG, "Token refresh returned null body — retrying in 60s");
+            }
+#endif
+            // Check if the access token has expired — if so, give up and clear tokens
+            uint32_t nowSec = static_cast<uint32_t>(time(NULL));
+            if (_tokenExpiry > 0 && nowSec >= _tokenExpiry) {
+#ifndef OAUTH2_TESTING
+                ESP_LOGW(TAG, "Access token expired, giving up on refresh");
+#endif
+                strlcpy(_lastError, nullBody ? "No token in refresh" : "Token refresh failed", sizeof(_lastError));
+                _hasTokens = false;
+                setState(AUTH_ERROR);
+                return;
+            }
+            // Schedule retry in 60s — return early, no blocking
+            _refreshRetryMs = 60000;
+#ifndef OAUTH2_TESTING
+            ESP_LOGW(TAG, "Token refresh returned null body — scheduling retry in 60s");
+#endif
+            return;
+        }
+
+        if (resp.statusCode != 200) {
+#ifndef OAUTH2_TESTING
             const char* error = resp.body["error"] | "unknown";
             const char* errorDesc = resp.body["error_description"] | "";
             ESP_LOGW(TAG, "Token refresh HTTP error: status=%d error=%s description=%s",
                      resp.statusCode, error, errorDesc);
+#endif
+            strlcpy(_lastError, "Token refresh failed", sizeof(_lastError));
+            _hasTokens = false;
+            setState(AUTH_ERROR);
+            return;
+        }
+
+        const char* accessToken = resp.body["access_token"] | "";
+        const char* newRefreshToken = resp.body["refresh_token"] | "";
+        int expiresIn = resp.body["expires_in"] | 0;
+        int refreshExpiresIn = resp.body["refresh_expires_in"] | 0;
+#ifndef OAUTH2_TESTING
+        ESP_LOGI(TAG, "Refresh token field in response: present=%d value_len=%d",
+                 newRefreshToken[0] != '\0', (int)strlen(newRefreshToken));
+#endif
+        if (accessToken[0] == '\0') {
+            // Guard for edge case where status 200 but no access_token despite nullBody being false
+#ifndef OAUTH2_TESTING
+            ESP_LOGW(TAG, "No access_token in refresh response — scheduling retry in 60s");
+#endif
+            uint32_t nowSec = static_cast<uint32_t>(time(NULL));
+            if (_tokenExpiry > 0 && nowSec >= _tokenExpiry) {
+                strlcpy(_lastError, "No token in refresh", sizeof(_lastError));
+                _hasTokens = false;
+                setState(AUTH_ERROR);
+                return;
+            }
+            _refreshRetryMs = 60000;
+            return;
+        }
+
+        strlcpy(_accessToken, accessToken, sizeof(_accessToken));
+        if (newRefreshToken[0] != '\0') strlcpy(_refreshToken, newRefreshToken, sizeof(_refreshToken));
+
+        // Validate JWT exp claim — prefer it over expires_in
+        // Store as epoch seconds (not millis) to avoid uint32 overflow
+        uint32_t jwtExp = parseJwtExp(accessToken);
+        if (jwtExp > 0) {
+            _tokenExpiry = jwtExp;
+        } else {
+            _tokenExpiry = static_cast<uint32_t>(time(NULL)) + expiresIn;
+        }
+        _refreshTokenExpiry = (refreshExpiresIn > 0)
+            ? static_cast<uint32_t>(time(NULL)) + refreshExpiresIn : 0;
+        _hasTokens = true;
+#ifndef OAUTH2_TESTING
+        uint32_t nowSec = static_cast<uint32_t>(time(NULL));
+        uint32_t accessRemaining = _tokenExpiry > nowSec ? _tokenExpiry - nowSec : 0;
+        uint32_t refreshRemaining = _refreshTokenExpiry > nowSec ? _refreshTokenExpiry - nowSec : 0;
+        if (_refreshTokenExpiry > 0) {
+            ESP_LOGI(TAG, "Token refreshed, access expires in %lus, refresh expires in %lus", accessRemaining, refreshRemaining);
+        } else {
+            ESP_LOGI(TAG, "Token refreshed, access expires in %lus", accessRemaining);
         }
 #endif
-        strlcpy(_lastError, "Token refresh failed", sizeof(_lastError));
-        _hasTokens = false;
-        setState(AUTH_ERROR);
+        saveTokens();
         return;
     }
-
-    const char* accessToken = resp.body["access_token"] | "";
-    const char* refreshToken = resp.body["refresh_token"] | "";
-    int expiresIn = resp.body["expires_in"] | 0;
-    int refreshExpiresIn = resp.body["refresh_expires_in"] | 0;
-#ifndef OAUTH2_TESTING
-    ESP_LOGI(TAG, "Refresh token field in response: present=%d value_len=%d",
-             refreshToken[0] != '\0', (int)strlen(refreshToken));
-#endif
-    if (accessToken[0] == '\0') {
-#ifndef OAUTH2_TESTING
-        ESP_LOGW(TAG, "No access_token in refresh response — full body logged above");
-#endif
-        strlcpy(_lastError, "No token in refresh", sizeof(_lastError)); _hasTokens = false; setState(AUTH_ERROR); return;
-    }
-
-
-    strlcpy(_accessToken, accessToken, sizeof(_accessToken));
-    if (refreshToken[0] != '\0') strlcpy(_refreshToken, refreshToken, sizeof(_refreshToken));
-
-    // Validate JWT exp claim — prefer it over expires_in
-    // Store as epoch seconds (not millis) to avoid uint32 overflow
-    uint32_t jwtExp = parseJwtExp(accessToken);
-    if (jwtExp > 0) {
-        _tokenExpiry = jwtExp;
-    } else {
-        _tokenExpiry = static_cast<uint32_t>(time(NULL)) + expiresIn;
-    }
-    _refreshTokenExpiry = (refreshExpiresIn > 0)
-        ? static_cast<uint32_t>(time(NULL)) + refreshExpiresIn : 0;
-    _hasTokens = true;
-#ifndef OAUTH2_TESTING
-    uint32_t nowSec = static_cast<uint32_t>(time(NULL));
-    uint32_t accessRemaining = _tokenExpiry > nowSec ? _tokenExpiry - nowSec : 0;
-    uint32_t refreshRemaining = _refreshTokenExpiry > nowSec ? _refreshTokenExpiry - nowSec : 0;
-    if (_refreshTokenExpiry > 0) {
-        ESP_LOGI(TAG, "Token refreshed, access expires in %lus, refresh expires in %lus", accessRemaining, refreshRemaining);
-    } else {
-        ESP_LOGI(TAG, "Token refreshed, access expires in %lus", accessRemaining);
-    }
-#endif
-    saveTokens();
 }
 
 // ── JWT exp claim parsing ──────────────────────────────────────────
