@@ -4,9 +4,14 @@
 
 **NEVER commit changes without explicit user instruction.** Always ask before running `git commit`. The user decides when changes are ready to commit. **REMIND the user to commit** when a task appears to be working and changes are stable — don't let working changes sit uncommitted.
 
-## ⚠️ Documentation Sync Rule
+## ⚠️ Branch Rule
 
-**When making changes to any aspect documented in this file (architecture, services, APIs, test counts, build commands, file lists, etc.), you MUST update this AGENTS.md to reflect the change.** Stale docs cause agents to make wrong assumptions. Treat this file as code — if it's wrong, fix it in the same change.
+**ALL work must be done in branches.** Never commit directly to `main`. Before starting a new task, confirm which branch to work on:
+- If not on a branch: ask the user to describe the feature and either create a new branch (`git checkout -b <branch-name>`) or select an existing one.
+- If already on a working branch: continue on that branch.
+- Exception: hotfixes and documentation-only changes that don't affect code may be handled on `main` with explicit user approval.
+
+## ⚠️ Documentation Sync Rule
 
 ## Project Overview
 
