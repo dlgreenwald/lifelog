@@ -302,4 +302,4 @@ Licensed under the [MIT License](LICENSE).
 - [ ] **Improved conversation gap detection** — Better detection of conversation pauses to automatically split sessions.
 - [ ] **Improved firmware upload** — Over-the-air firmware update UX and reliability improvements.
 - [ ] **Out-of-order upload handling** — The server currently expects chunks to be uploaded in order. Handle the case where the device disconnects from WiFi, collects many utterances offline, then reconnects and uploads a large batch. The server needs to reconstruct the correct ordering and timing.
-- [ ] **Firmware RTC clock** — Bare minimum firmware should have an RTC clock that is set via NTP when WiFi is available, and that timestamp used in the utterance filename. Utterances recorded before first WiFi connect will use the server-received timestamp as the conversation start time (best available approximation).
+- [ ] **Agentic LLM features** — Near-real-time transcription processing enables the LLM to detect and execute actions from spoken commands (e.g., "take a photo", "email this transcript", "add a reminder"). Requires configurable action plugins and user consent flows.
