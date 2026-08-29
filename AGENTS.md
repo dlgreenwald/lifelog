@@ -149,13 +149,13 @@ docker-compose logs -f server  # Tail orchestrator logs
 
 ```bash
 # Python services (each in its own venv)
-cd server && .venv/bin/python -m pytest tests/ -q        # 114 tests
+cd server && .venv/bin/python -m pytest tests/ -q        # 134 tests
 cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
-cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 16 tests
+cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 14 tests
 cd transcription-worker && python -m pytest -q           # 10 tests
 
 # Dashboard
-cd dashboard && npx vitest run                            # 86 tests
+cd dashboard && npx vitest run                            # 91 tests
 
 # Firmware-OTA
 cd firmware-ota && pio test -e test                       # 69 tests
@@ -239,7 +239,7 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `server/src/lifelog/models.py` | Pydantic request/response models (UserCreate, RecordingResponse, etc.) |
 | `server/src/lifelog/auth.py` | API key + OIDC validation with `Depends()` |
 | `server/src/lifelog/crypto.py` | Per-user Fernet audio encryption (PBKDF2 key derivation) |
-| `server/src/lifelog/rate_limit.py` | Shared rate limiter instance (slowapi) |
+| `server/src/lifelog/validation.py` | Input validation and prompt injection defense for user-supplied LLM context |
 | `server/src/lifelog/routes/speakers.py` | Speaker labeling, encrypted segment extraction, and retroactive re-ID |
 | `server/src/lifelog/pipeline/speaker_client.py` | Audio-bearing speaker identification client |
 | `server/src/lifelog/pipeline/llm.py` | LLM prompt template + `summarize()` |
@@ -258,7 +258,7 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `dashboard/src/utils/format.ts` | Shared formatting helpers |
 | `dashboard/src/components/Calendar.tsx` | Main calendar view with month navigation |
 | `dashboard/src/components/SpeakerLabel.tsx` | Speaker labeling UI |
-| `docker-compose.yml` | Service orchestration, port mappings, GPU reservations |
+| `dashboard/src/components/Settings.tsx` | User settings UI for language preference and LLM context |
 | `scripts/generate-certs.sh` | TLS cert generation for all services |
 | `server/entrypoint.sh` | Docker entrypoint — runs alembic migrations before starting server |
 | `e2e/run_e2e.py` | End-to-end test suite — generates audio, uploads, verifies pipeline |
@@ -333,8 +333,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - SSL certs are generated at compose level (command overrides), not baked into Dockerfiles
 
 ## Testing & QA
-
-**Total**: ~303 tests across 6 components (114 server + 8 diarization + 16 speaker-id + 10 transcription-worker + 86 dashboard + 69 firmware-ota)
+**Total**: ~326 tests across 6 components (134 server + 8 diarization + 14 speaker-id + 10 transcription-worker + 91 dashboard + 69 firmware-ota)
 
 ### Python test framework
 

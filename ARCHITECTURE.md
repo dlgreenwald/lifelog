@@ -19,8 +19,6 @@
     - [Audio Encryption](#audio-encryption)
     - [Database Schema](#database-schema)
     - [API Endpoints](#api-endpoints)
-  - [Diarization Service](#diarization-service)
-    - [API Endpoints](#diarization-api-endpoints)
   - [Speaker ID Service](#speaker-id-service)
     - [API Endpoints](#speaker-id-api-endpoints)
   - [Web Dashboard](#web-dashboard)
@@ -38,7 +36,7 @@ LifeLog is a voice-activated life journal system composed of five components:
 
 1. **Wearable Recorder** — XIAO ESP32-S3 Sense with built-in PDM microphone captures audio, processes it through esp-sr AFE (noise suppression + VAD), compresses it with Opus/OGG, and uploads in chunks when WiFi is available
 2. **Server Orchestrator** — FastAPI service that receives audio chunks, groups them into utterances, and runs a background worker pipeline for transcription, speaker identification, and LLM summarization
-3. **Whisper ASR Service** — WhisperX microservice that handles both transcription and speaker diarization in one step (runs on GPU)
+3. **Transcription Worker** — Standalone WhisperX microservice that handles both transcription and speaker diarization in one step (runs on GPU, polls server for jobs)
 4. **Speaker ID Service** — ECAPA-TDNN microservice that matches voice segments to known speakers
 5. **Web Dashboard** — React SPA for browsing recordings, TODOs, decisions, and labeling unknown speakers
 

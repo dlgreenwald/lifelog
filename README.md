@@ -262,19 +262,19 @@ npm test          # Run vitest
 
 ```bash
 # Python services
-cd server && .venv/bin/python -m pytest tests/ -q        # 114 tests
+cd server && .venv/bin/python -m pytest tests/ -q        # 134 tests
 cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
-cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 16 tests
+cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 14 tests
 cd transcription-worker && python -m pytest -q           # 10 tests
 
 # Dashboard
-cd dashboard && npx vitest run                            # 85 tests
+cd dashboard && npx vitest run                            # 91 tests
 
 # Firmware (native tests, no hardware required)
 cd firmware-ota && pio test -e test                       # 69 tests
 ```
 
-**Total: ~302 tests** across 6 components.
+**Total: ~326 tests** across 6 components.
 
 ## Project Structure
 
