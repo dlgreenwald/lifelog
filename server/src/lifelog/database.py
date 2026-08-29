@@ -359,21 +359,30 @@ async def get_unknown_speakers(user_id: int) -> list[dict]:
         return [dict(row) for row in rows]
 
 
+async def get_all_recordings_with_speakers(user_id: int) -> list[dict]:
+    """Get all recordings with their speakers column for a user."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, speakers FROM recordings WHERE user_id = $1",
+            user_id,
+        )
+        return [dict(row) for row in rows]
+
+
 async def update_speaker_name(recording_id: int, old_name: str, new_name: str):
     """Update speaker name in a recording."""
     async with pool.acquire() as conn:
         await conn.execute(
             """
             UPDATE recordings
-            SET speakers = jsonb_set(
-                speakers,
-                '{speakers}',
-                (SELECT jsonb_agg(
+            SET speakers = (
+                SELECT jsonb_agg(
                     CASE
                         WHEN elem->>'name' = $1 THEN jsonb_set(elem, '{name}', $3::jsonb)
                         ELSE elem
                     END
-                ) FROM jsonb_array_elements(speakers) AS elem)
+                )
+                FROM jsonb_array_elements(speakers) AS elem
             )
             WHERE id = $2
         """,
@@ -982,29 +991,30 @@ async def create_transcription_job(
     window_start: datetime,
     window_end: datetime,
     chunk_index: int,
+    language: str = "auto",
 ) -> int:
     """Queue one full transcription job for a session window."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO transcription_jobs
-                (session_id, window_start, window_end, chunk_index, status, stage, job_type)
-            VALUES ($1, $2, $3, $4, 'pending', 'queued', 'full')
+                (session_id, window_start, window_end, chunk_index, status, stage, job_type, language)
+            VALUES ($1, $2, $3, $4, 'pending', 'queued', 'full', $5)
             RETURNING id
             """,
             session_id,
             window_start.replace(tzinfo=None),
             window_end.replace(tzinfo=None),
             chunk_index,
+            language,
         )
         return row["id"]
-
-
 async def create_quick_transcription_job(
     session_id: int,
     audio_filename: str,
     utterance_id: int,
     created_at: datetime,
+    language: str = "auto",
 ) -> int:
     """Queue an ASR-only job for one newly stored session utterance."""
     async with pool.acquire() as conn:
@@ -1012,14 +1022,15 @@ async def create_quick_transcription_job(
             """
             INSERT INTO transcription_jobs
                 (session_id, window_start, window_end, chunk_index, status, stage,
-                 job_type, result)
-            VALUES ($1, $4, $4, $3, 'pending', 'queued', 'quick', $2::jsonb)
+                 job_type, result, language)
+            VALUES ($1, $4, $4, $3, 'pending', 'queued', 'quick', $2::jsonb, $5)
             RETURNING id
             """,
             session_id,
             {"audio_filename": audio_filename, "utterance_id": utterance_id},
             utterance_id,
             created_at.replace(tzinfo=None),
+            language,
         )
         return row["id"]
 
@@ -1029,6 +1040,7 @@ async def create_session_quick_job(
     utterance_ids: list[int],
     window_start: datetime,
     window_end: datetime,
+    language: str = "auto",
 ) -> int:
     """Create one quick job covering all given utterances in a session (sliding window batch)."""
     async with pool.acquire() as conn:
@@ -1036,15 +1048,16 @@ async def create_session_quick_job(
             """
             INSERT INTO transcription_jobs
                 (session_id, window_start, window_end, chunk_index, status, stage,
-                 job_type, result)
-            VALUES ($1, $2, $3, $1, 'pending', 'queued', 'quick',
-                    jsonb_build_object('session_id', $1, 'utterance_ids', $4::jsonb))
+                 job_type, result, language)
+            VALUES ($1, $2, $3, 0, 'pending', 'queued', 'quick',
+                    jsonb_build_object('session_id', $1::integer, 'utterance_ids', $4::jsonb), $5)
             RETURNING id
             """,
             session_id,
             window_start.replace(tzinfo=None),
             window_end.replace(tzinfo=None),
             utterance_ids,
+            language,
         )
         return row["id"]
 
@@ -1567,4 +1580,35 @@ async def get_users_with_sessions_previous_day() -> list[int]:
             """,
             yesterday,
         )
-        return [row["user_id"] for row in rows]
+
+
+
+# ── User settings ──────────────────────────────────────────────────
+
+
+async def get_user_settings(user_id: int) -> dict:
+    """Get user settings. Returns defaults if no row exists."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT language, llm_context FROM user_settings WHERE user_id = $1",
+            user_id,
+        )
+        if row:
+            return dict(row)
+        return {"language": "auto", "llm_context": ""}
+
+
+async def save_user_settings(user_id: int, language: str, llm_context: str) -> None:
+    """Upsert user settings row."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO user_settings (user_id, language, llm_context, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (user_id) DO UPDATE
+                SET language = EXCLUDED.language,
+                    llm_context = EXCLUDED.llm_context,
+                    updated_at = EXCLUDED.updated_at
+            """,
+            user_id, language, llm_context,
+        )

@@ -25,8 +25,9 @@ def load_models() -> dict[str, Any]:
     asr = whisperx.load_model(
         model_name, device=device, compute_type=compute_type, download_root=cache_dir
     )
+    align_language = os.getenv("ASR_LANGUAGE", "en")
     align_model, metadata = whisperx.load_align_model(
-        language_code=os.getenv("ASR_LANGUAGE", "en"),
+        language_code=align_language,
         device=device,
     )
     diarize = DiarizationPipeline(token=os.environ["HF_TOKEN"], device=device)
@@ -34,16 +35,18 @@ def load_models() -> dict[str, Any]:
         "asr": asr,
         "align_model": align_model,
         "metadata": metadata,
+        "align_language": align_language,
+        "align_cache": {},
         "diarize": diarize,
         "device": device,
         "compute_type": compute_type,
     }
 
 
-def quick_transcribe(models: dict, audio_np: np.ndarray, sample_rate: int) -> dict:
+def quick_transcribe(models: dict, audio_np: np.ndarray, sample_rate: int, language: str | None = None) -> dict:
     """Run ASR only; alignment and diarization are intentionally skipped."""
     audio_np = waveform_to_numpy(audio_np)
-    result = models["asr"].transcribe(audio_np, batch_size=4)
+    result = models["asr"].transcribe(audio_np, batch_size=4, language=language)
     segments = result.get("segments", [])
     return {"segments": segments, "full_transcript": {"segments": segments}}
 
@@ -116,27 +119,43 @@ def _as_segment_dicts(segments: Any) -> list[dict]:
     if hasattr(segments, "iterrows"):
         return [dict(row) for _, row in segments.iterrows()]
     return []
+def _get_align_model(models: dict, language_code: str) -> tuple:
+    """Load or retrieve a cached alignment model for the given language code."""
+    import whisperx
+
+    if models.get("align_language") == language_code and models.get("align_model") is not None:
+        return models["align_model"], models["metadata"]
+    align_cache = models.setdefault("_align_cache", {})
+    if language_code in align_cache:
+        return align_cache[language_code]
+    align_model, metadata = whisperx.load_align_model(
+        language_code=language_code,
+        device=models["device"],
+    )
+    align_cache[language_code] = (align_model, metadata)
+    return align_model, metadata
 
 
 def transcribe_audio(
-    models: dict, audio_np: np.ndarray, sample_rate: int
+    models: dict, audio_np: np.ndarray, sample_rate: int, language: str | None = None
 ) -> dict:
     """Run ASR, alignment, diarization, and transient speaker-audio extraction."""
     audio_np = waveform_to_numpy(audio_np)
-    asr_result = models["asr"].transcribe(audio_np, batch_size=4)
+    asr_result = models["asr"].transcribe(audio_np, batch_size=4, language=language)
     raw_segments = _as_segment_dicts(asr_result.get("segments", []))
     if not raw_segments:
         return {"segments": [], "full_transcript": {"segments": []}, "speaker_map": {}, "speaker_segments": []}
 
-    language = asr_result.get("language", "en")
+    detected_language = asr_result.get("language", "en")
     aligned_segments = raw_segments
     align_model = models.get("align_model")
     if align_model is not None:
         import whisperx
+        align_model, metadata = _get_align_model(models, detected_language)
         aligned = whisperx.align(
             raw_segments,
             align_model,
-            models.get("metadata", {}),
+            metadata,
             audio_np,
             models["device"],
             return_char_alignments=False,
@@ -161,7 +180,7 @@ def transcribe_audio(
         speaker_map = {}
     return {
         "segments": segments,
-        "full_transcript": {"segments": segments, "language": language},
+        "full_transcript": {"segments": segments, "language": detected_language},
         "speaker_map": speaker_map,
         "speaker_segments": speaker_segments,
     }

@@ -416,13 +416,14 @@ class TestHourlyReprocessing:
         with patch("lifelog.worker.db") as mock_db:
             mock_db.get_session_all_utterances = AsyncMock(return_value=utterances)
             mock_db.get_transcription_jobs = AsyncMock(return_value=[])
+            mock_db.get_user_settings = AsyncMock(return_value={"language": "auto"})
             mock_db.create_transcription_job = AsyncMock()
             await _reprocess_session({
                 "id": 1, "user_id": 1, "started_at": datetime(2025, 1, 1, 10, 0, 0)
             })
 
         mock_db.create_transcription_job.assert_awaited_once_with(
-            1, datetime(2025, 1, 1, 10, 0, 0), datetime(2025, 1, 1, 10, 0, 1), 0
+            1, datetime(2025, 1, 1, 10, 0, 0), datetime(2025, 1, 1, 10, 0, 1), 0, language="auto"
         )
 
     @pytest.mark.asyncio
@@ -505,6 +506,7 @@ class TestHourlyReprocessing:
             mock_db.save_session_recording = AsyncMock(return_value=99)
             mock_db.mark_session_processed = AsyncMock()
             mock_db.get_unknown_speakers = AsyncMock(return_value=[])
+            mock_db.get_user_settings = AsyncMock(return_value={"language": "auto", "llm_context": ""})
             await _finalize_completed_sessions()
         saved = mock_db.save_session_recording.call_args.kwargs["speaker_segments"]
         assert saved == [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "hello", "audio_filename": "segment.enc"}]

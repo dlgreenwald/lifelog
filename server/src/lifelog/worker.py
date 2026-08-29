@@ -169,9 +169,11 @@ async def _create_session_quick_jobs() -> None:
         utterance_ids = [u["utterance_id"] for u in untranscribed]
         window_start = untranscribed[0]["created_at"].replace(tzinfo=None)
         window_end = untranscribed[-1]["created_at"].replace(tzinfo=None)
+        settings = await db.get_user_settings(session["user_id"])
+        language = settings.get("language", "auto")
         try:
             await db.create_session_quick_job(
-                session["id"], utterance_ids, window_start, window_end
+                session["id"], utterance_ids, window_start, window_end, language=language
             )
             logger.info(
                 "Session %d: queued quick job for %d untranscribed utterances [%s, %s]",
@@ -307,7 +309,9 @@ async def _reprocess_session(session: dict):
             if job.get("status") == "failed":
                 logger.error("Session %d chunk %d has terminal failed transcription job", session_id, chunk_index)
             continue
-        await db.create_transcription_job(session_id, window_start, window_end, chunk_index)
+        settings = await db.get_user_settings(session["user_id"])
+        language = settings.get("language", "auto")
+        await db.create_transcription_job(session_id, window_start, window_end, chunk_index, language=language)
         logger.info("Session %d queued full transcription chunk %d", session_id, chunk_index)
 
 
@@ -604,9 +608,13 @@ async def _finalize_completed_sessions() -> None:
 
             # Detect gap splits (>5-minute gaps between segments)
             partitions = _partition_segments(speaker_segments)
+            if not partitions:
+                logger.warning("Session %d has no speaker segments to persist, skipping", session["id"])
+                await db.mark_session_processed(session["id"])
+                continue
             user = await get_user_secret(session["user_id"])
-            if not user:
-                raise RuntimeError("session owner not found")
+            settings_row = await db.get_user_settings(session["user_id"])
+            llm_context = settings_row.get("llm_context", "")
             audio_files = await db.get_recording_audio_filenames(session["id"])
             session_start = session["started_at"]
             if session_start is None:
@@ -617,7 +625,7 @@ async def _finalize_completed_sessions() -> None:
                 partition = partitions[0]
                 persisted = _persist_partition_segments(partition, user)
                 named = _named_from_persisted(persisted)
-                llm_result = _normalise_summary(summarize(named))
+                llm_result = _normalise_summary(summarize(named, llm_context=llm_context))
                 recording_id = await db.save_session_recording(
                     session["user_id"], session["id"], {"segments": transcript_segments},
                     named, llm_result, audio_files[0] if audio_files else "",
@@ -642,7 +650,7 @@ async def _finalize_completed_sessions() -> None:
                     session_date = session["started_at"]
                     if isinstance(session_date, datetime):
                         session_date = session_date.date()
-                    await _daily_reprocess_user(user["id"], session_date)
+                    await _daily_reprocess_user(user["id"], session_date, llm_context=llm_context)
                 except Exception:
                     logger.exception("Error updating daily summary after session %d", session["id"])
             else:
@@ -655,7 +663,7 @@ async def _finalize_completed_sessions() -> None:
                 partition_0 = partitions[0]
                 persisted_0 = _persist_partition_segments(partition_0, user)
                 named_0 = _named_from_persisted(persisted_0)
-                llm_0 = _normalise_summary(summarize(named_0))
+                llm_0 = _normalise_summary(summarize(named_0, llm_context=llm_context))
                 recording_id = await db.save_session_recording(
                     session["user_id"], session["id"], {"segments": transcript_segments},
                     named_0, llm_0, audio_files[0] if audio_files else "",
@@ -675,7 +683,7 @@ async def _finalize_completed_sessions() -> None:
                     persisted = _persist_partition_segments(partition, user)
                     all_persisted.append(persisted)
                     named = _named_from_persisted(persisted)
-                    llm_n = _normalise_summary(summarize(named))
+                    llm_n = _normalise_summary(summarize(named, llm_context=llm_context))
                     # Rebase segment start/end relative to this partition
                     partition_offset = partition[0]["start"]
                     rebased = []
@@ -721,7 +729,7 @@ async def _finalize_completed_sessions() -> None:
                     session_date = session["started_at"]
                     if isinstance(session_date, datetime):
                         session_date = session_date.date()
-                    await _daily_reprocess_user(user["id"], session_date)
+                    await _daily_reprocess_user(user["id"], session_date, llm_context=llm_context)
                 except Exception:
                     logger.exception("Error updating daily summary after session %d", session["id"])
 
@@ -807,7 +815,7 @@ async def hourly_reprocess_loop():
 # ── Daily reprocessing ─────────────────────────────────────────────
 
 
-async def _daily_reprocess_user(user_id: int, target_date=None):
+async def _daily_reprocess_user(user_id: int, target_date=None, llm_context: str = ""):
     """Generate a daily summary from all session transcripts for a given date.
 
     No audio reprocessing — just collects existing transcripts and sends
@@ -862,7 +870,7 @@ async def _daily_reprocess_user(user_id: int, target_date=None):
     )
 
     # Generate daily summary via LLM
-    result = summarize_day(combined)
+    result = summarize_day(combined, llm_context=llm_context)
     daily_summary = result.get("daily_summary", "")
 
     # Store daily summary (overwrites existing)

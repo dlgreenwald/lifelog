@@ -35,6 +35,9 @@ async def _post_stage(client: httpx.AsyncClient, job_id: int, stage: str) -> Non
 async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
     job_id = job["job_id"]
     job_type = job.get("job_type", "full")
+    language = job.get("language", "auto")
+    if language == "auto":
+        language = None
     audio_response = await client.get(f"{SERVER_URL}/internal/transcription/audio/{job_id}")
     audio_response.raise_for_status()
     payload = audio_response.json()
@@ -43,13 +46,13 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
         # Use timestamps from payload for proper offset-based concatenation
         timestamps = payload.get("timestamps") or [job["window_start"]]
         audio_np, sample_rate = concatenate_segments(audio_segments, timestamps)
-        complete = transcribe_audio(models, audio_np, sample_rate)
+        complete = transcribe_audio(models, audio_np, sample_rate, language=language)
     else:
         await _post_stage(client, job_id, "concatenating")
         audio_np, sample_rate = concatenate_segments(audio_segments, payload["timestamps"])
         await _post_stage(client, job_id, "transcribing")
         await _post_stage(client, job_id, "diarizing")
-        complete = transcribe_audio(models, audio_np, sample_rate)
+        complete = transcribe_audio(models, audio_np, sample_rate, language=language)
         await _post_stage(client, job_id, "done")
     response = await client.post(
         f"{SERVER_URL}/internal/transcription/complete/{job_id}", json=complete

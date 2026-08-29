@@ -303,6 +303,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - `014_cleanup_duplicate_transcription_jobs.py` — Cleans duplicate jobs
 - `015_quick_transcription_job_type.py` — Distinguishes quick and full jobs
 - `016_speaker_segments.py` — Adds encrypted speaker segment metadata to recordings
+- `020_job_language.py` — Adds language column to transcription_jobs table
 
 **Running migrations:**
 
