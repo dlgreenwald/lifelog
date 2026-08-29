@@ -58,3 +58,13 @@ class CreateDecision(BaseModel):
 class UploadResponse(BaseModel):
     status: str
     recording_id: int
+
+
+class UserSettings(BaseModel):
+    language: str = "auto"
+    llm_context: str = ""
+
+
+class UserSettingsResponse(BaseModel):
+    language: str
+    llm_context: str

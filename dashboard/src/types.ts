@@ -85,3 +85,8 @@ export interface UnknownSpeaker {
   speakers: Speaker[];
   audio_filename: string;
 }
+
+export interface UserSettings {
+    language: string;
+    llm_context: string;
+}

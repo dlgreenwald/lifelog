@@ -8,6 +8,7 @@ import RecordingDetail from './components/RecordingDetail';
 import TodoList from './components/TodoList';
 import DecisionsList from './components/DecisionsList';
 import SpeakerLabel from './components/SpeakerLabel';
+import Settings from './components/Settings';
 import { setAuthProvider } from './api/client';
 import { useEffect } from 'react';
 
@@ -28,6 +29,7 @@ function AppRoutes() {
             <Link to="/todos">TODOs</Link>
             <Link to="/decisions">Decisions</Link>
             <Link to="/speakers">Speakers</Link>
+            <Link to="/settings">Settings</Link>
           </nav>
         </header>
       )}
@@ -40,6 +42,7 @@ function AppRoutes() {
           <Route path="/todos" element={<ProtectedRoute><TodoList /></ProtectedRoute>} />
           <Route path="/decisions" element={<ProtectedRoute><DecisionsList /></ProtectedRoute>} />
           <Route path="/speakers" element={<ProtectedRoute><SpeakerLabel /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
         </Routes>
       </main>
     </div>

@@ -99,6 +99,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
   getUnknownSpeakers: () => fetchApi('/dashboard/unknown-speakers'),
+  getAllSpeakers: () => fetchApi('/dashboard/speakers/all'),
   deleteRecording: (id: string) =>
     fetchApi(`/dashboard/recording/${id}`, { method: 'DELETE' }),
   reprocessRecording: (id: string) =>
@@ -116,5 +117,12 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ recording_id: recordingId, speaker_id: speakerId, label }),
+    }),
+  getSettings: () => fetchApi('/dashboard/settings'),
+  saveSettings: (data: { language: string; llm_context: string }) =>
+    fetchApi('/dashboard/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
     }),
 };

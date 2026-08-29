@@ -53,6 +53,11 @@ Format your response as valid JSON with these exact keys: category, summary, con
 
 ---
 
+USER CONTEXT:
+{llm_context}
+
+---
+
 TRANSCRIPT:
 {transcript}"""
 
@@ -71,11 +76,16 @@ Format your response as valid JSON with this exact key: daily_summary
 
 ---
 
+USER CONTEXT:
+{llm_context}
+
+---
+
 TRANSCRIPTS:
 {transcripts}"""
 
 
-def summarize_day(transcripts: str) -> dict:
+def summarize_day(transcripts: str, llm_context: str = "") -> dict:
     """Send combined daily transcripts to LLM for Work/Personal summary."""
     start = time.monotonic()
     logger.info(
@@ -91,7 +101,7 @@ def summarize_day(transcripts: str) -> dict:
                 "role": "system",
                 "content": "You are a life journal assistant that summarizes a day's conversations into Work and Personal categories.",
             },
-            {"role": "user", "content": DAILY_PROMPT.format(transcripts=transcripts)},
+            {"role": "user", "content": DAILY_PROMPT.format(transcripts=transcripts, llm_context=llm_context)},
         ],
         response_format={"type": "json_object"},
     )
@@ -105,7 +115,7 @@ def summarize_day(transcripts: str) -> dict:
     return {"daily_summary": summary}
 
 
-def summarize(segments: list[dict]) -> dict:
+def summarize(segments: list[dict], llm_context: str = "") -> dict:
     """Send named transcript to LLM for analysis."""
     if not segments:
         return {
@@ -140,7 +150,7 @@ def summarize(segments: list[dict]) -> dict:
                 "role": "system",
                 "content": "You are a life journal assistant that analyzes conversations and extracts structured information.",
             },
-            {"role": "user", "content": PROMPT.format(transcript=formatted)},
+            {"role": "user", "content": PROMPT.format(transcript=formatted, llm_context=llm_context)},
         ],
         response_format={"type": "json_object"},
     )

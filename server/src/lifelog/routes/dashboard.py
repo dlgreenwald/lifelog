@@ -15,6 +15,8 @@ from lifelog.database import (
     delete_recording,
     delete_todo,
     get_active_session_recording,
+    get_all_recordings_with_speakers,
+    get_all_voiceprints,
     get_daily_summary,
     get_decision_owner,
     get_decisions,
@@ -26,12 +28,15 @@ from lifelog.database import (
     get_todos_for_date,
     get_todos_for_recording,
     get_unknown_speakers,
+    get_user_settings,
     reset_session_for_reprocessing,
+    save_user_settings,
     update_decision_archive,
     update_recording_category,
     update_todo_completion,
 )
-from lifelog.models import CreateDecision, CreateTodo
+from lifelog.models import CreateDecision, CreateTodo, UserSettings
+from lifelog.validation import validate_llm_context
 
 logger = logging.getLogger("lifelog.dashboard")
 
@@ -347,6 +352,26 @@ async def get_unknown_speakers_route(user: dict = Depends(validate_oidc_token)):
     return {"recordings": recordings}
 
 
+@router.get("/speakers/all")
+async def get_all_speakers_route(user: dict = Depends(validate_oidc_token)):
+    """Get all unique speakers (labeled and unlabeled) across all recordings."""
+    voiceprints = await get_all_voiceprints(user["id"])
+    labeled_names = {vp["name"] for vp in voiceprints}
+    recordings = await get_all_recordings_with_speakers(user["id"])
+    speakers = {}
+    for rec in recordings:
+        for seg in (rec.get("speakers") or []):
+            name = seg.get("name", "Unknown")
+            if name not in speakers:
+                speakers[name] = {
+                    "name": name,
+                    "labeled": name in labeled_names,
+                    "recording_id": rec["id"],
+                    "speaker_label": name,
+                }
+    return {"speakers": list(speakers.values())}
+
+
 @router.delete("/recording/{recording_id}")
 async def delete_recording_route(recording_id: int, user: dict = Depends(validate_oidc_token)):
     """Delete a recording."""
@@ -417,4 +442,21 @@ async def get_daily_summary_route(date: str, user: dict = Depends(validate_oidc_
         for key, val in summary["daily_summary"].items():
             if isinstance(val, dict):
                 summary["daily_summary"][key] = val.get("summary", str(val))
-    return {"daily_summary": summary}
+
+
+@router.get("/settings")
+async def get_settings(user: dict = Depends(validate_oidc_token)):
+    """Get the current user's settings."""
+    return await get_user_settings(user["id"])
+
+
+@router.post("/settings")
+async def save_settings(body: UserSettings, user: dict = Depends(validate_oidc_token)):
+    """Save user settings. llm_context is validated for prompt injection."""
+    settings_model = UserSettings.model_validate(body)
+    try:
+        llm_context = validate_llm_context(settings_model.llm_context)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await save_user_settings(user["id"], settings_model.language, llm_context)
+    return {"ok": True}
