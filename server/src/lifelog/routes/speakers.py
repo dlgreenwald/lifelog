@@ -52,7 +52,6 @@ def extract_speaker_audio(recording: dict, speaker_id: str) -> bytes:
 @router.post("/label")
 async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_token)):
     """Label an unknown speaker in a recording."""
-    start = time.monotonic()
     logger.info(
         "Labeling speaker: recording=%d, speaker=%s → '%s'",
         label.recording_id,
@@ -84,21 +83,8 @@ async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_
         response.raise_for_status()
         embedding = response.json()["embedding"]
 
-    # Save voiceprint to database (orchestrator owns DB)
     await save_voiceprint(user["id"], label.label, serialize_embedding(embedding))
     logger.info("Voiceprint saved for '%s'", label.label)
-
-    # Re-run identification on all recordings with unknowns
-    rerun_start = time.monotonic()
-    await rerun_identification(user)
-    rerun_duration = time.monotonic() - rerun_start
-
-    total_duration = time.monotonic() - start
-    logger.info(
-        "Speaker labeling complete in %.2fs (re-identification: %.2fs)",
-        total_duration,
-        rerun_duration,
-    )
 
     return {"status": "labeled", "label": label.label}
 

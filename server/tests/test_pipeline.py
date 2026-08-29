@@ -73,5 +73,38 @@ def test_summarize():
     messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
     user_msg = messages[1]["content"]
     assert "Alice" in user_msg
-    assert "Bob" in user_msg
+
+
+
+def test_summarize_with_context():
+    """summarize() includes llm_context in the prompt sent to the LLM."""
+    from lifelog.pipeline.llm import summarize
+
+    mock_choice = MagicMock()
+    mock_choice.message.content = json.dumps({
+        "category": "work",
+        "summary": "Test summary",
+        "conversation_changes": [],
+        "decisions": [],
+        "todos": [],
+        "calendar": [],
+        "notes": [],
+    })
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+    segments = [
+        {"name": "Alice", "start": 0.0, "text": "Let's discuss the project."},
+    ]
+    llm_context = "I work as a developer and my colleague is Alice."
+
+    with patch("lifelog.pipeline.llm.client", mock_client):
+        summarize(segments, llm_context=llm_context)
+
+    messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+    user_msg = messages[1]["content"]
+    assert "USER CONTEXT:" in user_msg
+    assert llm_context in user_msg
+    assert "Alice" in user_msg
     assert "[0.0s]" in user_msg
