@@ -2,14 +2,34 @@
 
 ## ⚠️ Commit Rule
 
+**NEVER commit directly to `main`.** All changes must go through a pull request.
+
 **NEVER commit changes without explicit user instruction.** Always ask before running `git commit`. The user decides when changes are ready to commit. **REMIND the user to commit** when a task appears to be working and changes are stable — don't let working changes sit uncommitted.
+
+**Squash merge only.** When merging a PR, always use squash merge. This keeps `main` history linear and each commit atomic. Delete the feature branch after merge.
 
 ## ⚠️ Branch Rule
 
-**ALL work must be done in branches.** Never commit directly to `main`. Before starting a new task, confirm which branch to work on:
-- If not on a branch: ask the user to describe the feature and either create a new branch (`git checkout -b <branch-name>`) or select an existing one.
-- If already on a working branch: continue on that branch.
-- Exception: hotfixes and documentation-only changes that don't affect code may be handled on `main` with explicit user approval.
+**Trunk-based development.** `main` is the single source of truth. All work happens on short-lived feature branches.
+
+**Branch naming:** All work uses `feature/` branches with descriptive kebab-case names:
+- `feature/user-disk-limits`
+- `feature/speaker-identification-fix`
+- `feature/update-deps`
+
+**Before starting work:**
+1. Ensure `main` is up to date: `git pull origin main`
+2. Create a branch: `git checkout -b <branch-name>`
+3. Work on the branch; commit frequently with clear messages
+
+**PR requirements:**
+- Every PR targets `main`
+- PR title must use [Conventional Commits](https://www.conventionalcommits.org/) format: `feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:` — this becomes the squash commit message
+- All CI checks must pass before merge
+- Squash merge (no merge commits, no rebase merges)
+- Delete branch after merge
+
+**Long-lived branches are prohibited.** If a branch lives more than a few days, it's too big — break it into smaller PRs. The only exception is `release/*` branches for versioned releases (not applicable until needed).
 
 ## ⚠️ Documentation Sync Rule
 
