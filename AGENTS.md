@@ -449,16 +449,16 @@ Dashboard uses `strict: true` in `tsconfig.json`. No `: any` allowed — use `un
 
 ## Build Scripts
 
-Each component has a `build.sh` that runs its full verification pipeline. The top-level `build.sh` runs all of them.
+Each component has a `build.sh` that runs its full verification pipeline. The top-level `build.sh` runs all of them. Python-service scripts (`server/build.sh`, `diarization/build.sh`, `speaker-id/build.sh`) bootstrap a `.venv` with `uv venv .venv && uv pip install -e ".[dev]"` if missing, then run ruff + pytest against it.
 
 | Script | Steps |
 |--------|-------|
 | `build.sh` | Runs all component builds, reports pass/fail |
-| `server/build.sh` | compile check → ruff lint → pytest (108 tests) |
-| `diarization/build.sh` | compile check → ruff lint → pytest (8 tests) |
-| `speaker-id/build.sh` | compile check → ruff lint → pytest (15 tests) |
-| `dashboard/build.sh` | tsc type check → vite build → vitest (86 tests) → bundle size |
-| `transcription-worker/build.sh` | ruff lint → py_compile → pytest (10 tests) |</input>
+| `server/build.sh` | venv bootstrap (uv) → ruff lint → pytest (134 tests) |
+| `diarization/build.sh` | venv bootstrap (uv) → ruff lint → pytest (8 tests) |
+| `speaker-id/build.sh` | venv bootstrap (uv) → ruff lint → pytest (16 tests) |
+| `dashboard/build.sh` | tsc type check → vite build → vitest (91 tests) → bundle size |
+| `transcription-worker/build.sh` | venv bootstrap (uv) → ruff lint → py_compile → pytest (10 tests) |</input>
 
 **Run everything:**
 
