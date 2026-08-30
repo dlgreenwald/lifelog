@@ -27,7 +27,14 @@ class JobError(BaseModel):
     error: str
 
 
-_ALLOWED_STAGES = {"queued", "concatenating", "transcribing", "diarizing", "identifying", "done"}
+_ALLOWED_STAGES = {
+    "queued",
+    "concatenating",
+    "transcribing",
+    "diarizing",
+    "identifying",
+    "done",
+}
 
 
 def _iso(value):
@@ -37,6 +44,7 @@ def _iso(value):
 def _json_value(value, default):
     if isinstance(value, str):
         import json
+
         try:
             value = json.loads(value)
         except json.JSONDecodeError:
@@ -106,21 +114,38 @@ async def get_job_audio(job_id: int):
                 try:
                     audio = audio_crypto.decrypt_audio(fname, secret, salt)
                 except Exception:
-                    logger.warning("Skipping unavailable audio %s for job %d", fname, job_id, exc_info=True)
+                    logger.warning(
+                        "Skipping unavailable audio %s for job %d",
+                        fname,
+                        job_id,
+                        exc_info=True,
+                    )
                     continue
                 audio_segments.append(base64.b64encode(audio).decode("ascii"))
                 timestamps.append(_iso(utterance["created_at"]))
             if not audio_segments:
-                raise HTTPException(status_code=404, detail="No usable audio for session quick job")
-            return {"audio_segments": audio_segments, "timestamps": timestamps, "utterances": []}
+                raise HTTPException(
+                    status_code=404, detail="No usable audio for session quick job"
+                )
+            return {
+                "audio_segments": audio_segments,
+                "timestamps": timestamps,
+                "utterances": [],
+            }
         # Legacy single-utterance quick job
         filename = result.get("audio_filename")
         try:
             audio = audio_crypto.decrypt_audio(filename, secret, salt)
         except Exception as exc:
             logger.exception("Unable to decrypt quick job %d audio", job_id)
-            raise HTTPException(status_code=500, detail="Unable to decrypt quick job audio") from exc
-        return {"audio_segments": [base64.b64encode(audio).decode("ascii")], "timestamps": [], "utterances": []}
+            raise HTTPException(
+                status_code=500, detail="Unable to decrypt quick job audio"
+            ) from exc
+        return {
+            "audio_segments": [base64.b64encode(audio).decode("ascii")],
+            "timestamps": [],
+            "utterances": [],
+        }
 
     utterances = await db.get_session_utterances_in_range(
         job["session_id"], job["window_start"], job["window_end"]
@@ -135,19 +160,30 @@ async def get_job_audio(job_id: int):
         try:
             audio = audio_crypto.decrypt_audio(filename, secret, salt)
         except Exception:
-            logger.warning("Skipping unavailable audio %s for job %d", filename, job_id, exc_info=True)
+            logger.warning(
+                "Skipping unavailable audio %s for job %d",
+                filename,
+                job_id,
+                exc_info=True,
+            )
             continue
         audio_segments.append(base64.b64encode(audio).decode("ascii"))
         created_at = utterance["created_at"]
         timestamps.append(_iso(created_at))
-        metadata.append({
-            "utterance_id": utterance["utterance_id"],
-            "audio_filename": filename,
-            "created_at": _iso(created_at),
-        })
+        metadata.append(
+            {
+                "utterance_id": utterance["utterance_id"],
+                "audio_filename": filename,
+                "created_at": _iso(created_at),
+            }
+        )
     if not audio_segments:
         raise HTTPException(status_code=404, detail="No usable audio for job")
-    return {"audio_segments": audio_segments, "timestamps": timestamps, "utterances": metadata}
+    return {
+        "audio_segments": audio_segments,
+        "timestamps": timestamps,
+        "utterances": metadata,
+    }
 
 
 @router.post("/stage/{job_id}")
@@ -160,12 +196,15 @@ async def update_stage(job_id: int, body: StageUpdate):
 
 @router.post("/complete/{job_id}")
 async def complete_job(job_id: int, body: JobResult):
-    await db.complete_transcription_job(job_id, {
-        "segments": body.segments,
-        "full_transcript": body.full_transcript,
-        "speaker_map": body.speaker_map,
-        "speaker_segments": body.speaker_segments,
-    })
+    await db.complete_transcription_job(
+        job_id,
+        {
+            "segments": body.segments,
+            "full_transcript": body.full_transcript,
+            "speaker_map": body.speaker_map,
+            "speaker_segments": body.speaker_segments,
+        },
+    )
     return {"status": "ok"}
 
 

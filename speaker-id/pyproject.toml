@@ -21,6 +21,7 @@ dev = [
     "httpx>=0.25.0",
     "python-multipart>=0.0.6",
     "ruff>=0.6.0",
+    "pip-audit>=2.7.0",
 ]
 
 [tool.pytest.ini_options]

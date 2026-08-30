@@ -1,4 +1,5 @@
 """Mock integration tests for upload route endpoint."""
+
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,7 +17,12 @@ def _app_with_mocks(user=None):
     app.include_router(router)
 
     async def fake_upload_auth():
-        return user or {"id": 1, "api_key": "test-key", "name": "Test", "encryption_secret": "secret-123"}
+        return user or {
+            "id": 1,
+            "api_key": "test-key",
+            "name": "Test",
+            "encryption_secret": "secret-123",
+        }
 
     app.dependency_overrides[validate_upload_auth] = fake_upload_auth
     return app
@@ -135,6 +141,7 @@ async def test_upload_new_utterance_on_chunk_index_reset():
     app = _app_with_mocks(mock_user)
 
     epoch_counter = [1700000000]
+
     def _next_epoch():
         val = epoch_counter[0]
         epoch_counter[0] += 1

@@ -1,4 +1,5 @@
 """Tests for speaker-id pipeline: opus_to_wav and SpeakerEncoder.extract_embedding."""
+
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -11,6 +12,7 @@ def test_opus_to_wav_calls_ffmpeg():
     fake_wav = b"RIFF" + b"\x00" * 100
 
     with patch("speaker_id.routes.subprocess.run") as mock_run:
+
         def fake_run(cmd, **kwargs):
             wav_path = cmd[-1]
             with open(wav_path, "wb") as f:
@@ -30,7 +32,9 @@ def test_opus_to_wav_cleans_up_temp_files():
     """opus_to_wav removes temp files even on error."""
     from speaker_id.routes import opus_to_wav
 
-    with patch("speaker_id.routes.subprocess.run", side_effect=RuntimeError("ffmpeg failed")):
+    with patch(
+        "speaker_id.routes.subprocess.run", side_effect=RuntimeError("ffmpeg failed")
+    ):
         try:
             opus_to_wav(b"fake-opus-data")
         except RuntimeError:
@@ -69,6 +73,7 @@ def test_speaker_encoder_extract_embedding():
     import io
 
     import soundfile
+
     fake_audio = np.zeros(16000, dtype="float32")
     buf = io.BytesIO()
     soundfile.write(buf, fake_audio, 16000, format="WAV", subtype="FLOAT")
@@ -94,6 +99,7 @@ def test_speaker_encoder_extract_embedding_2d():
     import io
 
     import soundfile
+
     fake_audio = np.zeros(16000, dtype="float32")
     buf = io.BytesIO()
     soundfile.write(buf, fake_audio, 16000, format="WAV", subtype="FLOAT")

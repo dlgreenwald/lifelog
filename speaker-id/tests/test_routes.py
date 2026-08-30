@@ -1,4 +1,5 @@
 """Unit tests for speaker-id utility functions and mock integration tests for routes."""
+
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -76,7 +77,7 @@ def test_match_voiceprint_best_match():
     embedding = np.array([1.0, 0.0, 0.0])
     voiceprints = [
         {"name": "Alice", "embedding": [0.0, 1.0, 0.0]},  # orthogonal
-        {"name": "Bob", "embedding": [0.9, 0.1, 0.0]},     # very similar
+        {"name": "Bob", "embedding": [0.9, 0.1, 0.0]},  # very similar
     ]
 
     result = match_voiceprint(embedding, voiceprints, threshold=0.5)
@@ -135,13 +136,18 @@ def test_identify_speakers_matches_voiceprint_from_audio():
     app.include_router(router)
     with (
         patch("speaker_id.routes._extract_segment_wav", return_value=b"wav"),
-        patch("speaker_id.routes.encoder.extract_embedding", return_value=np.array([1.0, 0.0])),
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            return_value=np.array([1.0, 0.0]),
+        ),
         patch("speaker_id.routes.match_voiceprint", return_value="Alice") as match,
     ):
         response = TestClient(app).post(
             "/identify",
             json={
-                "segments": [{"speaker": "SPEAKER_00", "start": 0, "end": 1, "text": "hi"}],
+                "segments": [
+                    {"speaker": "SPEAKER_00", "start": 0, "end": 1, "text": "hi"}
+                ],
                 "audio_bytes": "YXVkaW8=",
                 "audio_format": "wav",
                 "voiceprints": [{"name": "Alice", "embedding": [1.0, 0.0]}],

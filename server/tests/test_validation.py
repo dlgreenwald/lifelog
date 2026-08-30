@@ -1,4 +1,5 @@
 """Tests for prompt injection defense in validation.py."""
+
 import pytest
 
 from lifelog.validation import validate_llm_context

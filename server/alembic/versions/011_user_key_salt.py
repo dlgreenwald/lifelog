@@ -3,6 +3,7 @@
 Revision ID: 011
 Revises: 010
 """
+
 import secrets
 from typing import Sequence, Union
 

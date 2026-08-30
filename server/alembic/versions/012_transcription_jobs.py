@@ -3,6 +3,7 @@
 Revision ID: 012
 Revises: 011
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -20,7 +21,9 @@ def upgrade() -> None:
     op.create_table(
         "transcription_jobs",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("session_id", sa.Integer(), sa.ForeignKey("sessions.id"), nullable=False),
+        sa.Column(
+            "session_id", sa.Integer(), sa.ForeignKey("sessions.id"), nullable=False
+        ),
         sa.Column("window_start", sa.TIMESTAMP(), nullable=False),
         sa.Column("window_end", sa.TIMESTAMP(), nullable=False),
         sa.Column("status", sa.Text(), nullable=False, server_default="pending"),

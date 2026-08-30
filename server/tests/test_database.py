@@ -3,6 +3,7 @@
 asyncpg's pool.acquire() returns an async context manager directly
 (not a coroutine). The mock must replicate this pattern.
 """
+
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -53,7 +54,13 @@ def mock_conn():
 async def test_get_user_by_api_key(mock_conn):
     from lifelog.database import get_user_by_api_key
 
-    fake_row = {"id": 1, "api_key": "key-123", "oidc_sub": None, "name": "Test", "encryption_secret": "sec"}
+    fake_row = {
+        "id": 1,
+        "api_key": "key-123",
+        "oidc_sub": None,
+        "name": "Test",
+        "encryption_secret": "sec",
+    }
     mock_conn.fetchrow.return_value = fake_row
     pool = _make_mock_pool(mock_conn)
 
@@ -81,7 +88,13 @@ async def test_get_user_by_api_key_not_found(mock_conn):
 async def test_get_user_by_oidc_sub(mock_conn):
     from lifelog.database import get_user_by_oidc_sub
 
-    fake_row = {"id": 2, "api_key": None, "oidc_sub": "oidc-abc", "name": "OIDC User", "encryption_secret": "sec"}
+    fake_row = {
+        "id": 2,
+        "api_key": None,
+        "oidc_sub": "oidc-abc",
+        "name": "OIDC User",
+        "encryption_secret": "sec",
+    }
     mock_conn.fetchrow.return_value = fake_row
     pool = _make_mock_pool(mock_conn)
 
@@ -115,7 +128,9 @@ async def test_save_recording(mock_conn):
 
     with patch("lifelog.database.pool", pool):
         recording_id = await save_recording(
-            1, {"text": "Hello"}, [{"name": "Alice"}],
+            1,
+            {"text": "Hello"},
+            [{"name": "Alice"}],
             {"summary": "Chat", "todos": [], "calendar": [], "notes": []},
             "file.enc",
         )
@@ -129,7 +144,9 @@ async def test_save_recording(mock_conn):
 async def test_get_recordings_by_date(mock_conn):
     from lifelog.database import get_recordings_by_date
 
-    mock_conn.fetch.return_value = [{"id": 1, "timestamp": datetime(2024, 1, 15, tzinfo=UTC), "summary": "Chat"}]
+    mock_conn.fetch.return_value = [
+        {"id": 1, "timestamp": datetime(2024, 1, 15, tzinfo=UTC), "summary": "Chat"}
+    ]
     pool = _make_mock_pool(mock_conn)
 
     with patch("lifelog.database.pool", pool):
@@ -170,7 +187,12 @@ async def test_get_unknown_speakers(mock_conn):
     from lifelog.database import get_unknown_speakers
 
     mock_conn.fetch.return_value = [
-        {"id": 5, "timestamp": datetime(2024, 1, 15, tzinfo=UTC), "speakers": [{"name": "Unknown"}], "audio_filename": "abc.enc"},
+        {
+            "id": 5,
+            "timestamp": datetime(2024, 1, 15, tzinfo=UTC),
+            "speakers": [{"name": "Unknown"}],
+            "audio_filename": "abc.enc",
+        },
     ]
     pool = _make_mock_pool(mock_conn)
 
@@ -314,7 +336,12 @@ async def test_save_decisions(mock_conn):
             10,
             1,
             [
-                {"decision": "Use Postgres", "made_by": "Alice", "context": "DB choice", "reason": "Team experience"},
+                {
+                    "decision": "Use Postgres",
+                    "made_by": "Alice",
+                    "context": "DB choice",
+                    "reason": "Team experience",
+                },
                 {"decision": "Launch Friday", "made_by": "Bob"},
             ],
         )
@@ -357,7 +384,15 @@ async def test_get_decisions_for_recording(mock_conn):
     from lifelog.database import get_decisions_for_recording
 
     mock_conn.fetch.return_value = [
-        {"id": 1, "decision": "Go with A", "made_by": "Bob", "context": None, "reason": None, "archived": False, "created_at": datetime(2024, 1, 15, tzinfo=UTC)},
+        {
+            "id": 1,
+            "decision": "Go with A",
+            "made_by": "Bob",
+            "context": None,
+            "reason": None,
+            "archived": False,
+            "created_at": datetime(2024, 1, 15, tzinfo=UTC),
+        },
     ]
     pool = _make_mock_pool(mock_conn)
 
@@ -425,9 +460,14 @@ async def test_claim_transcription_job_updates_processing(mock_conn):
     from lifelog.database import claim_transcription_job
 
     mock_conn.fetchrow.return_value = {
-        "id": 8, "session_id": 2, "window_start": datetime(2025, 1, 1, 10),
-        "window_end": datetime(2025, 1, 1, 10, 10), "chunk_index": 0,
-        "status": "pending", "job_type": "full", "result": {},
+        "id": 8,
+        "session_id": 2,
+        "window_start": datetime(2025, 1, 1, 10),
+        "window_end": datetime(2025, 1, 1, 10, 10),
+        "chunk_index": 0,
+        "status": "pending",
+        "job_type": "full",
+        "result": {},
     }
     with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
         result = await claim_transcription_job()
@@ -451,7 +491,9 @@ async def test_transcription_job_failure_is_retried(mock_conn):
 async def test_completed_quick_jobs_are_unapplied(mock_conn):
     from lifelog.database import get_completed_quick_jobs
 
-    mock_conn.fetch.return_value = [{"id": 3, "session_id": 2, "result": {"segments": []}}]
+    mock_conn.fetch.return_value = [
+        {"id": 3, "session_id": 2, "result": {"segments": []}}
+    ]
     with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
         result = await get_completed_quick_jobs()
     assert result[0]["id"] == 3
@@ -472,7 +514,15 @@ async def test_save_partition_recording_inserts_with_partition_index(mock_conn):
             speakers=[{"name": "SPEAKER_00", "start": 0, "end": 5, "text": "hello"}],
             result={"summary": "test", "todos": [], "calendar": [], "notes": []},
             audio_filename="audio.enc",
-            stored_segments=[{"speaker": "SPEAKER_00", "start": 0, "end": 5, "text": "hello", "audio_filename": "seg.enc"}],
+            stored_segments=[
+                {
+                    "speaker": "SPEAKER_00",
+                    "start": 0,
+                    "end": 5,
+                    "text": "hello",
+                    "audio_filename": "seg.enc",
+                }
+            ],
             partition_start=datetime(2025, 1, 1, 10, 0, 0),
             partition_end=datetime(2025, 1, 1, 10, 5, 0),
             category="work",

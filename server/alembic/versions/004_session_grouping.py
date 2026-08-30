@@ -3,6 +3,7 @@
 Revision ID: 004
 Revises: 003
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -70,7 +71,9 @@ def upgrade() -> None:
     # --- recordings: add session_id ---
     op.add_column(
         "recordings",
-        sa.Column("session_id", sa.Integer(), sa.ForeignKey("sessions.id"), nullable=True),
+        sa.Column(
+            "session_id", sa.Integer(), sa.ForeignKey("sessions.id"), nullable=True
+        ),
     )
     op.create_index(
         "idx_recordings_session",

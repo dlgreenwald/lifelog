@@ -36,7 +36,11 @@ def extract_speaker_audio(recording: dict, speaker_id: str) -> bytes:
         try:
             return audio_crypto.decrypt_audio(segment["audio_filename"], secret, salt)
         except Exception:
-            logger.warning("Skipping unavailable speaker segment %s", segment.get("audio_filename"), exc_info=True)
+            logger.warning(
+                "Skipping unavailable speaker segment %s",
+                segment.get("audio_filename"),
+                exc_info=True,
+            )
     if recording.get("speaker_segments"):
         raise ValueError("speaker has no stored audio")
     filename = recording.get("audio_filename")
@@ -60,7 +64,9 @@ async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_
 
     recording = await get_recording(user["id"], label.recording_id)
     if not recording:
-        logger.warning("Recording %d not found for user %d", label.recording_id, user["id"])
+        logger.warning(
+            "Recording %d not found for user %d", label.recording_id, user["id"]
+        )
         raise HTTPException(status_code=404, detail="Recording not found")
 
     # Update speaker name in database
@@ -69,9 +75,15 @@ async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_
     # Keep credentials private to this in-memory copy; never return them to the dashboard.
     recording_for_audio = dict(recording)
     recording_for_audio["encryption_secret"] = user["encryption_secret"]
-    recording_for_audio["key_salt"] = user.get("key_salt", recording.get("key_salt", b""))
+    recording_for_audio["key_salt"] = user.get(
+        "key_salt", recording.get("key_salt", b"")
+    )
     segment_audio = extract_speaker_audio(recording_for_audio, label.speaker_id)
-    logger.info("Enrolling voiceprint for '%s' (%d bytes audio)", label.label, len(segment_audio))
+    logger.info(
+        "Enrolling voiceprint for '%s' (%d bytes audio)",
+        label.label,
+        len(segment_audio),
+    )
 
     async with httpx.AsyncClient(timeout=300) as client:
         response = await client.post(
@@ -96,9 +108,13 @@ async def rerun_identification(user: dict):
         segments = recording.get("speaker_segments") or []
         if not segments:
             audio_bytes = audio_crypto.decrypt_audio(
-                recording["audio_filename"], user["encryption_secret"], bytes(user["key_salt"])
+                recording["audio_filename"],
+                user["encryption_secret"],
+                bytes(user["key_salt"]),
             )
-            identified = await identify_speakers(recording["speakers"], audio_bytes, user["id"])
+            identified = await identify_speakers(
+                recording["speakers"], audio_bytes, user["id"]
+            )
             await update_recording_speakers(recording["id"], identified)
         else:
             updated_segments = []
@@ -108,23 +124,41 @@ async def rerun_identification(user: dict):
                 if item.get("audio_filename"):
                     try:
                         audio = audio_crypto.decrypt_audio(
-                            item["audio_filename"], user["encryption_secret"], bytes(user["key_salt"])
+                            item["audio_filename"],
+                            user["encryption_secret"],
+                            bytes(user["key_salt"]),
                         )
                         identified = await identify_speakers(
                             [{"speaker": raw, "start": 0, "end": 1}],
-                            audio, user["id"], audio_format="wav",
+                            audio,
+                            user["id"],
+                            audio_format="wav",
                         )
-                        item["speaker"] = identified[0].get("name", raw) if identified else raw
+                        item["speaker"] = (
+                            identified[0].get("name", raw) if identified else raw
+                        )
                     except Exception:
-                        logger.warning("Unable to re-identify segment for '%s'", raw, exc_info=True)
+                        logger.warning(
+                            "Unable to re-identify segment for '%s'", raw, exc_info=True
+                        )
                 updated_segments.append(item)
             await update_recording_speaker_data(
                 recording["id"],
                 [
-                    {"id": index, "name": segment["speaker"], "start": segment.get("start", 0),
-                     "end": segment.get("end", 0), "text": segment.get("text", "")}
+                    {
+                        "id": index,
+                        "name": segment["speaker"],
+                        "start": segment.get("start", 0),
+                        "end": segment.get("end", 0),
+                        "text": segment.get("text", ""),
+                    }
                     for index, segment in enumerate(updated_segments)
                 ],
                 updated_segments,
             )
-        logger.debug("Re-identified recording %d/%d (id=%d)", index + 1, len(recordings), recording["id"])
+        logger.debug(
+            "Re-identified recording %d/%d (id=%d)",
+            index + 1,
+            len(recordings),
+            recording["id"],
+        )

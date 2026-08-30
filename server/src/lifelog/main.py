@@ -113,5 +113,7 @@ app.add_middleware(
 app.include_router(upload.router, prefix="/api/v1", tags=["upload"])
 app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["dashboard"])
 app.include_router(speakers.router, prefix="/api/v1/speakers", tags=["speakers"])
-app.include_router(transcription.router, prefix="/internal/transcription", tags=["transcription"])
+app.include_router(
+    transcription.router, prefix="/internal/transcription", tags=["transcription"]
+)
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

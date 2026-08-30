@@ -15,14 +15,29 @@ def decode_audio(audio_bytes: bytes) -> tuple[np.ndarray, int]:
     if not audio_bytes:
         raise ValueError("audio input is empty")
     process = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", "pipe:0", "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            "pipe:0",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "wav",
+            "pipe:1",
+        ],
         input=audio_bytes,
         capture_output=True,
         check=False,
     )
     if process.returncode != 0 or not process.stdout:
         detail = process.stderr.decode(errors="replace").strip()[:300]
-        raise ValueError(f"unable to decode audio: {detail or 'ffmpeg returned no output'}")
+        raise ValueError(
+            f"unable to decode audio: {detail or 'ffmpeg returned no output'}"
+        )
     try:
         with wave.open(io.BytesIO(process.stdout), "rb") as wav:
             sample_rate = wav.getframerate()
@@ -61,7 +76,9 @@ def concatenate_segments(
     placements = []
     total_samples = 0
     for samples, _ in decoded:
-        offset = max(0.0, (_timestamp(timestamps[len(placements)]) - start_time).total_seconds())
+        offset = max(
+            0.0, (_timestamp(timestamps[len(placements)]) - start_time).total_seconds()
+        )
         begin = round(offset * sample_rate)
         placements.append((begin, samples))
         total_samples = max(total_samples, begin + len(samples))
@@ -69,7 +86,7 @@ def concatenate_segments(
         raise ValueError("decoded audio contains no samples")
     output = np.zeros(total_samples, dtype=np.float32)
     for begin, samples in placements:
-        output[begin:begin + len(samples)] = samples
+        output[begin : begin + len(samples)] = samples
     return output, sample_rate
 
 

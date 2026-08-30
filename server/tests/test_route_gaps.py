@@ -1,4 +1,5 @@
 """Tests for previously untested route functions: get_calendar, get_audio, rerun_identification."""
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,8 +15,10 @@ from lifelog.routes.speakers import router as speakers_router
 class _MockPoolConnection:
     def __init__(self, conn):
         self._conn = conn
+
     async def __aenter__(self):
         return self._conn
+
     async def __aexit__(self, *args):
         return False
 
@@ -71,7 +74,9 @@ async def test_get_audio():
     """get_audio decrypts and streams audio file."""
     fake_audio = b"decrypted-opus-bytes"
 
-    app = _app_with_mocks({"id": 1, "name": "Test", "encryption_secret": "sec", "key_salt": b"test-salt"})
+    app = _app_with_mocks(
+        {"id": 1, "name": "Test", "encryption_secret": "sec", "key_salt": b"test-salt"}
+    )
 
     with patch("lifelog.routes.dashboard.audio_crypto") as mock_crypto:
         mock_crypto.decrypt_audio.return_value = fake_audio
@@ -97,10 +102,18 @@ async def test_rerun_identification_processes_all_unknowns():
     ]
 
     with (
-        patch("lifelog.routes.speakers.get_unknown_speakers", new_callable=AsyncMock, return_value=fake_recordings),
+        patch(
+            "lifelog.routes.speakers.get_unknown_speakers",
+            new_callable=AsyncMock,
+            return_value=fake_recordings,
+        ),
         patch("lifelog.routes.speakers.audio_crypto") as mock_crypto,
-        patch("lifelog.routes.speakers.identify_speakers", new_callable=AsyncMock) as mock_identify,
-        patch("lifelog.routes.speakers.update_recording_speakers", new_callable=AsyncMock) as mock_update,
+        patch(
+            "lifelog.routes.speakers.identify_speakers", new_callable=AsyncMock
+        ) as mock_identify,
+        patch(
+            "lifelog.routes.speakers.update_recording_speakers", new_callable=AsyncMock
+        ) as mock_update,
     ):
         mock_crypto.decrypt_audio.return_value = b"decrypted"
         mock_identify.return_value = [{"name": "Alice", "start": 0.0, "end": 2.0}]
@@ -121,10 +134,18 @@ async def test_rerun_identification_no_unknowns():
     user = {"id": 1, "encryption_secret": "sec"}
 
     with (
-        patch("lifelog.routes.speakers.get_unknown_speakers", new_callable=AsyncMock, return_value=[]),
+        patch(
+            "lifelog.routes.speakers.get_unknown_speakers",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
         patch("lifelog.routes.speakers.audio_crypto") as mock_crypto,
-        patch("lifelog.routes.speakers.identify_speakers", new_callable=AsyncMock) as mock_identify,
-        patch("lifelog.routes.speakers.update_recording_speakers", new_callable=AsyncMock) as mock_update,
+        patch(
+            "lifelog.routes.speakers.identify_speakers", new_callable=AsyncMock
+        ) as mock_identify,
+        patch(
+            "lifelog.routes.speakers.update_recording_speakers", new_callable=AsyncMock
+        ) as mock_update,
     ):
         await rerun_identification(user)
 
@@ -137,17 +158,28 @@ def test_speaker_audio_legacy_fallback():
     recording = {"id": 10, "audio_filename": "legacy.enc", "speaker_segments": []}
     app = _app_with_mocks({"id": 1, "encryption_secret": "sec", "key_salt": b"salt"})
     with (
-        patch("lifelog.routes.dashboard.get_recording", new_callable=AsyncMock, return_value=recording),
-        patch("lifelog.routes.dashboard.audio_crypto.decrypt_audio", return_value=b"opus"),
+        patch(
+            "lifelog.routes.dashboard.get_recording",
+            new_callable=AsyncMock,
+            return_value=recording,
+        ),
+        patch(
+            "lifelog.routes.dashboard.audio_crypto.decrypt_audio", return_value=b"opus"
+        ),
     ):
         response = TestClient(app).get("/recording/10/speaker/Unknown/audio")
     assert response.status_code == 200
     assert response.content == b"opus"
     assert response.headers["content-type"] == "audio/ogg"
 
+
 def test_speaker_audio_rejects_other_users_recording():
     app = _app_with_mocks({"id": 1, "encryption_secret": "sec", "key_salt": b"salt"})
-    with patch("lifelog.routes.dashboard.get_recording", new_callable=AsyncMock, return_value=None):
+    with patch(
+        "lifelog.routes.dashboard.get_recording",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
         response = TestClient(app).get("/recording/10/speaker/Alice/audio")
     assert response.status_code == 404
 
@@ -162,12 +194,24 @@ def test_speaker_audio_uses_owned_matching_segments():
     }
     app = _app_with_mocks({"id": 1, "encryption_secret": "sec", "key_salt": b"salt"})
     with (
-        patch("lifelog.routes.dashboard.get_recording", new_callable=AsyncMock, return_value=recording),
-        patch("lifelog.routes.dashboard.audio_crypto.decrypt_audio", side_effect=[b"early", b"late"]) as decrypt,
-        patch("lifelog.routes.dashboard._concatenate_wav", return_value=b"RIFF") as concat,
+        patch(
+            "lifelog.routes.dashboard.get_recording",
+            new_callable=AsyncMock,
+            return_value=recording,
+        ),
+        patch(
+            "lifelog.routes.dashboard.audio_crypto.decrypt_audio",
+            side_effect=[b"early", b"late"],
+        ) as decrypt,
+        patch(
+            "lifelog.routes.dashboard._concatenate_wav", return_value=b"RIFF"
+        ) as concat,
     ):
         response = TestClient(app).get("/recording/10/speaker/Alice/audio")
     assert response.status_code == 200
     assert response.content == b"RIFF"
-    assert [call.args[0] for call in decrypt.call_args_list] == ["early.enc", "late.enc"]
+    assert [call.args[0] for call in decrypt.call_args_list] == [
+        "early.enc",
+        "late.enc",
+    ]
     concat.assert_called_once_with([b"early", b"late"])

@@ -3,6 +3,7 @@
 Revision ID: 003
 Revises: 002
 """
+
 from typing import Sequence, Union
 
 from alembic import op

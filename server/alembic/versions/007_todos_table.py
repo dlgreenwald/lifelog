@@ -3,6 +3,7 @@
 Revision ID: 007
 Revises: 006
 """
+
 import json
 from typing import Sequence, Union
 

@@ -358,7 +358,28 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - SSL certs are generated at compose level (command overrides), not baked into Dockerfiles
 
 ## Testing & QA
-**Total**: ~326 tests across 6 components (134 server + 8 diarization + 14 speaker-id + 10 transcription-worker + 91 dashboard + 69 firmware-ota)
+
+Each component has a `build.sh` that runs five gates when applicable. Failure of any gate exits non-zero and blocks the PR via the GitHub Actions job red status.
+
+### Build gates (component `build.sh`)
+
+| # | Gate | What it catches |
+|---|------|-----------------|
+| 1 | `python -m py_compile` (per `.py` file) | Syntax errors |
+| 2 | `ruff check src/ tests/` | Style, bug-prone patterns (B008 excepted for FastAPI Depends) |
+| 3 | `ruff format --check` | Format drift (run `ruff format` to fix) |
+| 4 | `pip-audit` (frozen, excluding the local editable package) | Python dependency CVEs (PyPI advisory / OSV database) |
+| 5 | `pytest -q` (server also runs `--cov --cov-report=term-missing`) | Failing behaviour; server additionally reports per-file coverage |
+
+For C++/TypeScript/Python alternatives: the **dashboard** build runs `npm ci` → `npm run test` (Vitest 91 tests) → `npx tsc --noEmit` (strict type-check) → bundle size check (340K cap). **firmware-ota** runs `pio test -e test` (69 Unity native tests).
+
+### Failing the build
+
+A failed build produces `conclusion: failure` for that component's job in `ci.yml`, marking the PR as failing the GitHub status check. Squashing the PR to `main` requires the check to pass if branch protection is configured. Without branch protection, the merge button stays clickable — enable "Require status checks to pass" in repository Settings → Branches to enforce.
+
+### Test counts
+
+Total: **~326 tests** across 6 components (134 server + 8 diarization + 16 speaker-id + 10 transcription-worker + 91 dashboard + 69 firmware-ota).
 
 ### Python test framework
 

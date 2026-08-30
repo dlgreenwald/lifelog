@@ -47,12 +47,14 @@ class SpeakerEncoder:
         # Resample to 16000 Hz if needed
         if sample_rate != 16000:
             import scipy.signal
+
             num_samples = int(len(waveform) * 16000 / sample_rate)
             waveform = scipy.signal.resample(waveform, num_samples)
             sample_rate = 16000
 
         # Convert to torch tensor [batch, time]
         import torch
+
         waveform_tensor = torch.from_numpy(waveform).unsqueeze(0)  # [1, time]
 
         embeddings = self.encoder.encode_batch(waveform_tensor)
@@ -72,18 +74,20 @@ class ModelManager:
 
     def _start_watchdog(self):
         """Start the background watchdog thread."""
+
         def watchdog_loop():
             while not self._stop_event.wait(WATCHDOG_INTERVAL):
                 self._check_idle()
 
         self._watchdog_thread = threading.Thread(
-            target=watchdog_loop,
-            daemon=True,
-            name="model-watchdog"
+            target=watchdog_loop, daemon=True, name="model-watchdog"
         )
         self._watchdog_thread.start()
-        logger.info("Model watchdog started (check interval: %ds, idle timeout: %ds)",
-                    WATCHDOG_INTERVAL, IDLE_TIMEOUT)
+        logger.info(
+            "Model watchdog started (check interval: %ds, idle timeout: %ds)",
+            WATCHDOG_INTERVAL,
+            IDLE_TIMEOUT,
+        )
 
     def _check_idle(self):
         """Check if model has been idle too long and unload it."""
@@ -96,11 +100,15 @@ class ModelManager:
                 # Re-check after acquiring lock — another thread may have accessed
                 idle_time = time.time() - self._last_access
                 if self._encoder is not None and idle_time >= IDLE_TIMEOUT:
-                    logger.info("Model idle for %.1fs (timeout: %ds), unloading to free GPU memory",
-                               idle_time, IDLE_TIMEOUT)
+                    logger.info(
+                        "Model idle for %.1fs (timeout: %ds), unloading to free GPU memory",
+                        idle_time,
+                        IDLE_TIMEOUT,
+                    )
                     del self._encoder
                     self._encoder = None
                     import torch
+
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                     logger.info("Model unloaded and GPU memory cleared")
@@ -135,6 +143,7 @@ class ModelManager:
                 del self._encoder
                 self._encoder = None
                 import torch
+
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
         logger.info("Model manager shut down")

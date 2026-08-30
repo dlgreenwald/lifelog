@@ -16,8 +16,12 @@ pool: asyncpg.Pool = None
 
 
 async def _init_connection(conn):
-    await conn.set_type_codec("json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
-    await conn.set_type_codec("jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+    await conn.set_type_codec(
+        "json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+    )
+    await conn.set_type_codec(
+        "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+    )
 
 
 async def init_pool():
@@ -52,6 +56,7 @@ async def init_db():
     )
 
     import asyncio
+
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: command.upgrade(alembic_cfg, "head"))
 
@@ -142,6 +147,7 @@ async def get_recordings_by_date(
     If category is None, show work and personal (exclude not_meaningful).
     """
     from datetime import date as _date
+
     date_obj = _date.fromisoformat(date)
     async with pool.acquire() as conn:
         if category is not None:
@@ -216,11 +222,15 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
             # json columns are returned as strings by asyncpg — parse if needed
             if segments and isinstance(segments, str):
                 import json
+
                 segments = json.loads(segments)
             if segments and isinstance(segments, list):
                 seen, audio_filenames = set(), []
                 for seg in segments:
-                    fn = seg.get("audio_filename") if isinstance(seg, dict) else seg.get("audio_filename")  # noqa: RUF034
+                    if isinstance(seg, dict):
+                        fn = seg.get("audio_filename")
+                    else:
+                        continue
                     if fn and fn not in seen:
                         seen.add(fn)
                         audio_filenames.append(fn)
@@ -245,7 +255,9 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
                     audio_range_start,
                     audio_range_end,
                 )
-                result["audio_filenames"] = [r["audio_filename"] for r in audio_rows if r["audio_filename"]]
+                result["audio_filenames"] = [
+                    r["audio_filename"] for r in audio_rows if r["audio_filename"]
+                ]
             else:
                 audio_rows = await conn.fetch(
                     """
@@ -256,7 +268,9 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
                     """,
                     result["session_id"],
                 )
-                result["audio_filenames"] = [r["audio_filename"] for r in audio_rows if r["audio_filename"]]
+                result["audio_filenames"] = [
+                    r["audio_filename"] for r in audio_rows if r["audio_filename"]
+                ]
         else:
             # Legacy: single audio_filename
             result["audio_filenames"] = (
@@ -312,6 +326,7 @@ async def get_active_session_recording(user_id: int) -> dict | None:
 
         # Merge transcripts and speakers across all utterances
         import json as _json
+
         all_segments = []
         all_named = []
         for utt in utterances:
@@ -325,7 +340,9 @@ async def get_active_session_recording(user_id: int) -> dict | None:
                 named = _json.loads(named)
             all_named.extend(named)
 
-        audio_files = [utt["audio_filename"] for utt in utterances if utt["audio_filename"]]
+        audio_files = [
+            utt["audio_filename"] for utt in utterances if utt["audio_filename"]
+        ]
 
         return {
             "id": f"active-{session['id']}",
@@ -498,14 +515,24 @@ async def save_todos(recording_id: int, user_id: int, todos: list[dict]):
 
 
 async def create_todo(
-    user_id: int, task: str, owner: str, due: str | None, priority: str, recording_id: int | None
+    user_id: int,
+    task: str,
+    owner: str,
+    due: str | None,
+    priority: str,
+    recording_id: int | None,
 ) -> int:
     """Create a single todo. recording_id is None for standalone todos."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO todos (user_id, recording_id, task, owner, due, priority)
                VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
-            user_id, recording_id, task, owner, due, priority,
+            user_id,
+            recording_id,
+            task,
+            owner,
+            due,
+            priority,
         )
         return row["id"]
 
@@ -533,40 +560,48 @@ async def delete_todo(todo_id: int):
 async def get_todo_owner(todo_id: int) -> int | None:
     """Get the user_id that owns a todo. Returns None if not found."""
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT user_id FROM todos WHERE id = $1", todo_id
-        )
+        row = await conn.fetchrow("SELECT user_id FROM todos WHERE id = $1", todo_id)
         return row["user_id"] if row else None
 
 
 async def save_decisions(recording_id: int, user_id: int, decisions: list[dict]):
     """Insert decisions for a recording. Always overwrites existing decisions."""
     async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "DELETE FROM decisions WHERE recording_id = $1", recording_id
+        )
+        for d in decisions:
             await conn.execute(
-                "DELETE FROM decisions WHERE recording_id = $1", recording_id
-            )
-            for d in decisions:
-                await conn.execute(
-                    """INSERT INTO decisions (user_id, recording_id, decision, made_by, context, reason)
+                """INSERT INTO decisions (user_id, recording_id, decision, made_by, context, reason)
                        VALUES ($1, $2, $3, $4, $5, $6)""",
-                    user_id,
-                    recording_id,
-                    d["decision"],
-                    d.get("made_by") or "Unknown",
-                    d.get("context"),
-                    d.get("reason"),
-                )
+                user_id,
+                recording_id,
+                d["decision"],
+                d.get("made_by") or "Unknown",
+                d.get("context"),
+                d.get("reason"),
+            )
 
 
 async def create_decision(
-    user_id: int, decision: str, made_by: str, context: str | None, reason: str | None, recording_id: int | None
+    user_id: int,
+    decision: str,
+    made_by: str,
+    context: str | None,
+    reason: str | None,
+    recording_id: int | None,
 ) -> int:
     """Create a single decision. recording_id is None for standalone decisions."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO decisions (user_id, recording_id, decision, made_by, context, reason)
                VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
-            user_id, recording_id, decision, made_by, context, reason,
+            user_id,
+            recording_id,
+            decision,
+            made_by,
+            context,
+            reason,
         )
         return row["id"]
 
@@ -690,6 +725,8 @@ async def update_recording_speakers(recording_id: int, speakers: list):
             speakers,
             recording_id,
         )
+
+
 async def update_recording_speaker_data(
     recording_id: int, speakers: list, speaker_segments: list
 ) -> None:
@@ -834,7 +871,9 @@ async def reset_session_for_reprocessing(session_id: int) -> bool:
             session_id,
         )
 
-        logger.info("Session %d reset for reprocessing (was %s)", session_id, session["status"])
+        logger.info(
+            "Session %d reset for reprocessing (was %s)", session_id, session["status"]
+        )
         return True
 
 
@@ -986,6 +1025,8 @@ async def get_utterance_queue_entry(user_id: int, utterance_id: int) -> dict | N
             utterance_id,
         )
         return dict(row) if row else None
+
+
 async def create_transcription_job(
     session_id: int,
     window_start: datetime,
@@ -1009,6 +1050,8 @@ async def create_transcription_job(
             language,
         )
         return row["id"]
+
+
 async def create_quick_transcription_job(
     session_id: int,
     audio_filename: str,
@@ -1078,7 +1121,6 @@ async def get_pending_session_quick_job(session_id: int) -> dict | None:
         return dict(row) if row else None
 
 
-
 async def get_session_user_id(session_id: int) -> int | None:
     """Get the user_id for a session."""
     async with pool.acquire() as conn:
@@ -1087,6 +1129,7 @@ async def get_session_user_id(session_id: int) -> int | None:
             session_id,
         )
         return row["user_id"] if row else None
+
 
 async def get_transcription_jobs(session_id: int) -> list[dict]:
     """Return all transcription jobs for a session in chunk order."""
@@ -1244,6 +1287,7 @@ async def get_speaker_segments_for_recording(recording_id: int) -> list[dict]:
         segments = row.get("speaker_segments")
         if isinstance(segments, str):
             import json
+
             segments = json.loads(segments)
         return segments if isinstance(segments, list) else []
 
@@ -1271,6 +1315,7 @@ async def save_session_recording(
             start_offset = float(first.get("start", 0))
             if ts is not None:
                 from datetime import timedelta
+
                 audio_range_start = ts + timedelta(seconds=start_offset)
         except (ValueError, TypeError):
             pass
@@ -1280,6 +1325,7 @@ async def save_session_recording(
             end_offset = float(last.get("end", 0))
             if ts is not None:
                 from datetime import timedelta
+
                 audio_range_end = ts + timedelta(seconds=end_offset)
         except (ValueError, TypeError):
             pass
@@ -1298,11 +1344,20 @@ async def save_session_recording(
                         category = $11, audio_range_start = $13, audio_range_end = $14
                     WHERE id = $12
                     """,
-                    transcript, speakers, result["summary"], result["todos"],
-                    result["calendar"], result["notes"],
-                    result.get("conversation_changes", []), audio_filename,
-                    stored_segments, ts, category, existing["id"],
-                    audio_range_start, audio_range_end,
+                    transcript,
+                    speakers,
+                    result["summary"],
+                    result["todos"],
+                    result["calendar"],
+                    result["notes"],
+                    result.get("conversation_changes", []),
+                    audio_filename,
+                    stored_segments,
+                    ts,
+                    category,
+                    existing["id"],
+                    audio_range_start,
+                    audio_range_end,
                 )
             else:
                 await conn.execute(
@@ -1315,11 +1370,19 @@ async def save_session_recording(
                         audio_range_start = $12, audio_range_end = $13
                     WHERE id = $11
                     """,
-                    transcript, speakers, result["summary"], result["todos"],
-                    result["calendar"], result["notes"],
-                    result.get("conversation_changes", []), audio_filename,
-                    stored_segments, category, existing["id"],
-                    audio_range_start, audio_range_end,
+                    transcript,
+                    speakers,
+                    result["summary"],
+                    result["todos"],
+                    result["calendar"],
+                    result["notes"],
+                    result.get("conversation_changes", []),
+                    audio_filename,
+                    stored_segments,
+                    category,
+                    existing["id"],
+                    audio_range_start,
+                    audio_range_end,
                 )
         if ts is not None:
             row = await conn.fetchrow(
@@ -1332,10 +1395,21 @@ async def save_session_recording(
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13, $14, $15)
                 RETURNING id
                 """,
-                user_id, session_id, ts, transcript, speakers, result["summary"],
-                result["todos"], result["calendar"], result["notes"],
-                result.get("conversation_changes", []), audio_filename,
-                stored_segments, category, audio_range_start, audio_range_end,
+                user_id,
+                session_id,
+                ts,
+                transcript,
+                speakers,
+                result["summary"],
+                result["todos"],
+                result["calendar"],
+                result["notes"],
+                result.get("conversation_changes", []),
+                audio_filename,
+                stored_segments,
+                category,
+                audio_range_start,
+                audio_range_end,
             )
         else:
             row = await conn.fetchrow(
@@ -1348,12 +1422,24 @@ async def save_session_recording(
                 VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11::json, $12, $13, $14)
                 RETURNING id
                 """,
-                user_id, session_id, transcript, speakers, result["summary"],
-                result["todos"], result["calendar"], result["notes"],
-                result.get("conversation_changes", []), audio_filename,
-                stored_segments, category, audio_range_start, audio_range_end,
+                user_id,
+                session_id,
+                transcript,
+                speakers,
+                result["summary"],
+                result["todos"],
+                result["calendar"],
+                result["notes"],
+                result.get("conversation_changes", []),
+                audio_filename,
+                stored_segments,
+                category,
+                audio_range_start,
+                audio_range_end,
             )
         return row["id"]
+
+
 async def save_partition_recording(
     user_id: int,
     session_id: int,
@@ -1532,6 +1618,7 @@ async def get_recording_audio_filenames(session_id: int) -> list[str]:
 async def save_daily_summary(user_id: int, date, summary: dict):
     """Insert or update a daily summary for a user and date."""
     from datetime import date as _date
+
     if isinstance(date, str):
         date_obj = _date.fromisoformat(date)
     else:
@@ -1552,6 +1639,7 @@ async def save_daily_summary(user_id: int, date, summary: dict):
 async def get_daily_summary(user_id: int, date_str: str) -> dict | None:
     """Get the daily summary for a user on a specific date (YYYY-MM-DD)."""
     from datetime import date as _date
+
     date_obj = _date.fromisoformat(date_str)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -1569,6 +1657,7 @@ async def get_daily_summary(user_id: int, date_str: str) -> dict | None:
 async def get_users_with_sessions_previous_day() -> list[int]:
     """Get distinct user_ids that had sessions yesterday."""
     from datetime import timedelta
+
     now = datetime.now(UTC)
     yesterday = (now - timedelta(days=1)).date()
     async with pool.acquire() as conn:
@@ -1581,7 +1670,6 @@ async def get_users_with_sessions_previous_day() -> list[int]:
             yesterday,
         )
         return [r["user_id"] for r in rows]
-
 
 
 # ── User settings ──────────────────────────────────────────────────
@@ -1611,5 +1699,7 @@ async def save_user_settings(user_id: int, language: str, llm_context: str) -> N
                     llm_context = EXCLUDED.llm_context,
                     updated_at = EXCLUDED.updated_at
             """,
-            user_id, language, llm_context,
+            user_id,
+            language,
+            llm_context,
         )
