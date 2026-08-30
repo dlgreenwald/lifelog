@@ -1,4 +1,4 @@
-name: PR Check no if gates
+name: PR Check with actions
 on:
   workflow_call:
     inputs:
@@ -12,24 +12,17 @@ jobs:
     if: inputs.component == 'server'
     runs-on: ubuntu-latest
     steps:
-      - run: echo server
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: echo done
   echo-dashboard:
     if: inputs.component == 'dashboard'
     runs-on: ubuntu-latest
     steps:
-      - run: echo dashboard
-  echo-firmware:
-    if: inputs.component == 'firmware'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo firmware
-  echo-security:
-    if: inputs.component == 'security'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo security
-  echo-other:
-    if: inputs.component != 'server' && inputs.component != 'dashboard' && inputs.component != 'firmware' && inputs.component != 'security'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo other ${{ inputs.component }}
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: echo done
