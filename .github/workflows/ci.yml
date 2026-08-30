@@ -32,14 +32,36 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            // GitHub sometimes omits `changed_files` entirely on PR synchronize
-            // events; defend against undefined. The `Array.isArray` check also
-            // guards against the rare case it arrives as a non-array shape.
-            const raw = context.payload.pull_request &&
-                        context.payload.pull_request.changed_files;
-            const files = Array.isArray(raw) ? raw : [];
+            // GitHub's `pull_request synchronize` webhook event sometimes delivers
+            // changed_files as the FULL PR diff (on initial `opened`) but only the
+            // last commit's paths on subsequent commits — and on a fast rebase it
+            // can be empty. To stay robust, we read context.payload for the
+            // available snapshot, then *also* call the REST diff API as a fallback
+            // when the snapshot is empty or missing the prefix we expect.
+            const featPrefixes = ['server/','diarization/','speaker-id/','transcription-worker/','dashboard/','firmware-ota/'];
             const startsWith = (prefix) => (f) =>
               typeof f === 'string' && f.startsWith(prefix);
+
+            const snap = (context.payload.pull_request &&
+                          context.payload.pull_request.changed_files) || [];
+            let files = Array.isArray(snap) ? snap : [];
+
+            if (files.length === 0 && context.payload.pull_request) {
+              const { owner, repo } = context.repo;
+              const prNumber = context.payload.pull_request.number;
+              try {
+                files = await github.paginate(
+                  github.rest.pulls.listFiles,
+                  { owner, repo, pull_number: prNumber, per_page: 100 },
+                  (resp) => resp.data.map((f) => f.filename),
+                );
+                core.info(`changed_files snapshot was empty; pulled ${files.length} files via REST`);
+              } catch (err) {
+                core.warning(`listFiles failed: ${err.message}; falling back to empty list`);
+                files = [];
+              }
+            }
+
             const any = (prefix) => files.some(startsWith(prefix));
             const result = {
               server:                 any('server/'),
@@ -48,14 +70,12 @@ jobs:
               'transcription-worker': any('transcription-worker/'),
               dashboard:              any('dashboard/'),
               firmware:               any('firmware-ota/'),
-              // security scans Python + JavaScript code; C++ (firmware) is out of scope
               'python-source':        any('server/') || any('diarization/') ||
                                       any('speaker-id/') || any('transcription-worker/') ||
                                       any('dashboard/'),
             };
             console.log('changed_files count:', files.length, 'classification:', JSON.stringify(result));
             return result;
-
   server:
     needs: detect-changes
     if: needs.detect-changes.outputs.server == 'true'
