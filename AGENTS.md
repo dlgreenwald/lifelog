@@ -492,6 +492,6 @@ Partial-build verification: a PR touching only `server/` shows `detect-changes` 
 Local validation: `actionlint .github/workflows/*.yml` runs against `.github/actionlint.yaml` (currently a no-op; workflow syntax is straightforward and actionlint's bundled grammar lags GitHub's).
 
 **Action versions** are pinned to stable SemVer major releases on `node24` (clears the deprecation notices GitHub Actions started emitting in 2026 against `node20` actions):
-`actions/checkout@v5`, `actions/setup-python@v6`, `actions/setup-node@v5`, `astral-sh/setup-uv@v7`, `github/codeql-action/{init,analyze}@v4`.
+`actions/checkout@v5`, `actions/setup-python@v6`, `actions/setup-node@v5`, `astral-sh/setup-uv@v7`, `actions/github-script@v9`, `github/codeql-action/{init,analyze}@v4`.
 
 **Required GitHub secrets** for `main.yml` Docker builds: `DOCKER_USERNAME`, `DOCKER_PASSWORD`. Until configured, the Docker job fails on merge to `main`; `build-and-test` is unaffected.
