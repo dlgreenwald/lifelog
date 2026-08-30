@@ -1,9 +1,75 @@
-name: CI single reusable
+name: CI
+
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
   push:
-    branches: [feature/documentation-and-ci]
+    branches: ['**']
+
+# Per-component partial-build path filtering — invoke the reusable
+# pr-check.yml once per component with a `component:` input. The
+# security/SAST job is implemented inline here because reusable
+# workflow-defined jobs with `permissions:` blocks trigger
+# startup_failure on GitHub's runner when combined with `if:`
+# conditions; inline it is fine.
+
 jobs:
   server:
+    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'server/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: server
+
+  diarization:
+    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'diarization/')
+    uses: ./.github/workflows/pr-check.yml
+    with:
+      component: diarization
+
+  speaker-id:
+    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'speaker-id/')
+    uses: ./.github/workflows/pr-check.yml
+    with:
+      component: speaker-id
+
+  transcription-worker:
+    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'transcription-worker/')
+    uses: ./.github/workflows/pr-check.yml
+    with:
+      component: transcription-worker
+
+  dashboard:
+    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'dashboard/')
+    uses: ./.github/workflows/pr-check.yml
+    with:
+      component: dashboard
+
+  firmware:
+    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'firmware-ota/')
+    uses: ./.github/workflows/pr-check.yml
+    with:
+      component: firmware
+
+  security:
+    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'server/') || contains(github.event.pull_request.changed_files.*, 'diarization/') || contains(github.event.pull_request.changed_files.*, 'speaker-id/') || contains(github.event.pull_request.changed_files.*, 'transcription-worker/') || contains(github.event.pull_request.changed_files.*, 'dashboard/')
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: |
+            python
+            javascript
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+      - name: npm audit (dashboard)
+        run: npm audit --audit-level=moderate
+        working-directory: dashboard

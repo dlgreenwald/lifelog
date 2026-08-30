@@ -1,38 +1,66 @@
-name: PR Check sa-only permissions
+name: PR Check
 on:
   workflow_call:
     inputs:
       component:
-        description: 'Component'
+        description: 'Component to build/test: server|diarization|speaker-id|transcription-worker|dashboard|firmware'
         required: false
         default: 'server'
         type: string
+
 jobs:
-  py:
-    if: inputs.component == 'server'
+  # --- Python services: server, diarization, speaker-id, transcription-worker ---
+  python-services:
+    if: inputs.component == 'server' || inputs.component == 'diarization' || inputs.component == 'speaker-id' || inputs.component == 'transcription-worker'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
-      - uses: astral-sh/setup-uv@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
-      - run: echo done
-  sa:
-    if: inputs.component == 'security'
+
+      - name: Run build
+        run: ./build.sh
+        working-directory: ./${{ inputs.component }}
+
+  # --- Dashboard: TypeScript/React ---
+  dashboard:
+    if: inputs.component == 'dashboard'
     runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      contents: read
+    defaults:
+      run:
+        working-directory: dashboard
+
     steps:
       - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/setup-node@v4
         with:
-          languages: |
-            python
-            javascript
-      - uses: github/codeql-action/analyze@v3
-      - run: echo done
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+      - run: npm run test
+      - run: npx tsc --noEmit
+
+  # --- Firmware: PlatformIO Unity tests ---
+  firmware:
+    if: inputs.component == 'firmware'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --pre platformio
+      - run: ./build.sh
+        working-directory: ./firmware-ota

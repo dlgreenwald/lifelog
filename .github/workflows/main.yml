@@ -9,14 +9,36 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [server, diarization, speaker-id, transcription-worker, dashboard, firmware, security]
+        component: [server, diarization, speaker-id, transcription-worker, dashboard, firmware]
     uses: ./.github/workflows/pr-check.yml
     with:
       component: ${{ matrix.component }}
-    secrets: inherit
+
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: |
+            python
+            javascript
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+      - name: npm audit (dashboard)
+        run: npm audit --audit-level=moderate
+        working-directory: dashboard
 
   docker:
-    needs: build-and-test
+    needs: [build-and-test, security]
     runs-on: ubuntu-latest
     strategy:
       matrix:
