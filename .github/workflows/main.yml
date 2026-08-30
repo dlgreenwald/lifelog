@@ -1,5 +1,20 @@
 name: Main Branch
 
+# Fires on push to main (typically after squash-merge of a PR). Runs the
+# full suite plus Docker image builds for the three service containers.
+#
+# Pipeline layout (Actions tab tree view):
+#
+#   build-and-test    (matrix of 6 reusable invocations)
+#     ├── server
+#     ├── diarization
+#     ├── speaker-id
+#     ├── transcription-worker
+#     ├── dashboard
+#     └── firmware
+#   ├── security       (CodeQL py/js + npm audit)
+#   └── docker         (needs: build-and-test, security)
+
 on:
   push:
     branches: [main]

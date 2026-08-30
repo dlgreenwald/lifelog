@@ -472,12 +472,26 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 
 GitHub Actions runs the verification pipeline on every PR and on every push to `main`. Three workflows live under `.github/workflows/`:
 
-- `pr-check.yml` — reusable workflow (`workflow_call`) accepting a `inputs.component: string` (default `'server'`). Contains jobs for build/test of Python services (`server|diarization|speaker-id|transcription-worker`), `dashboard` (Vitest + tsc), and `firmware-ota` (`pio test -e test`). Each job gates on `inputs.component == '<x>'` so only the matching job runs.
-- `ci.yml` — PR trigger (`opened` / `synchronize` / `reopened`) and branch-push trigger. One caller-job per component (server, diarization, speaker-id, transcription-worker, dashboard, firmware), plus an inline `security` job (CodeQL for Python/JavaScript + dashboard `npm audit`). `security` is inline rather than in the reusable because GitHub Actions rejects a reusable workflow that combines `permissions:` with `if:` gates (parse-time startup_failure). Each caller-job gates on `contains(github.event.pull_request.changed_files.*, '<component>/')`. Jobs whose changed files don't match the prefix evaluate false and skip. Plain `push` events short-circuit to `true` via `github.event_name == 'push'`.
-- `main.yml` — main-branch gate. Drives the reusable workflow across all six build components via a strategy matrix (full suite, no path filters), runs security inline, then builds and pushes Docker images for `server`, `speaker-id`, `transcription-worker`. Docker stage has `needs: [build-and-test, security]`.
+- `ci.yml` — PR trigger (`opened` / `synchronize` / `reopened`). Pipeline layout (visible on the Actions tab as a tree):
+  ```
+  detect-changes
+  ├── server
+  ├── diarization
+  ├── speaker-id
+  ├── transcription-worker
+  ├── dashboard
+  ├── firmware
+  └── security
+  ```
+  `detect-changes` is a single job that runs `actions/github-script@v7` to read `pull_request.changed_files` and emit bools (`server`, `diarization`, `speaker-id`, `transcription-worker`, `dashboard`, `firmware`, `python-source`). Downstream jobs declare `needs: detect-changes` and gate on the corresponding output (`if: needs.detect-changes.outputs.<x> == 'true'`). Each component job is self-contained: it installs Python / Node / PlatformIO as needed and runs that component's `build.sh` (or `npm run test` + `npx tsc` for the dashboard). `security` is inline (CodeQL `init`/`analyze` for python,javascript + `npm audit --omit=dev --audit-level=critical` against the dashboard).
+- `pr-check.yml` — reusable workflow (`workflow_call`) accepting `inputs.component: string` (required). A single `build` job with `if:` gates on `inputs.component == '<x>'` so each matrix invocation runs just the relevant step (Python `build.sh`, dashboard `npm ci / test / tsc`, or firmware `pio test -e test`). Called by `main.yml`'s `build-and-test.matrix`.
+- `main.yml` — main-branch gate. Drives `pr-check.yml` across all six build components via `matrix: [server, diarization, speaker-id, transcription-worker, dashboard, firmware]`, runs `security` inline, then `docker` (matrix of `server`, `speaker-id`, `transcription-worker`) with `needs: [build-and-test, security]`.
 
-Partial-build verification: a PR touching only `server/` runs the `server` job and `security`; jobs for `dashboard`, `firmware`, `speaker-id`, etc. are skipped (each `if: contains(changed_files.*, '<prefix>/')` evaluates false).
+Partial-build verification: a PR touching only `server/` shows `detect-changes` plus the `server` and `security` jobs (because server source is Python). Dashboard / firmware / diarization / speaker-id / transcription-worker nodes are skipped via the output gate.
 
 Local validation: `actionlint .github/workflows/*.yml` runs against `.github/actionlint.yaml` (currently a no-op; workflow syntax is straightforward and actionlint's bundled grammar lags GitHub's).
+
+**Action versions** are pinned to stable SemVer major releases on `node24` (clears the deprecation notices GitHub Actions started emitting in 2026 against `node20` actions):
+`actions/checkout@v5`, `actions/setup-python@v6`, `actions/setup-node@v5`, `astral-sh/setup-uv@v7`, `github/codeql-action/{init,analyze}@v4`.
 
 **Required GitHub secrets** for `main.yml` Docker builds: `DOCKER_USERNAME`, `DOCKER_PASSWORD`. Until configured, the Docker job fails on merge to `main`; `build-and-test` is unaffected.

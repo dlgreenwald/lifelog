@@ -1,64 +1,66 @@
-name: PR Check
+name: Component build
+
+# Reusable workflow called by main.yml's matrix to build a single component.
+# Drives ./build.sh (Python services), pio test (firmware), or npm ci+test+tsc
+# (dashboard). Caller passes `component: server | diarization | speaker-id |
+# transcription-worker | dashboard | firmware`.
+
 on:
   workflow_call:
     inputs:
       component:
-        description: 'Component to build/test: server|diarization|speaker-id|transcription-worker|dashboard|firmware'
-        required: false
-        default: 'server'
+        description: 'Component to build: server, diarization, speaker-id, transcription-worker, dashboard, or firmware'
+        required: true
         type: string
 
 jobs:
-  # --- Python services: server, diarization, speaker-id, transcription-worker ---
-  python-services:
-    if: inputs.component == 'server' || inputs.component == 'diarization' || inputs.component == 'speaker-id' || inputs.component == 'transcription-worker'
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
+      # --- Python service component (server, diarization, speaker-id, transcription-worker) ---
       - name: Set up Python
+        if: inputs.component != 'dashboard' && inputs.component != 'firmware'
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+
       - name: Set up uv
+        if: inputs.component != 'dashboard' && inputs.component != 'firmware'
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - name: Run build
-        run: ./build.sh
-        working-directory: ./${{ inputs.component }}
-
-  # --- Dashboard: TypeScript/React ---
-  dashboard:
-    if: inputs.component == 'dashboard'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: dashboard
-
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      # --- Dashboard (TypeScript/React) ---
+      - name: Set up Node
+        if: inputs.component == 'dashboard'
+        uses: actions/setup-node@v5
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
 
-      - run: npm ci
-      - run: npm run test
-      - run: npx tsc --noEmit
+      # --- Firmware (PlatformIO via pip) ---
+      - name: Install PlatformIO
+        if: inputs.component == 'firmware'
+        run: pip install --pre platformio
 
-  # --- Firmware: PlatformIO Unity tests ---
-  firmware:
-    if: inputs.component == 'firmware'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-      - run: pip install --pre platformio
-      - run: ./build.sh
+      # --- Run component-local script ---
+      - name: Run dashboard build
+        if: inputs.component == 'dashboard'
+        run: |
+          npm ci
+          npm run test
+          npx tsc --noEmit
+        working-directory: ./dashboard
+
+      - name: Run firmware tests
+        if: inputs.component == 'firmware'
+        run: ./build.sh
         working-directory: ./firmware-ota
+
+      - name: Run Python service build.sh
+        if: inputs.component != 'dashboard' && inputs.component != 'firmware'
+        run: ./build.sh
+        working-directory: ./${{ inputs.component }}
