@@ -10,7 +10,7 @@
 # Format: one PYSEC ID per line; nothing else.
 # Entries are sorted by PYSEC ID.
 
-# lightning 2.6.5 — transitive dep of pyannote, fix is heavy
+# lightning 2.6.5 — tracked by SOS Routing via pyannote
 PYSEC-2026-3624
 
 # torch 2.7.1 — base GPU runtime for diarization and transcription-worker.
@@ -19,7 +19,6 @@ PYSEC-2026-3624
 PYSEC-2025-194
 PYSEC-2025-203
 PYSEC-2025-204
-PYSEC-2025-206
 PYSEC-2026-139
 PYSEC-2026-1970
 PYSEC-2026-2286
