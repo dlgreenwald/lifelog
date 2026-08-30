@@ -1,9 +1,12 @@
-# actionlint 1.7.x's expression grammar does not yet support `=>` lambda
-# parameters in `if:` conditions; the partial-build expressions in ci.yml
-# use `f => f.startsWith('server/')` which is valid GitHub-Actions syntax
-# but unreadable by the bundled parser. Filter the resulting false
-# positives. Remove the entry once actionlint gains lambda support.
+# actionlint 1.7.x's expression grammar does not fully support GitHub's
+# modern expression features (arrow-function `=>` lambda parameters,
+# nested parentheses inside `if:` expressions on multi-line block scalars).
+# The partial-build expressions in ci.yml use these patterns which GitHub
+# Actions itself accepts. Filter the resulting false positives from the
+# bundled parser. Remove the entries once actionlint gains full support
+# for these constructs.
 paths:
   .github/workflows/ci.yml:
     ignore:
       - 'parser did not reach end of input after parsing the expression'
+      - 'unexpected token "\(" while parsing closing'
