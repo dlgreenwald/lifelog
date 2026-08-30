@@ -1,0 +1,30 @@
+# LifeLog known CVEs — accept-for-now list
+#
+# Each PYSEC ID below is a known vulnerability in a Python dependency that
+# we have decided NOT to fix on this PR. The list is loaded by every
+# component's build.sh and passed to pip-audit via repeated --ignore-vuln
+# flags. After accepting, run pip-audit and ensure no other vulnerabilities
+# appear; the audit module exits non-zero if a *new* (non-allowlisted)
+# vulnerability surfaces.
+#
+# Format: one PYSEC ID per line; nothing else.
+# Entries are sorted by PYSEC ID.
+
+# lightning 2.6.5 — tracked by SOS Routing via pyannote
+PYSEC-2026-3624
+
+# torch 2.7.1 — base GPU runtime for diarization and transcription-worker.
+# Fix versions require bow-2.x wheels for the project's CUDA toolchain;
+# bumping would require coordinated whisperx + pyannote updates. Tracked.
+PYSEC-2025-194
+PYSEC-2025-203
+PYSEC-2025-204
+PYSEC-2026-139
+PYSEC-2026-1970
+PYSEC-2026-2286
+
+# transformers 4.57.6 — bound by whisperx<5.0
+PYSEC-2025-217
+PYSEC-2026-2288
+PYSEC-2026-2289
+PYSEC-2026-2290
