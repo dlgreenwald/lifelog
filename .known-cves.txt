@@ -23,6 +23,9 @@ PYSEC-2025-206
 PYSEC-2026-139
 PYSEC-2026-1970
 PYSEC-2026-2286
+# torch 2.7.1 — additional CVEs surfaced after the PYSEC allowlist
+CVE-2025-2999
+CVE-2025-3001
 
 # transformers 4.57.6 — bound by whisperx<5.0
 PYSEC-2025-217
