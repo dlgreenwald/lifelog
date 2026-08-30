@@ -4,45 +4,41 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
-    branches: ['**']   # catches PR branch pushes
+    branches: ['**']
 
 jobs:
   python-services:
-    # Note: github.event.pull_request is null on a plain push event; guard
-    # changed_files access with a null check so the if: evaluates cleanly
-    # when running on a non-PR branch push.
-    if: |
+    if: >-
       github.event_name == 'push'
-      || (github.event.pull_request != null && (
-            github.event.pull_request.changed_files.any(f => f.startsWith('server/'))
-         || github.event.pull_request.changed_files.any(f => f.startsWith('diarization/'))
-         || github.event.pull_request.changed_files.any(f => f.startsWith('speaker-id/'))
-         || github.event.pull_request.changed_files.any(f => f.startsWith('transcription-worker/'))
-         ))
+      || github.event.pull_request != null
+      && (
+        github.event.pull_request.changed_files.any(f => f.startsWith('server/'))
+        || github.event.pull_request.changed_files.any(f => f.startsWith('diarization/'))
+        || github.event.pull_request.changed_files.any(f => f.startsWith('speaker-id/'))
+        || github.event.pull_request.changed_files.any(f => f.startsWith('transcription-worker/'))
+      )
     uses: ./.github/workflows/pr-check.yml
 
   dashboard:
-    if: |
+    if: >-
       github.event_name == 'push'
-      || (github.event.pull_request != null
-          && github.event.pull_request.changed_files.any(f => f.startsWith('dashboard/')))
+      || github.event.pull_request != null && github.event.pull_request.changed_files.any(f => f.startsWith('dashboard/'))
     uses: ./.github/workflows/pr-check.yml
 
   firmware:
-    if: |
+    if: >-
       github.event_name == 'push'
-      || (github.event.pull_request != null
-          && github.event.pull_request.changed_files.any(f => f.startsWith('firmware-ota/')))
+      || github.event.pull_request != null && github.event.pull_request.changed_files.any(f => f.startsWith('firmware-ota/'))
     uses: ./.github/workflows/pr-check.yml
 
   security:
-    if: |
+    if: >-
       github.event_name == 'push'
-      || (github.event.pull_request != null
-          && github.event.pull_request.changed_files.any(f =>
-               f.startsWith('server/')
-            || f.startsWith('diarization/')
-            || f.startsWith('speaker-id/')
-            || f.startsWith('transcription-worker/')
-            || f.startsWith('dashboard/')))
+      || github.event.pull_request != null && (
+        github.event.pull_request.changed_files.any(f => f.startsWith('server/'))
+        || github.event.pull_request.changed_files.any(f => f.startsWith('diarization/'))
+        || github.event.pull_request.changed_files.any(f => f.startsWith('speaker-id/'))
+        || github.event.pull_request.changed_files.any(f => f.startsWith('transcription-worker/'))
+        || github.event.pull_request.changed_files.any(f => f.startsWith('dashboard/'))
+      )
     uses: ./.github/workflows/pr-check.yml
