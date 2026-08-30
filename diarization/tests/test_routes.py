@@ -1,4 +1,5 @@
 """Mock integration tests for diarization service routes."""
+
 from unittest.mock import MagicMock, patch
 
 

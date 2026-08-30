@@ -2,6 +2,7 @@
 
 Tests session assignment, meaningful speech detection, and reprocessing.
 """
+
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -240,7 +241,12 @@ class TestSessionCRUD:
         from lifelog.database import get_sessions_for_reprocessing
 
         mock_conn.fetch.return_value = [
-            {"id": 1, "user_id": 1, "started_at": datetime.now(UTC), "ended_at": datetime.now(UTC)}
+            {
+                "id": 1,
+                "user_id": 1,
+                "started_at": datetime.now(UTC),
+                "ended_at": datetime.now(UTC),
+            }
         ]
         pool = _make_mock_pool(mock_conn)
 
@@ -367,8 +373,18 @@ class TestSessionCRUD:
         from lifelog.database import get_active_sessions_with_utterances
 
         fake_sessions = [
-            {"id": 1, "user_id": 1, "started_at": datetime(2025, 1, 1, 10, 0, 0), "ended_at": None},
-            {"id": 3, "user_id": 2, "started_at": datetime(2025, 1, 1, 11, 0, 0), "ended_at": None},
+            {
+                "id": 1,
+                "user_id": 1,
+                "started_at": datetime(2025, 1, 1, 10, 0, 0),
+                "ended_at": None,
+            },
+            {
+                "id": 3,
+                "user_id": 2,
+                "started_at": datetime(2025, 1, 1, 11, 0, 0),
+                "ended_at": None,
+            },
         ]
         mock_conn.fetch.return_value = fake_sessions
         pool = _make_mock_pool(mock_conn)
@@ -406,24 +422,30 @@ class TestHourlyReprocessing:
         """Ended sessions enqueue missing full jobs without inline inference."""
         from lifelog.worker import _reprocess_session
 
-        utterances = [{
-            "utterance_id": 1,
-            "audio_filename": "utt1.opus",
-            "transcript": {},
-            "named_segments": [],
-            "created_at": datetime(2025, 1, 1, 10, 0, 0),
-        }]
+        utterances = [
+            {
+                "utterance_id": 1,
+                "audio_filename": "utt1.opus",
+                "transcript": {},
+                "named_segments": [],
+                "created_at": datetime(2025, 1, 1, 10, 0, 0),
+            }
+        ]
         with patch("lifelog.worker.db") as mock_db:
             mock_db.get_session_all_utterances = AsyncMock(return_value=utterances)
             mock_db.get_transcription_jobs = AsyncMock(return_value=[])
             mock_db.get_user_settings = AsyncMock(return_value={"language": "auto"})
             mock_db.create_transcription_job = AsyncMock()
-            await _reprocess_session({
-                "id": 1, "user_id": 1, "started_at": datetime(2025, 1, 1, 10, 0, 0)
-            })
+            await _reprocess_session(
+                {"id": 1, "user_id": 1, "started_at": datetime(2025, 1, 1, 10, 0, 0)}
+            )
 
         mock_db.create_transcription_job.assert_awaited_once_with(
-            1, datetime(2025, 1, 1, 10, 0, 0), datetime(2025, 1, 1, 10, 0, 1), 0, language="auto"
+            1,
+            datetime(2025, 1, 1, 10, 0, 0),
+            datetime(2025, 1, 1, 10, 0, 1),
+            0,
+            language="auto",
         )
 
     @pytest.mark.asyncio
@@ -443,14 +465,26 @@ class TestHourlyReprocessing:
 
         timestamp = datetime(2025, 1, 1, 10)
         with (
-            patch("lifelog.worker.get_utterance_chunks", new_callable=AsyncMock, return_value=[{"audio_bytes": b"opus"}]),
-            patch("lifelog.worker.get_user_secret", new_callable=AsyncMock, return_value={"encryption_secret": "s", "key_salt": b"salt"}),
-            patch("lifelog.worker.audio_crypto.encrypt_audio", return_value="audio.enc"),
+            patch(
+                "lifelog.worker.get_utterance_chunks",
+                new_callable=AsyncMock,
+                return_value=[{"audio_bytes": b"opus"}],
+            ),
+            patch(
+                "lifelog.worker.get_user_secret",
+                new_callable=AsyncMock,
+                return_value={"encryption_secret": "s", "key_salt": b"salt"},
+            ),
+            patch(
+                "lifelog.worker.audio_crypto.encrypt_audio", return_value="audio.enc"
+            ),
             patch("lifelog.worker.delete_utterance_chunks", new_callable=AsyncMock),
             patch("lifelog.worker.complete_utterance", new_callable=AsyncMock),
             patch("lifelog.worker.db") as mock_db,
         ):
-            mock_db.get_utterance_queue_entry = AsyncMock(return_value={"created_at": timestamp})
+            mock_db.get_utterance_queue_entry = AsyncMock(
+                return_value={"created_at": timestamp}
+            )
             mock_db.get_active_session = AsyncMock(return_value=None)
             mock_db.create_session = AsyncMock(return_value=7)
             mock_db.append_session_utterance = AsyncMock()
@@ -463,9 +497,16 @@ class TestHourlyReprocessing:
         from lifelog.worker import _apply_quick_transcripts
 
         with patch("lifelog.worker.db") as mock_db:
-            mock_db.get_completed_quick_jobs = AsyncMock(return_value=[
-                {"id": 4, "session_id": 1, "chunk_index": 9, "result": {"segments": [{"text": "hello"}]}}
-            ])
+            mock_db.get_completed_quick_jobs = AsyncMock(
+                return_value=[
+                    {
+                        "id": 4,
+                        "session_id": 1,
+                        "chunk_index": 9,
+                        "result": {"segments": [{"text": "hello"}]},
+                    }
+                ]
+            )
             mock_db.update_session_utterance_transcript = AsyncMock()
             mock_db.mark_quick_job_applied = AsyncMock()
             await _apply_quick_transcripts()
@@ -479,23 +520,44 @@ class TestHourlyReprocessing:
         from lifelog.worker import _finalize_completed_sessions
 
         session = {"id": 1, "user_id": 2, "started_at": datetime(2025, 1, 1, 10)}
-        jobs = [{
-            "id": 4,
-            "chunk_index": 0,
-            "window_start": datetime(2025, 1, 1, 10),
-            "status": "done",
-            "job_type": "full",
-            "result": {
-                "segments": [{"start": 0, "end": 1, "text": "hello", "speaker": "SPEAKER_00"}],
-                "speaker_map": {},
-                "speaker_segments": [{"speaker": "SPEAKER_00", "start": 0, "end": 1, "text": "hello", "audio": "YQ=="}],
-            },
-        }]
+        jobs = [
+            {
+                "id": 4,
+                "chunk_index": 0,
+                "window_start": datetime(2025, 1, 1, 10),
+                "status": "done",
+                "job_type": "full",
+                "result": {
+                    "segments": [
+                        {"start": 0, "end": 1, "text": "hello", "speaker": "SPEAKER_00"}
+                    ],
+                    "speaker_map": {},
+                    "speaker_segments": [
+                        {
+                            "speaker": "SPEAKER_00",
+                            "start": 0,
+                            "end": 1,
+                            "text": "hello",
+                            "audio": "YQ==",
+                        }
+                    ],
+                },
+            }
+        ]
         with (
             patch("lifelog.worker.db") as mock_db,
-            patch("lifelog.worker.get_user_secret", new_callable=AsyncMock, return_value={"encryption_secret": "s", "key_salt": b"salt"}),
-            patch("lifelog.worker.audio_crypto.encrypt_audio", return_value="segment.enc"),
-            patch("lifelog.worker.summarize", return_value={"summary": "s", "todos": [], "calendar": [], "notes": []}),
+            patch(
+                "lifelog.worker.get_user_secret",
+                new_callable=AsyncMock,
+                return_value={"encryption_secret": "s", "key_salt": b"salt"},
+            ),
+            patch(
+                "lifelog.worker.audio_crypto.encrypt_audio", return_value="segment.enc"
+            ),
+            patch(
+                "lifelog.worker.summarize",
+                return_value={"summary": "s", "todos": [], "calendar": [], "notes": []},
+            ),
             patch("lifelog.worker._auto_enroll_speakers", new_callable=AsyncMock),
             patch("lifelog.worker._daily_reprocess_user", new_callable=AsyncMock),
         ):
@@ -506,12 +568,23 @@ class TestHourlyReprocessing:
             mock_db.save_session_recording = AsyncMock(return_value=99)
             mock_db.mark_session_processed = AsyncMock()
             mock_db.get_unknown_speakers = AsyncMock(return_value=[])
-            mock_db.get_user_settings = AsyncMock(return_value={"language": "auto", "llm_context": ""})
+            mock_db.get_user_settings = AsyncMock(
+                return_value={"language": "auto", "llm_context": ""}
+            )
             await _finalize_completed_sessions()
         saved = mock_db.save_session_recording.call_args.kwargs["speaker_segments"]
-        assert saved == [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "hello", "audio_filename": "segment.enc"}]
+        assert saved == [
+            {
+                "speaker": "SPEAKER_00",
+                "start": 0.0,
+                "end": 1.0,
+                "text": "hello",
+                "audio_filename": "segment.enc",
+            }
+        ]
         assert "audio" not in saved[0]
         mock_db.mark_session_processed.assert_awaited_once_with(1)
+
 
 class TestDailyReprocessing:
     @pytest.mark.asyncio
@@ -521,20 +594,29 @@ class TestDailyReprocessing:
 
         now = datetime.now(UTC)
         sessions = [
-            {"id": 1, "user_id": 1, "started_at": now - timedelta(hours=3),
-             "ended_at": now - timedelta(hours=2)},
+            {
+                "id": 1,
+                "user_id": 1,
+                "started_at": now - timedelta(hours=3),
+                "ended_at": now - timedelta(hours=2),
+            },
         ]
 
         utterances = [
             {
                 "utterance_id": 1,
-                "transcript": {"segments": [{"speaker": "SPEAKER_00", "text": "hello"}]},
+                "transcript": {
+                    "segments": [{"speaker": "SPEAKER_00", "text": "hello"}]
+                },
             },
         ]
 
         with (
             patch("lifelog.worker.db") as mock_db,
-            patch("lifelog.pipeline.llm.summarize_day", return_value={"daily_summary": "Work: Met with team."}) as mock_summarize,
+            patch(
+                "lifelog.pipeline.llm.summarize_day",
+                return_value={"daily_summary": "Work: Met with team."},
+            ) as mock_summarize,
         ):
             mock_db.get_sessions_by_date_range = AsyncMock(return_value=sessions)
             mock_db.get_session_all_utterances = AsyncMock(return_value=utterances)
@@ -561,7 +643,6 @@ class TestDailyReprocessing:
             mock_db.save_daily_summary.assert_not_called()
 
 
-
 class TestPartitionSegments:
     """Tests for session gap-split logic."""
 
@@ -583,7 +664,12 @@ class TestPartitionSegments:
 
         segments = [
             {"speaker": "SPEAKER_00", "start": 0, "end": 10, "text": "hello"},
-            {"speaker": "SPEAKER_01", "start": 270, "end": 280, "text": "hi"},  # 4.5 min gap
+            {
+                "speaker": "SPEAKER_01",
+                "start": 270,
+                "end": 280,
+                "text": "hi",
+            },  # 4.5 min gap
         ]
         result = _partition_segments(segments)
         assert len(result) == 1
@@ -594,7 +680,12 @@ class TestPartitionSegments:
 
         segments = [
             {"speaker": "SPEAKER_00", "start": 0, "end": 10, "text": "hello"},
-            {"speaker": "SPEAKER_01", "start": 310, "end": 320, "text": "hi"},  # 5 min 10 sec gap
+            {
+                "speaker": "SPEAKER_01",
+                "start": 310,
+                "end": 320,
+                "text": "hi",
+            },  # 5 min 10 sec gap
         ]
         result = _partition_segments(segments)
         assert len(result) == 2

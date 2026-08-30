@@ -4,6 +4,7 @@ Multiple recordings can now share a session_id (one per partition).
 partition_index=0 is the first/primary recording.
 New partitions created by gap-splitting have partition_index=1, 2, etc.
 """
+
 from alembic import op
 
 revision = "017"
@@ -14,7 +15,9 @@ depends_on = None
 
 def upgrade() -> None:
     # Add partition_index column with default 0
-    op.execute("ALTER TABLE recordings ADD COLUMN partition_index INTEGER NOT NULL DEFAULT 0")
+    op.execute(
+        "ALTER TABLE recordings ADD COLUMN partition_index INTEGER NOT NULL DEFAULT 0"
+    )
     # Add unique constraint so (session_id, partition_index) is unique
     # Partial index to only enforce for rows where session_id is set
     op.execute(

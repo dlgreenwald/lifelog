@@ -22,15 +22,15 @@ _INJECTION_PATTERNS = [
     re.compile(r"\boverride\b", re.IGNORECASE),
     re.compile(r"\bnew\s+rule\b", re.IGNORECASE),
     # XML/HTML injection
-    re.compile(r"<(system|instruction|prompt)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL),
+    re.compile(
+        r"<(system|instruction|prompt)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL
+    ),
 ]
 
 _MAX_LENGTH = 2000
 
 # Control characters to strip (U+0000–U+001F except newline/tab, U+007F–U+009F)
-_STRIP_RE = re.compile(
-    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]"
-)
+_STRIP_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 
 
 def validate_llm_context(text: str) -> str:
@@ -50,7 +50,9 @@ def validate_llm_context(text: str) -> str:
 
     # Enforce max length
     if len(text) > _MAX_LENGTH:
-        raise ValueError(f"LLM context exceeds maximum length of {_MAX_LENGTH} characters")
+        raise ValueError(
+            f"LLM context exceeds maximum length of {_MAX_LENGTH} characters"
+        )
 
     # Scan for injection patterns
     for pattern in _INJECTION_PATTERNS:

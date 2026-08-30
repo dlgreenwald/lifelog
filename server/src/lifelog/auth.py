@@ -73,19 +73,32 @@ async def validate_bearer_token(token: str) -> dict:
         user = await get_user_by_oidc_sub(payload["sub"])
         if not user:
             from lifelog.database import create_user
+
             user = await create_user(
                 oidc_sub=payload["sub"],
                 name=payload.get("preferred_username", payload.get("sub", "User")),
             )
         return user
     except pyjwt.ExpiredSignatureError:
-        logger.warning("Token expired: sub=%s exp=%s", payload.get("sub", "?"), payload.get("exp", "?"))
+        logger.warning(
+            "Token expired: sub=%s exp=%s",
+            payload.get("sub", "?"),
+            payload.get("exp", "?"),
+        )
         raise HTTPException(status_code=401, detail="Token expired")
     except pyjwt.InvalidAudienceError:
-        logger.warning("Invalid audience: token_aud=%s expected=%s", payload.get("aud", "?"), settings.oidc_client_id)
+        logger.warning(
+            "Invalid audience: token_aud=%s expected=%s",
+            payload.get("aud", "?"),
+            settings.oidc_client_id,
+        )
         raise HTTPException(status_code=401, detail="Invalid audience")
     except pyjwt.InvalidIssuerError:
-        logger.warning("Invalid issuer: token_iss=%s expected=%s", payload.get("iss", "?"), settings.oidc_issuer_url)
+        logger.warning(
+            "Invalid issuer: token_iss=%s expected=%s",
+            payload.get("iss", "?"),
+            settings.oidc_issuer_url,
+        )
         raise HTTPException(status_code=401, detail="Invalid issuer")
     except pyjwt.InvalidTokenError as e:
         logger.warning("Invalid token: %s", e)
@@ -117,19 +130,32 @@ async def validate_oidc_token(
         if not user:
             # First OIDC login — auto-create user
             from lifelog.database import create_user
+
             user = await create_user(
                 oidc_sub=payload["sub"],
                 name=payload.get("preferred_username", payload.get("sub", "User")),
             )
         return user
     except pyjwt.ExpiredSignatureError:
-        logger.warning("Token expired: sub=%s exp=%s", payload.get("sub", "?"), payload.get("exp", "?"))
+        logger.warning(
+            "Token expired: sub=%s exp=%s",
+            payload.get("sub", "?"),
+            payload.get("exp", "?"),
+        )
         raise HTTPException(status_code=401, detail="Token expired")
     except pyjwt.InvalidAudienceError:
-        logger.warning("Invalid audience: token_aud=%s expected=%s", payload.get("aud", "?"), settings.oidc_client_id)
+        logger.warning(
+            "Invalid audience: token_aud=%s expected=%s",
+            payload.get("aud", "?"),
+            settings.oidc_client_id,
+        )
         raise HTTPException(status_code=401, detail="Invalid audience")
     except pyjwt.InvalidIssuerError:
-        logger.warning("Invalid issuer: token_iss=%s expected=%s", payload.get("iss", "?"), settings.oidc_issuer_url)
+        logger.warning(
+            "Invalid issuer: token_iss=%s expected=%s",
+            payload.get("iss", "?"),
+            settings.oidc_issuer_url,
+        )
         raise HTTPException(status_code=401, detail="Invalid issuer")
     except pyjwt.InvalidTokenError as e:
         logger.warning("Invalid token: %s", e)

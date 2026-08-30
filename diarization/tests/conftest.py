@@ -3,6 +3,7 @@
 Mocks heavy ML dependencies (pyannote.audio, torch) so tests can run
 without GPU or model downloads.
 """
+
 import os
 import sys
 from unittest.mock import MagicMock

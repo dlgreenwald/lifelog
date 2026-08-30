@@ -101,7 +101,12 @@ def summarize_day(transcripts: str, llm_context: str = "") -> dict:
                 "role": "system",
                 "content": "You are a life journal assistant that summarizes a day's conversations into Work and Personal categories.",
             },
-            {"role": "user", "content": DAILY_PROMPT.format(transcripts=transcripts, llm_context=llm_context)},
+            {
+                "role": "user",
+                "content": DAILY_PROMPT.format(
+                    transcripts=transcripts, llm_context=llm_context
+                ),
+            },
         ],
         response_format={"type": "json_object"},
     )
@@ -150,7 +155,10 @@ def summarize(segments: list[dict], llm_context: str = "") -> dict:
                 "role": "system",
                 "content": "You are a life journal assistant that analyzes conversations and extracts structured information.",
             },
-            {"role": "user", "content": PROMPT.format(transcript=formatted, llm_context=llm_context)},
+            {
+                "role": "user",
+                "content": PROMPT.format(transcript=formatted, llm_context=llm_context),
+            },
         ],
         response_format={"type": "json_object"},
     )

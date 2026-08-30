@@ -13,7 +13,9 @@ from speaker_id.embeddings import encoder
 router = APIRouter()
 
 
-def _extract_segment_wav(audio_bytes: bytes, audio_format: str, start: float, end: float) -> bytes:
+def _extract_segment_wav(
+    audio_bytes: bytes, audio_format: str, start: float, end: float
+) -> bytes:
     """Extract one diarized range as mono 16-bit WAV."""
     if end <= start:
         return b""
@@ -24,9 +26,25 @@ def _extract_segment_wav(audio_bytes: bytes, audio_format: str, start: float, en
         with open(source, "wb") as output:
             output.write(audio_bytes)
         process = subprocess.run(
-            ["ffmpeg", "-v", "error", "-ss", str(start), "-to", str(end), "-i", source,
-             "-ar", "16000", "-ac", "1", "-y", target],
-            capture_output=True, check=False,
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-ss",
+                str(start),
+                "-to",
+                str(end),
+                "-i",
+                source,
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-y",
+                target,
+            ],
+            capture_output=True,
+            check=False,
         )
         if process.returncode or not os.path.exists(target):
             return b""
@@ -57,12 +75,26 @@ async def identify_speakers(data: dict):
             try:
                 start = float(segment["start"])
                 end = float(segment["end"])
-                if math.isfinite(start) and math.isfinite(end) and start >= 0 and end > start:
-                    wav_bytes = _extract_segment_wav(audio_bytes, audio_format, start, end)
+                if (
+                    math.isfinite(start)
+                    and math.isfinite(end)
+                    and start >= 0
+                    and end > start
+                ):
+                    wav_bytes = _extract_segment_wav(
+                        audio_bytes, audio_format, start, end
+                    )
                     if wav_bytes:
                         embedding = encoder.extract_embedding(wav_bytes)
                         name = match_voiceprint(embedding, voiceprints)
-            except (KeyError, TypeError, ValueError, OverflowError, RuntimeError, OSError):
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                OverflowError,
+                RuntimeError,
+                OSError,
+            ):
                 name = original_label
         item["name"] = name
         identified_segments.append(item)

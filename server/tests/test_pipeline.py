@@ -1,4 +1,5 @@
 """Mock integration tests for speaker and LLM pipeline clients."""
+
 import base64
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,7 +15,9 @@ async def test_identify_speakers_client():
     fake_voiceprints = [{"name": "Alice", "embedding": b"\x01\x02\x03"}]
     mock_response = MagicMock()
     mock_response.json.return_value = {
-        "speakers": [{"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0, "name": "Alice"}]
+        "speakers": [
+            {"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0, "name": "Alice"}
+        ]
     }
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_response
@@ -22,8 +25,14 @@ async def test_identify_speakers_client():
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("lifelog.pipeline.speaker_client.get_all_voiceprints", new_callable=AsyncMock) as mock_vp,
-        patch("lifelog.pipeline.speaker_client.httpx.AsyncClient", return_value=mock_client),
+        patch(
+            "lifelog.pipeline.speaker_client.get_all_voiceprints",
+            new_callable=AsyncMock,
+        ) as mock_vp,
+        patch(
+            "lifelog.pipeline.speaker_client.httpx.AsyncClient",
+            return_value=mock_client,
+        ),
     ):
         mock_vp.return_value = fake_voiceprints
         result = await identify_speakers(
@@ -43,15 +52,30 @@ def test_summarize():
     from lifelog.pipeline.llm import summarize
 
     mock_choice = MagicMock()
-    mock_choice.message.content = json.dumps({
-        "category": "work",
-        "summary": "Test summary",
-        "conversation_changes": [],
-        "decisions": [{"decision": "Go with plan A", "made_by": "Alice", "context": "Discussed options"}],
-        "todos": [{"task": "Buy groceries", "owner": "Bob", "due": None, "priority": "medium"}],
-        "calendar": [],
-        "notes": ["Important note"],
-    })
+    mock_choice.message.content = json.dumps(
+        {
+            "category": "work",
+            "summary": "Test summary",
+            "conversation_changes": [],
+            "decisions": [
+                {
+                    "decision": "Go with plan A",
+                    "made_by": "Alice",
+                    "context": "Discussed options",
+                }
+            ],
+            "todos": [
+                {
+                    "task": "Buy groceries",
+                    "owner": "Bob",
+                    "due": None,
+                    "priority": "medium",
+                }
+            ],
+            "calendar": [],
+            "notes": ["Important note"],
+        }
+    )
     mock_response = MagicMock()
     mock_response.choices = [mock_choice]
     mock_client = MagicMock()
@@ -75,21 +99,22 @@ def test_summarize():
     assert "Alice" in user_msg
 
 
-
 def test_summarize_with_context():
     """summarize() includes llm_context in the prompt sent to the LLM."""
     from lifelog.pipeline.llm import summarize
 
     mock_choice = MagicMock()
-    mock_choice.message.content = json.dumps({
-        "category": "work",
-        "summary": "Test summary",
-        "conversation_changes": [],
-        "decisions": [],
-        "todos": [],
-        "calendar": [],
-        "notes": [],
-    })
+    mock_choice.message.content = json.dumps(
+        {
+            "category": "work",
+            "summary": "Test summary",
+            "conversation_changes": [],
+            "decisions": [],
+            "todos": [],
+            "calendar": [],
+            "notes": [],
+        }
+    )
     mock_response = MagicMock()
     mock_response.choices = [mock_choice]
     mock_client = MagicMock()

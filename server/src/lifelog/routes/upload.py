@@ -1,7 +1,6 @@
 import logging
 import time
 
-
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, UploadFile
 
 from lifelog import database
@@ -17,7 +16,11 @@ def _opus_sample_rate(audio_bytes: bytes) -> int | None:
     """
     if len(audio_bytes) < 100:
         return None
-    import subprocess, tempfile, os, re
+    import os
+    import re
+    import subprocess
+    import tempfile
+
     try:
         with tempfile.NamedTemporaryFile(suffix=".opus", delete=False) as tmp:
             tmp.write(audio_bytes)
@@ -35,7 +38,7 @@ def _opus_sample_rate(audio_bytes: bytes) -> int | None:
                 return int(match.group(1))
         finally:
             os.unlink(tmp_path)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     return None
 
@@ -55,7 +58,6 @@ async def validate_upload_auth(
     return await validate_bearer_token(token)
 
 
-
 # Maximum chunk size: 10 MB
 MAX_CHUNK_SIZE = 10 * 1024 * 1024
 
@@ -73,7 +75,9 @@ def _evict_stale_utterances() -> None:
         for dev_id in list(_active_utterances[uid]):
             entry = _active_utterances[uid][dev_id]
             if now - entry.get("last_seen", now) > UTTERANCE_TTL:
-                logger.warning("Evicting stale utterance user=%d device=%d", uid, dev_id)
+                logger.warning(
+                    "Evicting stale utterance user=%d device=%d", uid, dev_id
+                )
                 _active_utterances[uid].pop(dev_id)
         if not _active_utterances[uid]:
             del _active_utterances[uid]
@@ -141,7 +145,11 @@ async def upload_audio(
         # whether an existing entry for a DIFFERENT device id has chunks.
         # If chunk_index > 0 with no entry, firmware bug — still assign.
         server_utt_id = _current_epoch()
-        user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": chunk_index, "last_seen": _current_epoch()}
+        user_utterances[device_utt] = {
+            "server_id": server_utt_id,
+            "last_chunk": chunk_index,
+            "last_seen": _current_epoch(),
+        }
     else:
         entry = user_utterances[device_utt]
         # New utterance on same device id: chunk_index resets to 0 after
@@ -150,13 +158,21 @@ async def upload_audio(
             # Finalize old utterance
             await _finalize_utterance(user_id, entry["server_id"])
             server_utt_id = _current_epoch()
-            user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": 0, "last_seen": _current_epoch()}
+            user_utterances[device_utt] = {
+                "server_id": server_utt_id,
+                "last_chunk": 0,
+                "last_seen": _current_epoch(),
+            }
         elif chunk_index < entry["last_chunk"]:
             # Device restarted — lower chunk_index without reset to 0
             # shouldn't happen per firmware contract, but handle defensively
             await _finalize_utterance(user_id, entry["server_id"])
             server_utt_id = _current_epoch()
-            user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": chunk_index, "last_seen": _current_epoch()}
+            user_utterances[device_utt] = {
+                "server_id": server_utt_id,
+                "last_chunk": chunk_index,
+                "last_seen": _current_epoch(),
+            }
         else:
             # Continuation of same utterance
             server_utt_id = entry["server_id"]
@@ -174,7 +190,11 @@ async def upload_audio(
         # Re-assign for the rebooted device
         if device_utt not in user_utterances:
             server_utt_id = _current_epoch()
-            user_utterances[device_utt] = {"server_id": server_utt_id, "last_chunk": 0, "last_seen": _current_epoch()}
+            user_utterances[device_utt] = {
+                "server_id": server_utt_id,
+                "last_chunk": 0,
+                "last_seen": _current_epoch(),
+            }
 
     # Store chunk
     await save_utterance_chunk(
@@ -186,8 +206,11 @@ async def upload_audio(
         logger.info(
             "Upload final: user=%d, device_utt=%d, server_utt=%d, "
             "size=%d bytes, sample_rate=%s",
-            user_id, utterance_id, server_utt_id,
-            len(audio_bytes), rate,
+            user_id,
+            utterance_id,
+            server_utt_id,
+            len(audio_bytes),
+            rate,
         )
         await _finalize_utterance(user_id, server_utt_id)
         user_utterances.pop(device_utt, None)
@@ -223,5 +246,7 @@ async def get_utterance_status(
         "utterance_id": utterance_id,
         "error": row["error"],
         "started_at": row["started_at"].isoformat() if row["started_at"] else None,
-        "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+        "completed_at": row["completed_at"].isoformat()
+        if row["completed_at"]
+        else None,
     }

@@ -1,4 +1,5 @@
 """Mock integration tests for speaker label route."""
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,10 +44,18 @@ async def test_label_speaker():
     app = _app_with_mocks(mock_user)
 
     with (
-        patch("lifelog.routes.speakers.get_recording", new_callable=AsyncMock, return_value=mock_recording),
+        patch(
+            "lifelog.routes.speakers.get_recording",
+            new_callable=AsyncMock,
+            return_value=mock_recording,
+        ),
         patch("lifelog.routes.speakers.update_speaker_name", new_callable=AsyncMock),
-        patch("lifelog.routes.speakers.extract_speaker_audio", return_value=b"fake-audio"),
-        patch("lifelog.routes.speakers.httpx.AsyncClient", return_value=mock_http_client),
+        patch(
+            "lifelog.routes.speakers.extract_speaker_audio", return_value=b"fake-audio"
+        ),
+        patch(
+            "lifelog.routes.speakers.httpx.AsyncClient", return_value=mock_http_client
+        ),
         patch("lifelog.routes.speakers.save_voiceprint", new_callable=AsyncMock),
         patch("lifelog.routes.speakers.rerun_identification", new_callable=AsyncMock),
     ):
@@ -67,7 +76,11 @@ async def test_label_speaker_recording_not_found():
     """Labeling a non-existent recording returns 404."""
     app = _app_with_mocks()
 
-    with patch("lifelog.routes.speakers.get_recording", new_callable=AsyncMock, return_value=None):
+    with patch(
+        "lifelog.routes.speakers.get_recording",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
         client = TestClient(app)
         response = client.post(
             "/label",

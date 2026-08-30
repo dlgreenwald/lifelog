@@ -14,7 +14,11 @@ def _client():
 
 
 def test_claim_returns_204_without_work():
-    with patch("lifelog.routes.transcription.db.claim_transcription_job", new_callable=AsyncMock, return_value=None):
+    with patch(
+        "lifelog.routes.transcription.db.claim_transcription_job",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
         response = _client().post("/internal/transcription/claim")
     assert response.status_code == 204
     assert response.content == b""
@@ -22,11 +26,19 @@ def test_claim_returns_204_without_work():
 
 def test_claim_serializes_job():
     job = {
-        "id": 4, "session_id": 2, "window_start": datetime(2025, 1, 1, 10),
-        "window_end": datetime(2025, 1, 1, 10, 10), "chunk_index": 0,
-        "job_type": None, "result": None,
+        "id": 4,
+        "session_id": 2,
+        "window_start": datetime(2025, 1, 1, 10),
+        "window_end": datetime(2025, 1, 1, 10, 10),
+        "chunk_index": 0,
+        "job_type": None,
+        "result": None,
     }
-    with patch("lifelog.routes.transcription.db.claim_transcription_job", new_callable=AsyncMock, return_value=job):
+    with patch(
+        "lifelog.routes.transcription.db.claim_transcription_job",
+        new_callable=AsyncMock,
+        return_value=job,
+    ):
         response = _client().post("/internal/transcription/claim")
     assert response.status_code == 200
     assert response.json()["job_type"] == "full"
@@ -39,21 +51,54 @@ def test_stage_rejects_unknown_stage():
 
 
 def test_completion_persists_all_result_fields():
-    with patch("lifelog.routes.transcription.db.complete_transcription_job", new_callable=AsyncMock) as complete:
+    with patch(
+        "lifelog.routes.transcription.db.complete_transcription_job",
+        new_callable=AsyncMock,
+    ) as complete:
         response = _client().post(
             "/internal/transcription/complete/4",
-            json={"segments": [], "full_transcript": {"segments": []}, "speaker_map": {}, "speaker_segments": [{"speaker": "SPEAKER_00"}]},
+            json={
+                "segments": [],
+                "full_transcript": {"segments": []},
+                "speaker_map": {},
+                "speaker_segments": [{"speaker": "SPEAKER_00"}],
+            },
         )
     assert response.status_code == 200
-    assert complete.await_args.args == (4, {"segments": [], "full_transcript": {"segments": []}, "speaker_map": {}, "speaker_segments": [{"speaker": "SPEAKER_00"}]})
+    assert complete.await_args.args == (
+        4,
+        {
+            "segments": [],
+            "full_transcript": {"segments": []},
+            "speaker_map": {},
+            "speaker_segments": [{"speaker": "SPEAKER_00"}],
+        },
+    )
 
 
 def test_quick_audio_returns_one_base64_segment():
-    job = {"id": 4, "session_id": 2, "status": "processing", "job_type": "quick", "result": {"audio_filename": "a.enc"}}
+    job = {
+        "id": 4,
+        "session_id": 2,
+        "status": "processing",
+        "job_type": "quick",
+        "result": {"audio_filename": "a.enc"},
+    }
     with (
-        patch("lifelog.routes.transcription.db.get_transcription_job", new_callable=AsyncMock, return_value=job),
-        patch("lifelog.routes.transcription._job_owner", new_callable=AsyncMock, return_value={"encryption_secret": "s", "key_salt": b"salt"}),
-        patch("lifelog.routes.transcription.audio_crypto.decrypt_audio", return_value=b"audio"),
+        patch(
+            "lifelog.routes.transcription.db.get_transcription_job",
+            new_callable=AsyncMock,
+            return_value=job,
+        ),
+        patch(
+            "lifelog.routes.transcription._job_owner",
+            new_callable=AsyncMock,
+            return_value={"encryption_secret": "s", "key_salt": b"salt"},
+        ),
+        patch(
+            "lifelog.routes.transcription.audio_crypto.decrypt_audio",
+            return_value=b"audio",
+        ),
     ):
         response = _client().get("/internal/transcription/audio/4")
     assert response.status_code == 200
@@ -62,6 +107,10 @@ def test_quick_audio_returns_one_base64_segment():
 
 
 def test_audio_rejects_non_processing_job():
-    with patch("lifelog.routes.transcription.db.get_transcription_job", new_callable=AsyncMock, return_value={"status": "done"}):
+    with patch(
+        "lifelog.routes.transcription.db.get_transcription_job",
+        new_callable=AsyncMock,
+        return_value={"status": "done"},
+    ):
         response = _client().get("/internal/transcription/audio/4")
     assert response.status_code == 409

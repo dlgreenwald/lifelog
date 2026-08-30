@@ -1,0 +1,4 @@
+# Actionlint parses GitHub Actions workflows for static errors. Add
+# per-path `ignore:` regexes here when actionlint's bundle grammar
+# lags GitHub's expression features; remove the entries once the
+# upstream parser catches up.

@@ -2,14 +2,34 @@
 
 ## ⚠️ Commit Rule
 
+**NEVER commit directly to `main`.** All changes must go through a pull request.
+
 **NEVER commit changes without explicit user instruction.** Always ask before running `git commit`. The user decides when changes are ready to commit. **REMIND the user to commit** when a task appears to be working and changes are stable — don't let working changes sit uncommitted.
+
+**Squash merge only.** When merging a PR, always use squash merge. This keeps `main` history linear and each commit atomic. Delete the feature branch after merge.
 
 ## ⚠️ Branch Rule
 
-**ALL work must be done in branches.** Never commit directly to `main`. Before starting a new task, confirm which branch to work on:
-- If not on a branch: ask the user to describe the feature and either create a new branch (`git checkout -b <branch-name>`) or select an existing one.
-- If already on a working branch: continue on that branch.
-- Exception: hotfixes and documentation-only changes that don't affect code may be handled on `main` with explicit user approval.
+**Trunk-based development.** `main` is the single source of truth. All work happens on short-lived feature branches.
+
+**Branch naming:** All work uses `feature/` branches with descriptive kebab-case names:
+- `feature/user-disk-limits`
+- `feature/speaker-identification-fix`
+- `feature/update-deps`
+
+**Before starting work:**
+1. Ensure `main` is up to date: `git pull origin main`
+2. Create a branch: `git checkout -b <branch-name>`
+3. Work on the branch; commit frequently with clear messages
+
+**PR requirements:**
+- Every PR targets `main`
+- PR title must use [Conventional Commits](https://www.conventionalcommits.org/) format: `feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:` — this becomes the squash commit message
+- All CI checks must pass before merge
+- Squash merge (no merge commits, no rebase merges)
+- Delete branch after merge
+
+**Long-lived branches are prohibited.** If a branch lives more than a few days, it's too big — break it into smaller PRs. The only exception is `release/*` branches for versioned releases (not applicable until needed).
 
 ## ⚠️ Documentation Sync Rule
 
@@ -323,7 +343,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 | Server | Python 3.11+ | `uv` (preferred) / pip | hatchling |
 | Speaker ID | Python 3.11+ | `uv` / pip | hatchling |
 | Transcription worker | Python 3.11+ | `uv` / pip | WhisperX + CUDA Torch |
-| Dashboard | Node.js 20+ | npm | Vite 5 |
+| Dashboard | Node.js 24+ | npm | Vite 5 |
 | Firmware-OTA | PlatformIO | pio lib | Arduino framework (2.x) |
 | Docker | Docker Compose v3.8 | — | Multi-stage builds |
 
@@ -333,12 +353,33 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - No Python lockfiles exist — builds use floating `>=` constraints
 - Dashboard has `package-lock.json` for reproducible npm installs
 - Firmware targets `seeed_xiao_esp32s3` board with `partitions_ota.csv` (dual 3MB app slots + 1.9MB model)
-- Docker images use CUDA runtime for GPU services; dashboard uses `node:20-alpine` → `nginx:alpine`
+- Docker images use CUDA runtime for GPU services; dashboard uses `node:24-alpine` → `nginx:alpine`
 - GPU services require NVIDIA runtime with CUDA
 - SSL certs are generated at compose level (command overrides), not baked into Dockerfiles
 
 ## Testing & QA
-**Total**: ~326 tests across 6 components (134 server + 8 diarization + 14 speaker-id + 10 transcription-worker + 91 dashboard + 69 firmware-ota)
+
+Each component has a `build.sh` that runs five gates when applicable. Failure of any gate exits non-zero and blocks the PR via the GitHub Actions job red status.
+
+### Build gates (component `build.sh`)
+
+| # | Gate | What it catches |
+|---|------|-----------------|
+| 1 | `python -m py_compile` (per `.py` file) | Syntax errors |
+| 2 | `ruff check src/ tests/` | Style, bug-prone patterns (B008 excepted for FastAPI Depends) |
+| 3 | `ruff format --check` | Format drift (run `ruff format` to fix) |
+| 4 | `pip-audit` (frozen, excluding the local editable package) | Python dependency CVEs (PyPI advisory / OSV database) |
+| 5 | `pytest -q` (server also runs `--cov --cov-report=term-missing`) | Failing behaviour; server additionally reports per-file coverage |
+
+For C++/TypeScript/Python alternatives: the **dashboard** build runs `npm ci` → `npm run test` (Vitest 91 tests) → `npx tsc --noEmit` (strict type-check) → bundle size check (340K cap). **firmware-ota** runs `pio test -e test` (69 Unity native tests).
+
+### Failing the build
+
+A failed build produces `conclusion: failure` for that component's job in `ci.yml`, marking the PR as failing the GitHub status check. Squashing the PR to `main` requires the check to pass if branch protection is configured. Without branch protection, the merge button stays clickable — enable "Require status checks to pass" in repository Settings → Branches to enforce.
+
+### Test counts
+
+Total: **~326 tests** across 6 components (134 server + 8 diarization + 16 speaker-id + 10 transcription-worker + 91 dashboard + 69 firmware-ota).
 
 ### Python test framework
 
@@ -429,16 +470,16 @@ Dashboard uses `strict: true` in `tsconfig.json`. No `: any` allowed — use `un
 
 ## Build Scripts
 
-Each component has a `build.sh` that runs its full verification pipeline. The top-level `build.sh` runs all of them.
+Each component has a `build.sh` that runs its full verification pipeline. The top-level `build.sh` runs all of them. Python-service scripts (`server/build.sh`, `diarization/build.sh`, `speaker-id/build.sh`) bootstrap a `.venv` with `uv venv .venv && uv pip install -e ".[dev]"` if missing, then run ruff + pytest against it.
 
 | Script | Steps |
 |--------|-------|
 | `build.sh` | Runs all component builds, reports pass/fail |
-| `server/build.sh` | compile check → ruff lint → pytest (108 tests) |
-| `diarization/build.sh` | compile check → ruff lint → pytest (8 tests) |
-| `speaker-id/build.sh` | compile check → ruff lint → pytest (15 tests) |
-| `dashboard/build.sh` | tsc type check → vite build → vitest (86 tests) → bundle size |
-| `firmware-ota/build.sh` | pio compile check → native test (69 tests) |
+| `server/build.sh` | venv bootstrap (uv) → ruff lint → pytest (134 tests) |
+| `diarization/build.sh` | venv bootstrap (uv) → ruff lint → pytest (8 tests) |
+| `speaker-id/build.sh` | venv bootstrap (uv) → ruff lint → pytest (16 tests) |
+| `dashboard/build.sh` | tsc type check → vite build → vitest (91 tests) → bundle size |
+| `transcription-worker/build.sh` | venv bootstrap (uv) → ruff lint → py_compile → pytest (10 tests) |
 
 **Run everything:**
 
@@ -447,4 +488,31 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 ./server/build.sh    # Single component
 ```
 
-**Exit code:** 0 = all passed, 1 = failures detected. CI-friendly.
+
+## Continuous Integration
+
+GitHub Actions runs the verification pipeline on every PR and on every push to `main`. Three workflows live under `.github/workflows/`:
+
+- `ci.yml` — PR trigger (`opened` / `synchronize` / `reopened`). Pipeline layout (visible on the Actions tab as a tree):
+  ```
+  detect-changes
+  ├── server
+  ├── diarization
+  ├── speaker-id
+  ├── transcription-worker
+  ├── dashboard
+  ├── firmware
+  └── security
+  ```
+  `detect-changes` is a single job that runs `actions/github-script@v7` to read `pull_request.changed_files` and emit bools (`server`, `diarization`, `speaker-id`, `transcription-worker`, `dashboard`, `firmware`, `python-source`). Downstream jobs declare `needs: detect-changes` and gate on the corresponding output (`if: needs.detect-changes.outputs.<x> == 'true'`). Each component job is self-contained: it installs Python / Node / PlatformIO as needed and runs that component's `build.sh` (or `npm run test` + `npx tsc` for the dashboard). `security` is inline (CodeQL `init`/`analyze` for python,javascript + `npm audit --omit=dev --audit-level=critical` against the dashboard).
+- `pr-check.yml` — reusable workflow (`workflow_call`) accepting `inputs.component: string` (required). A single `build` job with `if:` gates on `inputs.component == '<x>'` so each matrix invocation runs just the relevant step (Python `build.sh`, dashboard `npm ci / test / tsc`, or firmware `pio test -e test`). Called by `main.yml`'s `build-and-test.matrix`.
+- `main.yml` — main-branch gate. Drives `pr-check.yml` across all six build components via `matrix: [server, diarization, speaker-id, transcription-worker, dashboard, firmware]`, runs `security` inline, then `docker` (matrix of `server`, `speaker-id`, `transcription-worker`) with `needs: [build-and-test, security]`.
+
+Partial-build verification: a PR touching only `server/` shows `detect-changes` plus the `server` and `security` jobs (because server source is Python). Dashboard / firmware / diarization / speaker-id / transcription-worker nodes are skipped via the output gate.
+
+Local validation: `actionlint .github/workflows/*.yml` runs against `.github/actionlint.yaml` (currently a no-op; workflow syntax is straightforward and actionlint's bundled grammar lags GitHub's).
+
+**Action versions** are pinned to stable SemVer major releases on `node24` (clears the deprecation notices GitHub Actions started emitting in 2026 against `node20` actions):
+`actions/checkout@v5`, `actions/setup-python@v6`, `actions/setup-node@v5`, `astral-sh/setup-uv@v7`, `actions/github-script@v9`, `github/codeql-action/{init,analyze}@v4`.
+
+**Required GitHub secrets** for `main.yml` Docker builds: `DOCKER_USERNAME`, `DOCKER_PASSWORD`. Until configured, the Docker job fails on merge to `main`; `build-and-test` is unaffected.

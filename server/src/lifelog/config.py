@@ -2,7 +2,6 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-
     # Speaker ID Service
     speaker_id_url: str = "http://localhost:8443"
 

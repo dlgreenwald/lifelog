@@ -49,6 +49,7 @@ def _normalize_recording(rec: dict) -> dict:
     elif isinstance(summary, str) and summary.startswith("{"):
         try:
             import json
+
             parsed = json.loads(summary)
             if isinstance(parsed, dict):
                 rec["summary"] = parsed.get("summary", str(parsed))
@@ -61,9 +62,13 @@ router = APIRouter()
 
 
 @router.get("/calendar/{year}/{month}")
-async def get_calendar(year: int, month: int, user: dict = Depends(validate_oidc_token)):
+async def get_calendar(
+    year: int, month: int, user: dict = Depends(validate_oidc_token)
+):
     """Get calendar data for a month (days with recordings)."""
-    logger.debug("Calendar request: user=%d, year=%d, month=%d", user["id"], year, month)
+    logger.debug(
+        "Calendar request: user=%d, year=%d, month=%d", user["id"], year, month
+    )
 
     from lifelog.database import pool
 
@@ -95,16 +100,25 @@ async def get_day_recordings(
 
     Optional query param: category (personal, work, not_meaningful).
     """
-    logger.debug("Day recordings request: user=%d, date=%s, category=%s", user["id"], date, category)
+    logger.debug(
+        "Day recordings request: user=%d, date=%s, category=%s",
+        user["id"],
+        date,
+        category,
+    )
     recordings = await get_recordings_by_date(user["id"], date, category=category)
     logger.debug("Found %d recordings for %s", len(recordings), date)
     return {"recordings": [_normalize_recording(r) for r in recordings]}
 
 
 @router.get("/recording/{recording_id}")
-async def get_recording_detail(recording_id: int, user: dict = Depends(validate_oidc_token)):
+async def get_recording_detail(
+    recording_id: int, user: dict = Depends(validate_oidc_token)
+):
     """Get full recording details including speakers and segments."""
-    logger.debug("Recording detail request: user=%d, recording=%d", user["id"], recording_id)
+    logger.debug(
+        "Recording detail request: user=%d, recording=%d", user["id"], recording_id
+    )
     recording = await get_recording(user["id"], recording_id)
     if not recording:
         logger.warning("Recording %d not found for user %d", recording_id, user["id"])
@@ -156,8 +170,22 @@ def _concatenate_wav(audio_files: list[bytes]) -> bytes:
             for path in paths:
                 output.write(f"file '{path}'\n")
         process = subprocess.run(
-            ["ffmpeg", "-v", "error", "-f", "concat", "-safe", "0", "-i", list_path,
-             "-f", "wav", "pipe:1"], capture_output=True, check=False,
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_path,
+                "-f",
+                "wav",
+                "pipe:1",
+            ],
+            capture_output=True,
+            check=False,
         )
         return process.stdout if process.returncode == 0 else b""
 
@@ -179,11 +207,17 @@ async def get_speaker_audio(
             if label != speaker_label or not filename:
                 continue
             try:
-                audio_files.append(audio_crypto.decrypt_audio(
-                    filename, user["encryption_secret"], bytes(user["key_salt"])
-                ))
+                audio_files.append(
+                    audio_crypto.decrypt_audio(
+                        filename, user["encryption_secret"], bytes(user["key_salt"])
+                    )
+                )
             except Exception:
-                logger.warning("Skipping unavailable speaker playback file %s", filename, exc_info=True)
+                logger.warning(
+                    "Skipping unavailable speaker playback file %s",
+                    filename,
+                    exc_info=True,
+                )
         audio = _concatenate_wav(audio_files) if audio_files else b""
         if not audio:
             raise HTTPException(status_code=404, detail="Speaker audio not found")
@@ -209,7 +243,9 @@ async def get_todos_route(user: dict = Depends(validate_oidc_token)):
 
 
 @router.post("/todos")
-async def create_todo_route(body: CreateTodo, user: dict = Depends(validate_oidc_token)):
+async def create_todo_route(
+    body: CreateTodo, user: dict = Depends(validate_oidc_token)
+):
     """Create a new todo. recording_id is optional (null for standalone)."""
     if body.recording_id is not None:
         recording = await get_recording(user["id"], body.recording_id)
@@ -227,7 +263,9 @@ async def create_todo_route(body: CreateTodo, user: dict = Depends(validate_oidc
 
 
 @router.get("/todos/{date}")
-async def get_todos_for_date_route(date: str, user: dict = Depends(validate_oidc_token)):
+async def get_todos_for_date_route(
+    date: str, user: dict = Depends(validate_oidc_token)
+):
     """Get todos from recordings on a specific date (YYYY-MM-DD)."""
     todos = await get_todos_for_date(user["id"], date)
     return {"todos": todos}
@@ -261,9 +299,7 @@ async def complete_todo_route(
 
 
 @router.delete("/todos/{todo_id}")
-async def delete_todo_route(
-    todo_id: int, user: dict = Depends(validate_oidc_token)
-):
+async def delete_todo_route(todo_id: int, user: dict = Depends(validate_oidc_token)):
     """Delete a todo. Verifies user owns the todo."""
     owner = await get_todo_owner(todo_id)
     if owner is None:
@@ -287,7 +323,9 @@ async def get_decisions_route(
 
 
 @router.post("/decisions")
-async def create_decision_route(body: CreateDecision, user: dict = Depends(validate_oidc_token)):
+async def create_decision_route(
+    body: CreateDecision, user: dict = Depends(validate_oidc_token)
+):
     """Create a new decision. recording_id is optional (null for standalone)."""
     if body.recording_id is not None:
         recording = await get_recording(user["id"], body.recording_id)
@@ -348,7 +386,9 @@ async def delete_decision_route(
 async def get_unknown_speakers_route(user: dict = Depends(validate_oidc_token)):
     """Get all recordings with unknown speakers for labeling."""
     recordings = await get_unknown_speakers(user["id"])
-    logger.debug("Unknown speakers request: user=%d, found=%d", user["id"], len(recordings))
+    logger.debug(
+        "Unknown speakers request: user=%d, found=%d", user["id"], len(recordings)
+    )
     return {"recordings": recordings}
 
 
@@ -360,7 +400,7 @@ async def get_all_speakers_route(user: dict = Depends(validate_oidc_token)):
     recordings = await get_all_recordings_with_speakers(user["id"])
     speakers = {}
     for rec in recordings:
-        for seg in (rec.get("speakers") or []):
+        for seg in rec.get("speakers") or []:
             name = seg.get("name", "Unknown")
             if name not in speakers:
                 speakers[name] = {
@@ -373,7 +413,9 @@ async def get_all_speakers_route(user: dict = Depends(validate_oidc_token)):
 
 
 @router.delete("/recording/{recording_id}")
-async def delete_recording_route(recording_id: int, user: dict = Depends(validate_oidc_token)):
+async def delete_recording_route(
+    recording_id: int, user: dict = Depends(validate_oidc_token)
+):
     """Delete a recording."""
     deleted = await delete_recording(user["id"], recording_id)
     if not deleted:
@@ -382,7 +424,9 @@ async def delete_recording_route(recording_id: int, user: dict = Depends(validat
 
 
 @router.post("/recording/{recording_id}/reprocess")
-async def reprocess_recording_route(recording_id: int, user: dict = Depends(validate_oidc_token)):
+async def reprocess_recording_route(
+    recording_id: int, user: dict = Depends(validate_oidc_token)
+):
     """Requeue a recording for reprocessing at the next hourly run.
 
     Resets the session status to 'ended' and deletes the existing recording.
@@ -394,7 +438,9 @@ async def reprocess_recording_route(recording_id: int, user: dict = Depends(vali
 
     session_id = recording.get("session_id")
     if not session_id:
-        raise HTTPException(status_code=400, detail="Recording has no associated session")
+        raise HTTPException(
+            status_code=400, detail="Recording has no associated session"
+        )
 
     reset = await reset_session_for_reprocessing(session_id)
     if not reset:

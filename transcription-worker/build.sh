@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# diarization/build.sh — Lint, compile-check, format-check, dep-audit, and test the diarization service
+# transcription-worker/build.sh — Lint, compile-check, format-check, dep-audit, and test the worker
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,6 +9,7 @@ VENV=".venv"
 RUFF="$VENV/bin/ruff"
 PYTEST="$VENV/bin/python -m pytest"
 PIP_AUDIT="$VENV/bin/pip-audit"
+SOURCE_FILES="audio.py pipeline.py main.py"
 
 # --- Bootstrap: ensure .venv exists with dev dependencies ---
 if ! command -v uv >/dev/null 2>&1; then
@@ -22,7 +23,7 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 
 echo "============================================"
-echo "  Diarization Service — Build & Verify"
+echo "  Transcription Worker — Build & Verify"
 echo "============================================"
 echo ""
 
@@ -32,7 +33,7 @@ FAIL=0
 # --- Step 1: Compile check ---
 echo "[1/5] Compile check (python -m py_compile)..."
 COMPILE_FAIL=0
-for f in $(find src -name '*.py' -not -path '*__pycache__*'); do
+for f in $SOURCE_FILES; do
     if ! $VENV/bin/python -m py_compile "$f" 2>/dev/null; then
         echo "  ✗ $f"
         COMPILE_FAIL=1
@@ -49,7 +50,7 @@ fi
 # --- Step 2: Ruff lint ---
 echo ""
 echo "[2/5] Ruff lint..."
-if $RUFF check src/ tests/ 2>&1; then
+if $RUFF check $SOURCE_FILES 2>&1; then
     echo "  ✓ Lint clean"
     PASS=$((PASS + 1))
 else
@@ -60,7 +61,7 @@ fi
 # --- Step 3: Ruff format check ---
 echo ""
 echo "[3/5] Ruff format check..."
-if $RUFF format --check src/ tests/ 2>&1; then
+if $RUFF format --check $SOURCE_FILES 2>&1; then
     echo "  ✓ Format clean"
     PASS=$((PASS + 1))
 else
@@ -99,7 +100,7 @@ fi
 # --- Step 5: Tests ---
 echo ""
 echo "[5/5] Tests..."
-if $PYTEST tests/ -q 2>&1; then
+if $PYTEST test_*.py -q 2>&1; then
     echo "  ✓ Tests passed"
     PASS=$((PASS + 1))
 else

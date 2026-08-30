@@ -3,6 +3,7 @@
 Revision ID: 002
 Revises: 001
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -28,9 +29,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("false"),
         ),
-        sa.Column(
-            "created_at", sa.TIMESTAMP(), server_default=sa.func.now()
-        ),
+        sa.Column("created_at", sa.TIMESTAMP(), server_default=sa.func.now()),
         sa.UniqueConstraint(
             "user_id",
             "utterance_id",

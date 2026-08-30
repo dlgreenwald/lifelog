@@ -4,6 +4,7 @@ These columns track the absolute time boundaries of each partition's
 audio within the session, so the dashboard knows which audio files
 to load for a gap-split recording partition.
 """
+
 from alembic import op
 
 revision = "018"

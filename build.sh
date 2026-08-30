@@ -14,10 +14,10 @@ COMPONENTS=(
     "server"
     "diarization"
     "speaker-id"
+    "transcription-worker"
     "dashboard"
-    "firmware"
+    "firmware-ota"
 )
-
 TOTAL_PASS=0
 TOTAL_FAIL=0
 FAILED_COMPONENTS=()

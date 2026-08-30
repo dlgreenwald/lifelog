@@ -1,4 +1,5 @@
 """Tests for speaker-id pipeline: opus_to_wav and SpeakerEncoder.extract_embedding."""
+
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -11,6 +12,7 @@ def test_opus_to_wav_calls_ffmpeg():
     fake_wav = b"RIFF" + b"\x00" * 100
 
     with patch("speaker_id.routes.subprocess.run") as mock_run:
+
         def fake_run(cmd, **kwargs):
             wav_path = cmd[-1]
             with open(wav_path, "wb") as f:
@@ -30,9 +32,11 @@ def test_opus_to_wav_cleans_up_temp_files():
     """opus_to_wav removes temp files even on error."""
     from speaker_id.routes import opus_to_wav
 
-    with patch("speaker_id.routes.subprocess.run", side_effect=RuntimeError("ffmpeg failed")):
+    with patch(
+        "speaker_id.routes.subprocess.run", side_effect=RuntimeError("ffmpeg failed")
+    ):
         try:
-            opus_to_wav(b"bad-data")
+            opus_to_wav(b"fake-opus-data")
         except RuntimeError:
             pass
 
@@ -54,7 +58,7 @@ class _MockTensor:
 
 
 def test_speaker_encoder_extract_embedding():
-    """SpeakerEncoder.extract_embedding calls encode_batch and returns numpy array."""
+    """SpeakerEncoder.extract_embedding writes a wav temp file, calls encode_batch, and returns a numpy array."""
     from speaker_id.embeddings import SpeakerEncoder
 
     encoder = SpeakerEncoder.__new__(SpeakerEncoder)
@@ -63,18 +67,23 @@ def test_speaker_encoder_extract_embedding():
     mock_classifier.encode_batch.return_value = _MockTensor([[[0.1, 0.2, 0.3, 0.4]]])
     encoder.encoder = mock_classifier
 
-    mock_file = MagicMock()
-    mock_file.name = "/tmp/test.wav"
-    mock_file.__enter__ = MagicMock(return_value=mock_file)
-    mock_file.__exit__ = MagicMock(return_value=False)
+    # Generate real PCM 16kHz mono audio and write to a real temp file, so the
+    # implementation's tempfile / soundfile.read / os.unlink pipeline succeeds
+    # end-to-end while we still mock the actual ECAPA inference.
+    import io
 
-    with patch("tempfile.NamedTemporaryFile", return_value=mock_file):
-        result = encoder.extract_embedding(b"fake-wav-data")
+    import soundfile
+
+    fake_audio = np.zeros(16000, dtype="float32")
+    buf = io.BytesIO()
+    soundfile.write(buf, fake_audio, 16000, format="WAV", subtype="FLOAT")
+    audio_bytes = buf.getvalue()
+
+    result = encoder.extract_embedding(audio_bytes)
 
     assert isinstance(result, np.ndarray)
     assert result.shape == (4,)
     assert abs(result[0] - 0.1) < 1e-6
-    mock_classifier.encode_batch.assert_called_once_with("/tmp/test.wav")
 
 
 def test_speaker_encoder_extract_embedding_2d():
@@ -87,13 +96,16 @@ def test_speaker_encoder_extract_embedding_2d():
     mock_classifier.encode_batch.return_value = _MockTensor([[0.5, 0.6, 0.7]])
     encoder.encoder = mock_classifier
 
-    mock_file = MagicMock()
-    mock_file.name = "/tmp/test.wav"
-    mock_file.__enter__ = MagicMock(return_value=mock_file)
-    mock_file.__exit__ = MagicMock(return_value=False)
+    import io
 
-    with patch("tempfile.NamedTemporaryFile", return_value=mock_file):
-        result = encoder.extract_embedding(b"audio")
+    import soundfile
+
+    fake_audio = np.zeros(16000, dtype="float32")
+    buf = io.BytesIO()
+    soundfile.write(buf, fake_audio, 16000, format="WAV", subtype="FLOAT")
+    audio_bytes = buf.getvalue()
+
+    result = encoder.extract_embedding(audio_bytes)
 
     assert result.shape == (3,)
     assert abs(result[2] - 0.7) < 1e-6

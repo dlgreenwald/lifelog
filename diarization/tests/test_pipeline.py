@@ -1,4 +1,5 @@
 """Tests for diarization pipeline: opus_to_wav and DiarizationPipeline.diarize."""
+
 from unittest.mock import MagicMock, patch
 
 
@@ -9,6 +10,7 @@ def test_opus_to_wav_calls_ffmpeg():
     fake_wav = b"RIFF" + b"\x00" * 100  # Minimal WAV header
 
     with patch("diarization.pipeline.subprocess.run") as mock_run:
+
         def fake_run(cmd, **kwargs):
             # Write fake wav to the output path
             wav_path = cmd[-1]
@@ -33,7 +35,9 @@ def test_opus_to_wav_cleans_up_temp_files():
     """opus_to_wav removes temp files even on error."""
     from diarization.pipeline import opus_to_wav
 
-    with patch("diarization.pipeline.subprocess.run", side_effect=RuntimeError("ffmpeg failed")):
+    with patch(
+        "diarization.pipeline.subprocess.run", side_effect=RuntimeError("ffmpeg failed")
+    ):
         try:
             opus_to_wav(b"bad-data")
         except RuntimeError:

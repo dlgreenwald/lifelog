@@ -28,7 +28,9 @@ async def health():
 
 
 async def _post_stage(client: httpx.AsyncClient, job_id: int, stage: str) -> None:
-    response = await client.post(f"{SERVER_URL}/internal/transcription/stage/{job_id}", json={"stage": stage})
+    response = await client.post(
+        f"{SERVER_URL}/internal/transcription/stage/{job_id}", json={"stage": stage}
+    )
     response.raise_for_status()
 
 
@@ -38,7 +40,9 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
     language = job.get("language", "auto")
     if language == "auto":
         language = None
-    audio_response = await client.get(f"{SERVER_URL}/internal/transcription/audio/{job_id}")
+    audio_response = await client.get(
+        f"{SERVER_URL}/internal/transcription/audio/{job_id}"
+    )
     audio_response.raise_for_status()
     payload = audio_response.json()
     audio_segments = [base64.b64decode(value) for value in payload["audio_segments"]]
@@ -49,7 +53,9 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
         complete = transcribe_audio(models, audio_np, sample_rate, language=language)
     else:
         await _post_stage(client, job_id, "concatenating")
-        audio_np, sample_rate = concatenate_segments(audio_segments, payload["timestamps"])
+        audio_np, sample_rate = concatenate_segments(
+            audio_segments, payload["timestamps"]
+        )
         await _post_stage(client, job_id, "transcribing")
         await _post_stage(client, job_id, "diarizing")
         complete = transcribe_audio(models, audio_np, sample_rate, language=language)
@@ -77,7 +83,9 @@ async def poll_once(client: httpx.AsyncClient) -> bool:
             )
             failed.raise_for_status()
         except httpx.HTTPError:
-            logger.exception("Unable to report transcription job %s failure", job.get("job_id"))
+            logger.exception(
+                "Unable to report transcription job %s failure", job.get("job_id")
+            )
     return True
 
 

@@ -14,7 +14,10 @@ def serialize_embedding(embedding: list[float] | bytes) -> bytes:
     if isinstance(embedding, bytes):
         return embedding
     return json.dumps(embedding).encode("utf-8")
+
+
 logger = logging.getLogger("lifelog.speaker_id")
+
 
 async def identify_speakers(
     segments: list[dict], audio_bytes: bytes, user_id: int, audio_format: str = "opus"
@@ -33,7 +36,9 @@ async def identify_speakers(
         voiceprint_data.append({"name": vp["name"], "embedding": list(embedding)})
     logger.info(
         "Identifying speakers: %d segments, %d voiceprints for user %d",
-        len(segments), len(voiceprint_data), user_id,
+        len(segments),
+        len(voiceprint_data),
+        user_id,
     )
     async with httpx.AsyncClient(timeout=300) as client:
         response = await client.post(
@@ -48,9 +53,15 @@ async def identify_speakers(
         response.raise_for_status()
         result = response.json()["speakers"]
     duration = time.monotonic() - start
-    matched = [speaker for speaker in result if speaker.get("name") and speaker["name"] != "Unknown"]
+    matched = [
+        speaker
+        for speaker in result
+        if speaker.get("name") and speaker["name"] != "Unknown"
+    ]
     logger.info(
         "Speaker identification complete in %.2fs: %d results, %d matched to voiceprints",
-        duration, len(result), len(matched),
+        duration,
+        len(result),
+        len(matched),
     )
     return result

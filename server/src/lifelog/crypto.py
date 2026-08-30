@@ -26,9 +26,7 @@ class AudioEncryption:
         key = base64.urlsafe_b64encode(kdf.derive(user_secret.encode()))
         return key
 
-    def encrypt_audio(
-        self, audio_bytes: bytes, user_secret: str, salt: bytes
-    ) -> str:
+    def encrypt_audio(self, audio_bytes: bytes, user_secret: str, salt: bytes) -> str:
         """Encrypt audio file and save to disk. Returns encrypted filename."""
         key = self.derive_key(user_secret, salt)
         fernet = Fernet(key)
@@ -43,9 +41,7 @@ class AudioEncryption:
 
         return filename
 
-    def decrypt_audio(
-        self, filename: str, user_secret: str, salt: bytes
-    ) -> bytes:
+    def decrypt_audio(self, filename: str, user_secret: str, salt: bytes) -> bytes:
         """Decrypt audio file from disk."""
         # Prevent path traversal: basename + strict format check
         safe_name = os.path.basename(filename)
@@ -58,7 +54,10 @@ class AudioEncryption:
         filepath = os.path.join(self.storage_path, safe_name)
         real_storage = os.path.realpath(self.storage_path)
         real_filepath = os.path.realpath(filepath)
-        if not real_filepath.startswith(real_storage + os.sep) and real_filepath != real_storage:
+        if (
+            not real_filepath.startswith(real_storage + os.sep)
+            and real_filepath != real_storage
+        ):
             raise ValueError(f"Path traversal attempt: {filename}")
 
         with open(filepath, "rb") as f:

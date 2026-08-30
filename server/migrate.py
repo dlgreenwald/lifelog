@@ -2,6 +2,7 @@
 
 Called by entrypoint.sh before uvicorn starts.
 """
+
 from alembic.config import Config
 from alembic import command
 

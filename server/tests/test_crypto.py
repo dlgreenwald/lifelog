@@ -1,4 +1,5 @@
 """Unit tests for crypto module (encrypt/decrypt roundtrip)."""
+
 import os
 import tempfile
 from unittest.mock import patch

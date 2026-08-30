@@ -17,6 +17,7 @@ logger = logging.getLogger("lifelog.worker")
 POLL_INTERVAL = 60.0
 _ALLOWED_AUDIO_LABELS = lambda name: name not in {"Unknown", ""}
 
+
 async def claim_utterance(user_id: int, utterance_id: int) -> bool:
     """Try to claim an utterance for processing. Returns True if claimed."""
     async with db.pool.acquire() as conn:
@@ -85,6 +86,7 @@ async def get_user_secret(user_id: int) -> dict | None:
         )
         return dict(row) if row else None
 
+
 async def process_utterance(user_id: int, utterance_id: int):
     """Encrypt audio and assign to a session for later quick transcription."""
     start = time.monotonic()
@@ -103,7 +105,9 @@ async def process_utterance(user_id: int, utterance_id: int):
     key_salt = bytes(user_secrets["key_salt"])
     audio_filenames = []
     for index, chunk in enumerate(chunks):
-        filename = audio_crypto.encrypt_audio(chunk["audio_bytes"], encryption_secret, key_salt)
+        filename = audio_crypto.encrypt_audio(
+            chunk["audio_bytes"], encryption_secret, key_salt
+        )
         audio_filenames.append(filename)
         if settings.verify_audio_writes:
             audio_crypto.decrypt_audio(filename, encryption_secret, key_salt)
@@ -111,12 +115,18 @@ async def process_utterance(user_id: int, utterance_id: int):
     await delete_utterance_chunks(user_id, utterance_id)
 
     queue_entry = await db.get_utterance_queue_entry(user_id, utterance_id)
-    utterance_time = queue_entry["created_at"] if queue_entry else datetime.now(UTC).replace(tzinfo=None)
+    utterance_time = (
+        queue_entry["created_at"]
+        if queue_entry
+        else datetime.now(UTC).replace(tzinfo=None)
+    )
     active_session = await db.get_active_session(user_id)
     if active_session:
         last_time = await db.get_last_utterance_time(active_session["id"])
         ref_time = last_time or active_session["started_at"]
-        gap_minutes = (utterance_time - ref_time.replace(tzinfo=None)).total_seconds() / 60
+        gap_minutes = (
+            utterance_time - ref_time.replace(tzinfo=None)
+        ).total_seconds() / 60
         if gap_minutes <= settings.session_gap_minutes:
             session_id = active_session["id"]
         else:
@@ -131,12 +141,20 @@ async def process_utterance(user_id: int, utterance_id: int):
 
     audio_filename = audio_filenames[0] if audio_filenames else ""
     await db.append_session_utterance(
-        session_id, utterance_id, audio_filename, {}, [], utterance_timestamp=utterance_time
+        session_id,
+        utterance_id,
+        audio_filename,
+        {},
+        [],
+        utterance_timestamp=utterance_time,
     )
     await complete_utterance(user_id, utterance_id, None)
     logger.info(
         "Utterance %d/%d assigned to session %d in %.2fs",
-        user_id, utterance_id, session_id, time.monotonic() - start,
+        user_id,
+        utterance_id,
+        session_id,
+        time.monotonic() - start,
     )
 
 
@@ -153,7 +171,8 @@ async def _create_session_quick_jobs() -> None:
         # (transcript is NULL or segments array is empty)
         utterances = await db.get_session_all_utterances(session["id"])
         untranscribed = [
-            u for u in utterances
+            u
+            for u in utterances
             if not u.get("transcript")
             or not u["transcript"].get("segments")
             or len(u["transcript"].get("segments", [])) == 0
@@ -163,7 +182,11 @@ async def _create_session_quick_jobs() -> None:
         # Check if there's already a pending quick job for this session
         existing = await db.get_pending_session_quick_job(session["id"])
         if existing:
-            logger.debug("Session %d already has pending quick job %s", session["id"], existing["id"])
+            logger.debug(
+                "Session %d already has pending quick job %s",
+                session["id"],
+                existing["id"],
+            )
             continue
         # Create one job for all untranscribed utterances in this session
         utterance_ids = [u["utterance_id"] for u in untranscribed]
@@ -173,14 +196,24 @@ async def _create_session_quick_jobs() -> None:
         language = settings.get("language", "auto")
         try:
             await db.create_session_quick_job(
-                session["id"], utterance_ids, window_start, window_end, language=language
+                session["id"],
+                utterance_ids,
+                window_start,
+                window_end,
+                language=language,
             )
             logger.info(
                 "Session %d: queued quick job for %d untranscribed utterances [%s, %s]",
-                session["id"], len(utterance_ids), window_start.isoformat(), window_end.isoformat(),
+                session["id"],
+                len(utterance_ids),
+                window_start.isoformat(),
+                window_end.isoformat(),
             )
         except Exception:
-            logger.exception("Error creating session quick job for session %d", session["id"])
+            logger.exception(
+                "Error creating session quick job for session %d", session["id"]
+            )
+
 
 async def _apply_quick_transcripts() -> None:
     """Apply completed quick jobs: map combined diarized segments back to individual utterances."""
@@ -189,6 +222,7 @@ async def _apply_quick_transcripts() -> None:
             result = job.get("result") or {}
             if isinstance(result, str):
                 import json
+
                 result = json.loads(result)
             session_id = result.get("session_id") or job.get("session_id")
             utterance_ids = result.get("utterance_ids", [])
@@ -196,7 +230,9 @@ async def _apply_quick_transcripts() -> None:
                 # Legacy per-utterance job: single-utterance path
                 utterance_id = result.get("utterance_id") or job.get("chunk_index")
                 if utterance_id is None:
-                    utterance_id = (result.get("utterances") or [{}])[0].get("utterance_id")
+                    utterance_id = (result.get("utterances") or [{}])[0].get(
+                        "utterance_id"
+                    )
                 if utterance_id is None:
                     raise ValueError("quick result has no utterance_id")
                 segments = result.get("segments", [])
@@ -216,7 +252,9 @@ async def _apply_quick_transcripts() -> None:
                 )
             else:
                 utterances = await db.get_session_all_utterances(session_id)
-            utterances = [u for u in utterances if u["utterance_id"] in set(utterance_ids)]
+            utterances = [
+                u for u in utterances if u["utterance_id"] in set(utterance_ids)
+            ]
             if not utterances:
                 logger.warning("No utterances found for quick job %s", job["id"])
                 await db.mark_quick_job_applied(job["id"])
@@ -225,9 +263,13 @@ async def _apply_quick_transcripts() -> None:
             offsets: dict[int, float] = {}
             first_ts = utterances[0]["created_at"].replace(tzinfo=None)
             for utt in utterances:
-                offsets[utt["utterance_id"]] = (utt["created_at"].replace(tzinfo=None) - first_ts).total_seconds()
+                offsets[utt["utterance_id"]] = (
+                    utt["created_at"].replace(tzinfo=None) - first_ts
+                ).total_seconds()
             # Assign combined segments to utterances based on offset ranges
-            utterance_segments: dict[int, list] = {u["utterance_id"]: [] for u in utterances}
+            utterance_segments: dict[int, list] = {
+                u["utterance_id"]: [] for u in utterances
+            }
             all_segments = result.get("segments", []) or []
             for seg in all_segments:
                 seg_start = seg.get("start", 0.0)
@@ -243,38 +285,52 @@ async def _apply_quick_transcripts() -> None:
                         # Last utterance: cover rest of combined audio
                         if i > 0:
                             prev_end = offsets[utterances[i - 1]["utterance_id"]]
-                            off_end = off_start + (off_start - prev_end) if off_start > prev_end else 2.0
+                            off_end = (
+                                off_start + (off_start - prev_end)
+                                if off_start > prev_end
+                                else 2.0
+                            )
                         else:
                             off_end = off_start + 2.0
                     if off_start <= seg_start < off_end:
-                        utterance_segments[utt["utterance_id"]].append({
-                            "start": seg_start - off_start,
-                            "end": seg_end - off_start,
-                            "text": text,
-                            "speaker": speaker,
-                        })
+                        utterance_segments[utt["utterance_id"]].append(
+                            {
+                                "start": seg_start - off_start,
+                                "end": seg_end - off_start,
+                                "text": text,
+                                "speaker": speaker,
+                            }
+                        )
                         assigned = True
                         break
                 if not assigned and utterances:
                     last = utterances[-1]
                     off_start = offsets[last["utterance_id"]]
-                    utterance_segments[last["utterance_id"]].append({
-                        "start": seg_start - off_start,
-                        "end": seg_end - off_start,
-                        "text": text,
-                        "speaker": speaker,
-                    })
+                    utterance_segments[last["utterance_id"]].append(
+                        {
+                            "start": seg_start - off_start,
+                            "end": seg_end - off_start,
+                            "text": text,
+                            "speaker": speaker,
+                        }
+                    )
             for utt in utterances:
                 await db.update_session_utterance_transcript(
-                    session_id, utt["utterance_id"], {"segments": utterance_segments.get(utt["utterance_id"], [])}
+                    session_id,
+                    utt["utterance_id"],
+                    {"segments": utterance_segments.get(utt["utterance_id"], [])},
                 )
             await db.mark_quick_job_applied(job["id"])
             logger.info(
                 "Quick job %d applied: %d utterances, %d combined segments",
-                job["id"], len(utterances), len(all_segments),
+                job["id"],
+                len(utterances),
+                len(all_segments),
             )
         except Exception:
-            logger.exception("Unable to apply quick transcription job %s", job.get("id"))
+            logger.exception(
+                "Unable to apply quick transcription job %s", job.get("id")
+            )
 
 
 def _window_ranges(utterances: list[dict]) -> list[tuple[datetime, datetime]]:
@@ -284,7 +340,10 @@ def _window_ranges(utterances: list[dict]) -> list[tuple[datetime, datetime]]:
     duration = timedelta(minutes=max(1, settings.reprocess_chunk_minutes))
     count = max(1, int((last - first) / duration) + 1)
     return [
-        (first + index * duration, min(first + (index + 1) * duration, last + timedelta(seconds=1)))
+        (
+            first + index * duration,
+            min(first + (index + 1) * duration, last + timedelta(seconds=1)),
+        )
         for index in range(count)
     ]
 
@@ -303,16 +362,26 @@ async def _reprocess_session(session: dict):
         for job in existing
         if (job.get("job_type") or "full") == "full"
     }
-    for chunk_index, (window_start, window_end) in enumerate(_window_ranges(utterances)):
+    for chunk_index, (window_start, window_end) in enumerate(
+        _window_ranges(utterances)
+    ):
         job = existing_by_chunk.get(chunk_index)
         if job is not None:
             if job.get("status") == "failed":
-                logger.error("Session %d chunk %d has terminal failed transcription job", session_id, chunk_index)
+                logger.error(
+                    "Session %d chunk %d has terminal failed transcription job",
+                    session_id,
+                    chunk_index,
+                )
             continue
         settings = await db.get_user_settings(session["user_id"])
         language = settings.get("language", "auto")
-        await db.create_transcription_job(session_id, window_start, window_end, chunk_index, language=language)
-        logger.info("Session %d queued full transcription chunk %d", session_id, chunk_index)
+        await db.create_transcription_job(
+            session_id, window_start, window_end, chunk_index, language=language
+        )
+        logger.info(
+            "Session %d queued full transcription chunk %d", session_id, chunk_index
+        )
 
 
 def _shifted_segments(segments: list[dict], offset: float) -> list[dict]:
@@ -325,6 +394,7 @@ def _shifted_segments(segments: list[dict], offset: float) -> list[dict]:
             item["end"] += offset
         shifted.append(item)
     return shifted
+
 
 def _partition_segments(
     segments: list[dict],
@@ -354,12 +424,14 @@ def _partition_segments(
         partitions.append(current)
     return partitions
 
+
 def _persist_partition_segments(
     partition: list[dict],
     user: dict,
 ) -> list[dict]:
     """Encrypt audio payloads and build persisted segment list for one partition."""
     import base64
+
     persisted = []
     for segment in partition:
         audio_payload = segment.get("audio")
@@ -375,20 +447,27 @@ def _persist_partition_segments(
                 continue
         else:
             audio_filename = ""
-        persisted.append({
-            "speaker": segment.get("speaker", "Unknown"),
-            "start": segment.get("start", 0),
-            "end": segment.get("end", 0),
-            "text": segment.get("text", ""),
-            "audio_filename": audio_filename,
-        })
+        persisted.append(
+            {
+                "speaker": segment.get("speaker", "Unknown"),
+                "start": segment.get("start", 0),
+                "end": segment.get("end", 0),
+                "text": segment.get("text", ""),
+                "audio_filename": audio_filename,
+            }
+        )
     return persisted
 
 
 def _named_from_persisted(persisted: list[dict]) -> list[dict]:
     """Build named segment list (for LLM) from persisted segments."""
     return [
-        {"name": seg["speaker"], "start": seg["start"], "end": seg["end"], "text": seg["text"]}
+        {
+            "name": seg["speaker"],
+            "start": seg["start"],
+            "end": seg["end"],
+            "text": seg["text"],
+        }
         for seg in persisted
     ]
 
@@ -396,6 +475,7 @@ def _named_from_persisted(persisted: list[dict]) -> list[dict]:
 def _offset_to_datetime(offset_seconds: float, base: datetime) -> datetime:
     """Convert an audio offset (seconds from session start) to an absolute datetime."""
     from datetime import timedelta
+
     return base + timedelta(seconds=offset_seconds)
 
 
@@ -412,17 +492,21 @@ def _normalise_summary(result: dict) -> dict:
     if category is None:
         category = "not_meaningful"
     elif not isinstance(category, str):
-        category = "\n".join(str(item) for item in category) if isinstance(category, list) else str(category)
+        category = (
+            "\n".join(str(item) for item in category)
+            if isinstance(category, list)
+            else str(category)
+        )
     result["category"] = category
     for key in ("todos", "calendar", "notes", "conversation_changes"):
         result.setdefault(key, [])
     return result
 
 
-
 async def _auto_enroll_speakers(user: dict, speaker_segments: list[dict]) -> None:
     """Enroll raw speaker labels from the current recording when possible."""
     from lifelog.pipeline.speaker_client import serialize_embedding
+
     voiceprints = await db.get_all_voiceprints(user["id"])
     known = {voiceprint["name"] for voiceprint in voiceprints}
     grouped: dict[str, list[bytes]] = {}
@@ -436,7 +520,9 @@ async def _auto_enroll_speakers(user: dict, speaker_segments: list[dict]) -> Non
                 filename, user["encryption_secret"], bytes(user["key_salt"])
             )
         except Exception:
-            logger.warning("Skipping corrupt audio for speaker '%s'", label, exc_info=True)
+            logger.warning(
+                "Skipping corrupt audio for speaker '%s'", label, exc_info=True
+            )
             continue
         grouped.setdefault(label, []).append(audio)
 
@@ -460,16 +546,19 @@ async def _auto_enroll_speakers(user: dict, speaker_segments: list[dict]) -> Non
             logger.exception("Unable to auto-enroll speaker '%s'", label)
 
 
-async def _enroll_session_speakers(user: dict, all_partitions: list[list[dict]]) -> None:
+async def _enroll_session_speakers(
+    user: dict, all_partitions: list[list[dict]]
+) -> None:
     """Enroll speakers from ALL partitions, not just partition 0.
-    
+
     Called after all partitions are saved so that speakers appearing only in
     partitions 1+ (after a >5-min gap) get enrolled for cross-recording matching.
     """
     from lifelog.pipeline.speaker_client import serialize_embedding
+
     voiceprints = await db.get_all_voiceprints(user["id"])
     known = {vp["name"] for vp in voiceprints}
-    
+
     # Collect all unique speakers across all partitions
     all_speakers: dict[str, bytes] = {}
     for partition in all_partitions:
@@ -486,8 +575,10 @@ async def _enroll_session_speakers(user: dict, all_partitions: list[list[dict]])
                 )
                 all_speakers[label] = audio
             except Exception:
-                logger.warning("Skipping corrupt audio for speaker '%s'", label, exc_info=True)
-    
+                logger.warning(
+                    "Skipping corrupt audio for speaker '%s'", label, exc_info=True
+                )
+
     for label, opus_audio in all_speakers.items():
         try:
             async with httpx.AsyncClient(timeout=300) as client:
@@ -502,7 +593,9 @@ async def _enroll_session_speakers(user: dict, all_partitions: list[list[dict]])
             known.add(label)
             logger.info("Enrolled speaker '%s' from session partitions", label)
         except Exception:
-            logger.exception("Unable to enroll speaker '%s' from session partitions", label)
+            logger.exception(
+                "Unable to enroll speaker '%s' from session partitions", label
+            )
 
 
 async def _reidentify_recording(user: dict, recording: dict) -> None:
@@ -514,6 +607,7 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
     segments: list = raw_segments
     if isinstance(raw_segments, str):
         import json
+
         try:
             parsed = json.loads(raw_segments)
             # May still be a string if double-encoded: try again
@@ -527,8 +621,12 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
         if not filename:
             return
         try:
-            audio = audio_crypto.decrypt_audio(filename, user["encryption_secret"], bytes(user["key_salt"]))
-            identified = await identify_speakers(recording.get("speakers", []), audio, user["id"])
+            audio = audio_crypto.decrypt_audio(
+                filename, user["encryption_secret"], bytes(user["key_salt"])
+            )
+            identified = await identify_speakers(
+                recording.get("speakers", []), audio, user["id"]
+            )
             await db.update_recording_speakers(recording["id"], identified)
         except Exception:
             logger.exception("Unable to re-identify recording %s", recording.get("id"))
@@ -538,16 +636,23 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
     for segment in segments:
         if isinstance(segment, str):
             import json
+
             try:
                 segment = json.loads(segment)
             except (json.JSONDecodeError, ValueError):
                 continue
-        item = dict(segment) if isinstance(segment, dict) else (segment.model_dump() if hasattr(segment, "model_dump") else segment)
+        item = (
+            dict(segment)
+            if isinstance(segment, dict)
+            else (segment.model_dump() if hasattr(segment, "model_dump") else segment)
+        )
         raw = item.get("speaker") or item.get("name") or "Unknown"
         filename = item.get("audio_filename")
         if filename:
             try:
-                audio = audio_crypto.decrypt_audio(filename, user["encryption_secret"], bytes(user["key_salt"]))
+                audio = audio_crypto.decrypt_audio(
+                    filename, user["encryption_secret"], bytes(user["key_salt"])
+                )
                 identified = await identify_speakers(
                     [{"speaker": raw, "start": 0, "end": 1}],
                     audio,
@@ -557,12 +662,19 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
                 if identified and identified[0].get("name") not in {None, "Unknown"}:
                     labels[raw] = identified[0]["name"]
             except Exception:
-                logger.warning("Unable to re-identify segment for '%s'", raw, exc_info=True)
+                logger.warning(
+                    "Unable to re-identify segment for '%s'", raw, exc_info=True
+                )
         item["speaker"] = labels.get(raw, raw)
         updated.append(item)
     speakers = [
-        {"id": index, "name": item["speaker"], "start": item.get("start", 0),
-         "end": item.get("end", 0), "text": item.get("text", "")}
+        {
+            "id": index,
+            "name": item["speaker"],
+            "start": item.get("start", 0),
+            "end": item.get("end", 0),
+            "text": item.get("text", ""),
+        }
         for index, item in enumerate(updated)
     ]
     await db.update_recording_speaker_data(recording["id"], speakers, updated)
@@ -579,10 +691,15 @@ async def _finalize_completed_sessions() -> None:
     for session in sessions:
         try:
             jobs = await db.get_transcription_jobs(session["id"])
-            full_jobs = [job for job in jobs if (job.get("job_type") or "full") == "full"]
+            full_jobs = [
+                job for job in jobs if (job.get("job_type") or "full") == "full"
+            ]
             if not full_jobs:
                 continue
-            if any(job.get("status") in {"pending", "processing", "failed"} for job in full_jobs):
+            if any(
+                job.get("status") in {"pending", "processing", "failed"}
+                for job in full_jobs
+            ):
                 continue
             if not all(job.get("status") == "done" for job in full_jobs):
                 continue
@@ -590,13 +707,18 @@ async def _finalize_completed_sessions() -> None:
             transcript_segments = []
             speaker_segments = []
             speaker_map = {}
-            for job in sorted(full_jobs, key=lambda item: (item.get("chunk_index") or 0, item["id"])):
+            for job in sorted(
+                full_jobs, key=lambda item: (item.get("chunk_index") or 0, item["id"])
+            ):
                 result = job.get("result") or {}
                 if isinstance(result, str):
                     import json
+
                     result = json.loads(result)
                 offset = (job["window_start"] - first).total_seconds()
-                transcript_segments.extend(_shifted_segments(result.get("segments", []), offset))
+                transcript_segments.extend(
+                    _shifted_segments(result.get("segments", []), offset)
+                )
                 for segment in result.get("speaker_segments", []):
                     item = dict(segment)
                     item.pop("audio_filename", None)
@@ -609,7 +731,10 @@ async def _finalize_completed_sessions() -> None:
             # Detect gap splits (>5-minute gaps between segments)
             partitions = _partition_segments(speaker_segments)
             if not partitions:
-                logger.warning("Session %d has no speaker segments to persist, skipping", session["id"])
+                logger.warning(
+                    "Session %d has no speaker segments to persist, skipping",
+                    session["id"],
+                )
                 await db.mark_session_processed(session["id"])
                 continue
             user = await get_user_secret(session["user_id"])
@@ -625,17 +750,28 @@ async def _finalize_completed_sessions() -> None:
                 partition = partitions[0]
                 persisted = _persist_partition_segments(partition, user)
                 named = _named_from_persisted(persisted)
-                llm_result = _normalise_summary(summarize(named, llm_context=llm_context))
+                llm_result = _normalise_summary(
+                    summarize(named, llm_context=llm_context)
+                )
                 recording_id = await db.save_session_recording(
-                    session["user_id"], session["id"], {"segments": transcript_segments},
-                    named, llm_result, audio_files[0] if audio_files else "",
-                    speaker_segments=persisted, session_timestamp=session_start,
+                    session["user_id"],
+                    session["id"],
+                    {"segments": transcript_segments},
+                    named,
+                    llm_result,
+                    audio_files[0] if audio_files else "",
+                    speaker_segments=persisted,
+                    session_timestamp=session_start,
                     category=llm_result.get("category", "not_meaningful"),
                 )
                 if llm_result.get("todos"):
-                    await db.save_todos(recording_id, session["user_id"], llm_result["todos"])
+                    await db.save_todos(
+                        recording_id, session["user_id"], llm_result["todos"]
+                    )
                 if llm_result.get("decisions"):
-                    await db.save_decisions(recording_id, session["user_id"], llm_result["decisions"])
+                    await db.save_decisions(
+                        recording_id, session["user_id"], llm_result["decisions"]
+                    )
                 await db.mark_session_processed(session["id"])
                 await _auto_enroll_speakers(user, persisted)
                 current = await db.get_recording(user["id"], recording_id)
@@ -650,14 +786,19 @@ async def _finalize_completed_sessions() -> None:
                     session_date = session["started_at"]
                     if isinstance(session_date, datetime):
                         session_date = session_date.date()
-                    await _daily_reprocess_user(user["id"], session_date, llm_context=llm_context)
+                    await _daily_reprocess_user(
+                        user["id"], session_date, llm_context=llm_context
+                    )
                 except Exception:
-                    logger.exception("Error updating daily summary after session %d", session["id"])
+                    logger.exception(
+                        "Error updating daily summary after session %d", session["id"]
+                    )
             else:
                 # Gap split — create one recording per partition
                 logger.info(
                     "Session %d split into %d partitions (gaps > 5 min)",
-                    session["id"], len(partitions),
+                    session["id"],
+                    len(partitions),
                 )
                 # First partition gets the existing session-level summary + todos/decisions
                 partition_0 = partitions[0]
@@ -665,15 +806,24 @@ async def _finalize_completed_sessions() -> None:
                 named_0 = _named_from_persisted(persisted_0)
                 llm_0 = _normalise_summary(summarize(named_0, llm_context=llm_context))
                 recording_id = await db.save_session_recording(
-                    session["user_id"], session["id"], {"segments": transcript_segments},
-                    named_0, llm_0, audio_files[0] if audio_files else "",
-                    speaker_segments=persisted_0, session_timestamp=session_start,
+                    session["user_id"],
+                    session["id"],
+                    {"segments": transcript_segments},
+                    named_0,
+                    llm_0,
+                    audio_files[0] if audio_files else "",
+                    speaker_segments=persisted_0,
+                    session_timestamp=session_start,
                     category=llm_0.get("category", "not_meaningful"),
                 )
                 if llm_0.get("todos"):
-                    await db.save_todos(recording_id, session["user_id"], llm_0["todos"])
+                    await db.save_todos(
+                        recording_id, session["user_id"], llm_0["todos"]
+                    )
                 if llm_0.get("decisions"):
-                    await db.save_decisions(recording_id, session["user_id"], llm_0["decisions"])
+                    await db.save_decisions(
+                        recording_id, session["user_id"], llm_0["decisions"]
+                    )
                 await db.mark_session_processed(session["id"])
                 await _auto_enroll_speakers(user, persisted_0)
                 all_persisted = [persisted_0]
@@ -683,7 +833,9 @@ async def _finalize_completed_sessions() -> None:
                     persisted = _persist_partition_segments(partition, user)
                     all_persisted.append(persisted)
                     named = _named_from_persisted(persisted)
-                    llm_n = _normalise_summary(summarize(named, llm_context=llm_context))
+                    llm_n = _normalise_summary(
+                        summarize(named, llm_context=llm_context)
+                    )
                     # Rebase segment start/end relative to this partition
                     partition_offset = partition[0]["start"]
                     rebased = []
@@ -692,8 +844,12 @@ async def _finalize_completed_sessions() -> None:
                         item["start"] = seg["start"] - partition_offset
                         item["end"] = seg["end"] - partition_offset
                         rebased.append(item)
-                    audio_range_start = _offset_to_datetime(partition_offset, session_start)
-                    audio_range_end = _offset_to_datetime(partition[-1]["end"], session_start)
+                    audio_range_start = _offset_to_datetime(
+                        partition_offset, session_start
+                    )
+                    audio_range_end = _offset_to_datetime(
+                        partition[-1]["end"], session_start
+                    )
                     try:
                         await db.save_partition_recording(
                             session["user_id"],
@@ -710,7 +866,8 @@ async def _finalize_completed_sessions() -> None:
                     except Exception:
                         logger.exception(
                             "Failed to create partition %d recording for session %d",
-                            idx, session["id"],
+                            idx,
+                            session["id"],
                         )
 
                 # Enroll any speakers from partitions 1+ that weren't in partition 0
@@ -729,15 +886,16 @@ async def _finalize_completed_sessions() -> None:
                     session_date = session["started_at"]
                     if isinstance(session_date, datetime):
                         session_date = session_date.date()
-                    await _daily_reprocess_user(user["id"], session_date, llm_context=llm_context)
+                    await _daily_reprocess_user(
+                        user["id"], session_date, llm_context=llm_context
+                    )
                 except Exception:
-                    logger.exception("Error updating daily summary after session %d", session["id"])
+                    logger.exception(
+                        "Error updating daily summary after session %d", session["id"]
+                    )
 
         except Exception:
             logger.exception("Error finalizing session %d", session["id"])
-
-
-
 
 
 async def worker_loop():
@@ -746,13 +904,23 @@ async def worker_loop():
     while True:
         try:
             for utterance in await get_pending_utterances():
-                if not await claim_utterance(utterance["user_id"], utterance["utterance_id"]):
+                if not await claim_utterance(
+                    utterance["user_id"], utterance["utterance_id"]
+                ):
                     continue
                 try:
-                    await process_utterance(utterance["user_id"], utterance["utterance_id"])
+                    await process_utterance(
+                        utterance["user_id"], utterance["utterance_id"]
+                    )
                 except Exception as exc:
-                    logger.exception("Error processing utterance %d/%d", utterance["user_id"], utterance["utterance_id"])
-                    await fail_utterance(utterance["user_id"], utterance["utterance_id"], str(exc))
+                    logger.exception(
+                        "Error processing utterance %d/%d",
+                        utterance["user_id"],
+                        utterance["utterance_id"],
+                    )
+                    await fail_utterance(
+                        utterance["user_id"], utterance["utterance_id"], str(exc)
+                    )
             try:
                 await _apply_quick_transcripts()
             except Exception:
@@ -762,7 +930,9 @@ async def worker_loop():
             except Exception:
                 logger.exception("Error creating session quick jobs")
             try:
-                for session in await db.get_idle_active_sessions(settings.session_gap_minutes):
+                for session in await db.get_idle_active_sessions(
+                    settings.session_gap_minutes
+                ):
                     await db.end_session(session["id"])
                     try:
                         await _reprocess_session(session)
@@ -800,14 +970,14 @@ async def hourly_reprocess_loop():
             for session in sessions:
                 logger.info(
                     "Hourly reprocess: starting session %d (user=%d, started=%s)",
-                    session["id"], session["user_id"], session["started_at"],
+                    session["id"],
+                    session["user_id"],
+                    session["started_at"],
                 )
                 try:
                     await _reprocess_session(session)
                 except Exception:
-                    logger.exception(
-                        "Error reprocessing session %d", session["id"]
-                    )
+                    logger.exception("Error reprocessing session %d", session["id"])
         except Exception:
             logger.exception("Hourly reprocess loop error")
 
@@ -840,7 +1010,9 @@ async def _daily_reprocess_user(user_id: int, target_date=None, llm_context: str
 
     sessions = await db.get_sessions_by_date_range(user_id, day_start, day_end)
     if not sessions:
-        logger.info("Daily reprocess: user %d has no sessions for %s", user_id, target_date)
+        logger.info(
+            "Daily reprocess: user %d has no sessions for %s", user_id, target_date
+        )
         return
 
     # Collect all utterance transcripts from all sessions for the day
@@ -851,6 +1023,7 @@ async def _daily_reprocess_user(user_id: int, target_date=None, llm_context: str
             transcript = utt.get("transcript", {})
             if isinstance(transcript, str):
                 import json
+
                 transcript = json.loads(transcript)
             segments = transcript.get("segments", [])
             for seg in segments:
@@ -860,13 +1033,17 @@ async def _daily_reprocess_user(user_id: int, target_date=None, llm_context: str
                     all_lines.append(f"[{session['started_at']}] {speaker}: {text}")
 
     if not all_lines:
-        logger.info("Daily reprocess: user %d has no transcripts for %s", user_id, target_date)
+        logger.info(
+            "Daily reprocess: user %d has no transcripts for %s", user_id, target_date
+        )
         return
 
     combined = "\n".join(all_lines)
     logger.info(
         "Daily reprocess: user %d, %d sessions, %d transcript lines",
-        user_id, len(sessions), len(all_lines),
+        user_id,
+        len(sessions),
+        len(all_lines),
     )
 
     # Generate daily summary via LLM
@@ -878,5 +1055,7 @@ async def _daily_reprocess_user(user_id: int, target_date=None, llm_context: str
 
     logger.info(
         "Daily summary for user %d on %s: %d chars",
-        user_id, target_date, len(daily_summary),
+        user_id,
+        target_date,
+        len(daily_summary),
     )

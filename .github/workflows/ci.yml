@@ -1,0 +1,223 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Pipeline layout (see Actions tab for the dependency tree):
+#
+#   detect-changes
+#   ├── server             (runs ./server/build.sh)
+#   ├── diarization        (runs ./diarization/build.sh)
+#   ├── speaker-id         (runs ./speaker-id/build.sh)
+#   ├── transcription-worker (runs ./transcription-worker/build.sh)
+#   ├── dashboard          (npm ci / tsc / vitest)
+#   ├── firmware           (pio test -e test)
+#   └── security           (CodeQL py/js + npm audit prod critical)
+
+jobs:
+  detect-changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.classify.outputs.server }}
+      diarization: ${{ steps.classify.outputs.diarization }}
+      speaker-id: ${{ steps.classify.outputs.speaker-id }}
+      transcription-worker: ${{ steps.classify.outputs.transcription-worker }}
+      dashboard: ${{ steps.classify.outputs.dashboard }}
+      firmware: ${{ steps.classify.outputs.firmware }}
+      python-source: ${{ steps.classify.outputs.python-source }}
+    steps:
+      - id: classify
+        uses: actions/github-script@v9
+        with:
+          script: |
+            // GitHub's `pull_request synchronize` webhook event sometimes delivers
+            // changed_files as the FULL PR diff (on initial `opened`) but only the
+            // last commit's paths on subsequent commits — and on a fast rebase it
+            // can be empty. To stay robust, we read context.payload for the
+            // available snapshot, then *also* call the REST diff API as a fallback
+            // when the snapshot is empty or missing the prefix we expect.
+            const featPrefixes = ['server/','diarization/','speaker-id/','transcription-worker/','dashboard/','firmware-ota/'];
+            const startsWith = (prefix) => (f) =>
+              typeof f === 'string' && f.startsWith(prefix);
+
+            const snap = (context.payload.pull_request &&
+                          context.payload.pull_request.changed_files) || [];
+            let files = Array.isArray(snap) ? snap : [];
+
+            if (files.length === 0 && context.payload.pull_request) {
+              const { owner, repo } = context.repo;
+              const prNumber = context.payload.pull_request.number;
+              try {
+                files = await github.paginate(
+                  github.rest.pulls.listFiles,
+                  { owner, repo, pull_number: prNumber, per_page: 100 },
+                  (resp) => resp.data.map((f) => f.filename),
+                );
+                core.info(`changed_files snapshot was empty; pulled ${files.length} files via REST`);
+              } catch (err) {
+                core.warning(`listFiles failed: ${err.message}; falling back to empty list`);
+                files = [];
+              }
+            }
+
+            const any = (prefix) => files.some(startsWith(prefix));
+            const result = {
+              server:                 any('server/'),
+              diarization:            any('diarization/'),
+              'speaker-id':           any('speaker-id/'),
+              'transcription-worker': any('transcription-worker/'),
+              dashboard:              any('dashboard/'),
+              firmware:               any('firmware-ota/'),
+              'python-source':        any('server/') || any('diarization/') ||
+                                      any('speaker-id/') || any('transcription-worker/') ||
+                                      any('dashboard/'),
+            };
+            for (const [k, v] of Object.entries(result)) {
+              core.setOutput(k, String(v));
+            }
+            console.log('changed_files count:', files.length, 'classification:', JSON.stringify(result));
+            return result;
+  server:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Run build
+        run: ./build.sh
+        working-directory: ./server
+
+  diarization:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.diarization == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Run build
+        run: ./build.sh
+        working-directory: ./diarization
+
+  speaker-id:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.speaker-id == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Run build
+        run: ./build.sh
+        working-directory: ./speaker-id
+
+  transcription-worker:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.transcription-worker == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Run build
+        run: ./build.sh
+        working-directory: ./transcription-worker
+
+  dashboard:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.dashboard == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+      - run: npm run test
+      - run: npx tsc --noEmit
+
+  firmware:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.firmware == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - run: pip install --pre platformio
+      - run: ./build.sh
+        working-directory: ./firmware-ota
+
+  security:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.python-source == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: 'python,javascript'
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+
+      - name: npm audit (dashboard, prod-only, critical)
+        run: npm audit --omit=dev --audit-level=critical
+        working-directory: dashboard
