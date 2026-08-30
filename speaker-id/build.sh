@@ -9,6 +9,17 @@ VENV=".venv"
 RUFF="$VENV/bin/ruff"
 PYTEST="$VENV/bin/python -m pytest"
 
+# --- Bootstrap: ensure .venv exists with dev dependencies ---
+if ! command -v uv >/dev/null 2>&1; then
+    echo "  ! uv not on PATH; build.sh requires uv to set up the venv" >&2
+    exit 1
+fi
+if [ ! -x "$VENV/bin/python" ]; then
+    echo "[setup] Creating $VENV and installing dev dependencies..."
+    uv venv "$VENV"
+    uv pip install -e ".[dev]" --quiet
+fi
+
 echo "============================================"
 echo "  Speaker ID Service — Build & Verify"
 echo "============================================"

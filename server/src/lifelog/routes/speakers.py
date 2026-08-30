@@ -1,5 +1,4 @@
 import logging
-import time
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException

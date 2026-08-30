@@ -220,7 +220,7 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
             if segments and isinstance(segments, list):
                 seen, audio_filenames = set(), []
                 for seg in segments:
-                    fn = seg.get("audio_filename") if isinstance(seg, dict) else seg.get("audio_filename")
+                    fn = seg.get("audio_filename") if isinstance(seg, dict) else seg.get("audio_filename")  # noqa: RUF034
                     if fn and fn not in seen:
                         seen.add(fn)
                         audio_filenames.append(fn)
@@ -1580,6 +1580,7 @@ async def get_users_with_sessions_previous_day() -> list[int]:
             """,
             yesterday,
         )
+        return [r["user_id"] for r in rows]
 
 
 

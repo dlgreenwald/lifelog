@@ -24,7 +24,10 @@ class SpeakerEncoder:
 
     def extract_embedding(self, audio_bytes: bytes) -> np.ndarray:
         """Extract ECAPA-TDNN embedding from audio segment."""
-        import tempfile, os, soundfile
+        import os
+        import tempfile
+
+        import soundfile
 
         # Write to temp file and load with soundfile
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:

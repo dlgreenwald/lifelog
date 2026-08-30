@@ -1,7 +1,6 @@
 import logging
 import time
 
-
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, UploadFile
 
 from lifelog import database
@@ -17,7 +16,10 @@ def _opus_sample_rate(audio_bytes: bytes) -> int | None:
     """
     if len(audio_bytes) < 100:
         return None
-    import subprocess, tempfile, os, re
+    import os
+    import re
+    import subprocess
+    import tempfile
     try:
         with tempfile.NamedTemporaryFile(suffix=".opus", delete=False) as tmp:
             tmp.write(audio_bytes)
@@ -35,7 +37,7 @@ def _opus_sample_rate(audio_bytes: bytes) -> int | None:
                 return int(match.group(1))
         finally:
             os.unlink(tmp_path)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     return None
 
