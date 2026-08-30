@@ -472,10 +472,12 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 
 GitHub Actions runs the verification pipeline on every PR and on every push to `main`. Three workflows live under `.github/workflows/`:
 
-- `pr-check.yml` — reusable workflow (`workflow_call`) accepting a `component:` input (`server|diarization|speaker-id|transcription-worker|dashboard|firmware|security`). Each component is a separate job inside the reusable; jobs whose component doesn't match the input are skipped via `if: inputs.component == '<component>'`.
-- `ci.yml` — PR trigger (`opened` / `synchronize` / `reopened`) and branch-push trigger. One caller-job per component, each gating on `contains(github.event.pull_request.changed_files.*, '<component>/')`. Jobs whose changed files don't match the prefix evaluate false and skip. Plain `push` events short-circuit to `true` via `github.event_name == 'push'`.
-- `main.yml` — main-branch gate. Runs the reusable workflow across all seven components via a strategy matrix (full suite, no path filters), then builds and pushes Docker images for `server`, `speaker-id`, `transcription-worker`.
+- `pr-check.yml` — reusable workflow (`workflow_call`) accepting a `inputs.component: string` (default `'server'`). Contains jobs for build/test of Python services (`server|diarization|speaker-id|transcription-worker`), `dashboard` (Vitest + tsc), and `firmware-ota` (`pio test -e test`). Each job gates on `inputs.component == '<x>'` so only the matching job runs.
+- `ci.yml` — PR trigger (`opened` / `synchronize` / `reopened`) and branch-push trigger. One caller-job per component (server, diarization, speaker-id, transcription-worker, dashboard, firmware), plus an inline `security` job (CodeQL for Python/JavaScript + dashboard `npm audit`). `security` is inline rather than in the reusable because GitHub Actions rejects a reusable workflow that combines `permissions:` with `if:` gates (parse-time startup_failure). Each caller-job gates on `contains(github.event.pull_request.changed_files.*, '<component>/')`. Jobs whose changed files don't match the prefix evaluate false and skip. Plain `push` events short-circuit to `true` via `github.event_name == 'push'`.
+- `main.yml` — main-branch gate. Drives the reusable workflow across all six build components via a strategy matrix (full suite, no path filters), runs security inline, then builds and pushes Docker images for `server`, `speaker-id`, `transcription-worker`. Docker stage has `needs: [build-and-test, security]`.
 
-Local validation: `actionlint .github/workflows/*.yml` runs against `.github/actionlint.yaml` (currently a no-op stub).
+Partial-build verification: a PR touching only `server/` runs the `server` job and `security`; jobs for `dashboard`, `firmware`, `speaker-id`, etc. are skipped (each `if: contains(changed_files.*, '<prefix>/')` evaluates false).
+
+Local validation: `actionlint .github/workflows/*.yml` runs against `.github/actionlint.yaml` (currently a no-op; workflow syntax is straightforward and actionlint's bundled grammar lags GitHub's).
 
 **Required GitHub secrets** for `main.yml` Docker builds: `DOCKER_USERNAME`, `DOCKER_PASSWORD`. Until configured, the Docker job fails on merge to `main`; `build-and-test` is unaffected.</input>
