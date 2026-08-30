@@ -1,7 +1,7 @@
-name: Test bare
+name: Test bare simple
 on: push
 jobs:
   hello:
     runs-on: ubuntu-latest
     steps:
-      - run: echo hello
+      - run: echo hello world
