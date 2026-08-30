@@ -3,55 +3,57 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  push:
-    branches: ['**']
 
-# Per-component partial-build path filtering — invoke the reusable
-# pr-check.yml once per component with a `component:` input. The
-# security/SAST job is implemented inline here because reusable
-# workflow-defined jobs with `permissions:` blocks trigger
-# startup_failure on GitHub's runner when combined with `if:`
-# conditions; inline it is fine.
+# Per-component partial-build path filtering — caller-job gates on
+# changed_files.* so a PR touching only `server/` runs only that job.
+# `security` is inlined here (not in the reusable) because combining
+# job-level `permissions:` with `if:` gates inside a `workflow_call`
+# reusable triggers parse-time startup_failure on the runner.
 
 jobs:
   server:
-    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'server/')
+    if: contains(github.event.pull_request.changed_files.*, 'server/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: server
 
   diarization:
-    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'diarization/')
+    if: contains(github.event.pull_request.changed_files.*, 'diarization/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: diarization
 
   speaker-id:
-    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'speaker-id/')
+    if: contains(github.event.pull_request.changed_files.*, 'speaker-id/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: speaker-id
 
   transcription-worker:
-    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'transcription-worker/')
+    if: contains(github.event.pull_request.changed_files.*, 'transcription-worker/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: transcription-worker
 
   dashboard:
-    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'dashboard/')
+    if: contains(github.event.pull_request.changed_files.*, 'dashboard/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: dashboard
 
   firmware:
-    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'firmware-ota/')
+    if: contains(github.event.pull_request.changed_files.*, 'firmware-ota/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: firmware
 
   security:
-    if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'server/') || contains(github.event.pull_request.changed_files.*, 'diarization/') || contains(github.event.pull_request.changed_files.*, 'speaker-id/') || contains(github.event.pull_request.changed_files.*, 'transcription-worker/') || contains(github.event.pull_request.changed_files.*, 'dashboard/')
+    if: |
+      contains(github.event.pull_request.changed_files.*, 'server/') ||
+      contains(github.event.pull_request.changed_files.*, 'diarization/') ||
+      contains(github.event.pull_request.changed_files.*, 'speaker-id/') ||
+      contains(github.event.pull_request.changed_files.*, 'transcription-worker/') ||
+      contains(github.event.pull_request.changed_files.*, 'dashboard/')
     runs-on: ubuntu-latest
     permissions:
       security-events: write
