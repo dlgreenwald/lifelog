@@ -1,9 +1,0 @@
-name: Test CI simple
-on:
-  push:
-    branches: [feature/documentation-and-ci]
-jobs:
-  hello:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo hello from ci
