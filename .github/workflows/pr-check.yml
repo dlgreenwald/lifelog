@@ -1,4 +1,4 @@
-name: PR Check with full actions
+name: PR Check without permissions
 on:
   workflow_call:
     inputs:
@@ -43,9 +43,6 @@ jobs:
   sa:
     if: inputs.component == 'security'
     runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: github/codeql-action/init@v3
