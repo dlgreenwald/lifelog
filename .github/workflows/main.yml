@@ -6,7 +6,14 @@ on:
 
 jobs:
   build-and-test:
-    uses: ./.github/workflows/pr-check.yml   # full suite — no path filters
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [server, diarization, speaker-id, transcription-worker, dashboard, firmware, security]
+    uses: ./.github/workflows/pr-check.yml
+    with:
+      component: ${{ matrix.component }}
+    secrets: inherit
 
   docker:
     needs: build-and-test

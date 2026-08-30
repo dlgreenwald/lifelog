@@ -2,16 +2,17 @@ name: PR Check
 
 on:
   workflow_call:
+    inputs:
+      component:
+        description: 'Component to build/test: server|diarization|speaker-id|transcription-worker|dashboard|firmware|security'
+        required: true
+        type: string
 
 jobs:
   # --- Python services: server, diarization, speaker-id, transcription-worker ---
   python-services:
+    if: inputs.component == 'server' || inputs.component == 'diarization' || inputs.component == 'speaker-id' || inputs.component == 'transcription-worker'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        component: [server, diarization, speaker-id, transcription-worker]
-
     steps:
       - uses: actions/checkout@v4
 
@@ -28,10 +29,11 @@ jobs:
 
       - name: Run build
         run: ./build.sh
-        working-directory: ./${{ matrix.component }}
+        working-directory: ./${{ inputs.component }}
 
   # --- Dashboard: TypeScript/React ---
   dashboard:
+    if: inputs.component == 'dashboard'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -51,6 +53,7 @@ jobs:
 
   # --- Firmware: PlatformIO Unity tests ---
   firmware:
+    if: inputs.component == 'firmware'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +67,7 @@ jobs:
 
   # --- Security: CodeQL (SAST) + Dependency Review ---
   security:
+    if: inputs.component == 'security'
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -77,7 +81,7 @@ jobs:
           languages: |
             python
             javascript
-          queries: security-extended</input>
+          queries: security-extended
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
