@@ -1,8 +1,7 @@
 name: Test minimal workflow_call
-on: push:branches:[feature/documentation-and-ci]
+on: push
 jobs:
   test-call:
     uses: ./.github/workflows/pr-check.yml
     with:
       component: server
-    secrets: inherit
