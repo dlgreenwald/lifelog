@@ -458,7 +458,7 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | `diarization/build.sh` | compile check → ruff lint → pytest (8 tests) |
 | `speaker-id/build.sh` | compile check → ruff lint → pytest (15 tests) |
 | `dashboard/build.sh` | tsc type check → vite build → vitest (86 tests) → bundle size |
-| `firmware-ota/build.sh` | pio compile check → native test (69 tests) |
+| `transcription-worker/build.sh` | ruff lint → py_compile → pytest (10 tests) |</input>
 
 **Run everything:**
 
@@ -467,4 +467,15 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 ./server/build.sh    # Single component
 ```
 
-**Exit code:** 0 = all passed, 1 = failures detected. CI-friendly.
+
+## Continuous Integration
+
+GitHub Actions runs the full verification pipeline on every PR and on every push to `main`. Three workflows live under `.github/workflows/`:
+
+- `pr-check.yml` — reusable workflow (`workflow_call`) containing four jobs: `python-services` (matrix over `server`, `diarization`, `speaker-id`, `transcription-worker`), `dashboard` (npm ci + vitest + tsc), `firmware` (`pio test -e test`), and `security` (CodeQL for Python/JavaScript + Dependency Review at high/critical severity + dashboard `npm audit` at moderate+).
+- `ci.yml` — PR trigger (`opened` / `synchronize` / `reopened`) and branch-push trigger. Per-job `if:` expressions gate each job on file changes via `changed_files.any(f => f.startsWith('server/'))` style predicates. Jobs whose paths don't match are silently skipped. Push events always run all jobs (conservative — `changed_files` is only populated on `pull_request` events).
+- `main.yml` — main-branch gate. Calls `pr-check.yml` without path filters (full suite), then builds and pushes Docker images for `server`, `speaker-id`, `transcription-worker`.
+
+Local validation: `actionlint .github/workflows/*.yml` reads `.github/actionlint.yaml`, which suppresses the bundled expression parser's false positive on `=>` lambda parameters (actionlint 1.7.x's grammar predates GitHub's lambda support).
+
+**Required GitHub secrets** for `main.yml` Docker builds: `DOCKER_USERNAME`, `DOCKER_PASSWORD`. Until configured, the Docker job fails on merge to `main`; `build-and-test` is unaffected.
