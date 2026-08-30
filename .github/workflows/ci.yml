@@ -74,6 +74,9 @@ jobs:
                                       any('speaker-id/') || any('transcription-worker/') ||
                                       any('dashboard/'),
             };
+            for (const [k, v] of Object.entries(result)) {
+              core.setOutput(k, String(v));
+            }
             console.log('changed_files count:', files.length, 'classification:', JSON.stringify(result));
             return result;
   server:
