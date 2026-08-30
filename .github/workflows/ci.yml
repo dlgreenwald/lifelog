@@ -1,9 +1,9 @@
-name: CI single job
+name: CI inline only
 on:
   push:
     branches: [feature/documentation-and-ci]
 jobs:
   server:
-    uses: ./.github/workflows/pr-check.yml
-    with:
-      component: server
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo inline server
