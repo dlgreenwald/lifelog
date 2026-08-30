@@ -10,18 +10,6 @@ RUFF="$VENV/bin/ruff"
 PYTEST="$VENV/bin/python -m pytest"
 PIP_AUDIT="$VENV/bin/pip-audit"
 
-# Load project-wide known-CVE allowlist (top-level .known-cves.txt).
-# Each accepted PYSEC ID is passed to pip-audit via --ignore-vuln so it
-# doesn't fail the build. New (non-allowlisted) CVEs still fail.
-KNOWN_CVES_FILE="$SCRIPT_DIR/../.known-cves.txt"
-IGNORE_VULN_ARGS=()
-if [ -f "$KNOWN_CVES_FILE" ]; then
-    while IFS= read -r id; do
-        [[ -z "$id" || "$id" =~ ^# ]] && continue
-        IGNORE_VULN_ARGS+=(--ignore-vuln "$id")
-    done < "$KNOWN_CVES_FILE"
-fi
-
 # --- Bootstrap: ensure .venv exists with dev dependencies ---
 if ! command -v uv >/dev/null 2>&1; then
     echo "  ! uv not on PATH; build.sh requires uv to set up the venv" >&2
@@ -81,19 +69,25 @@ else
 fi
 
 # --- Step 4: pip-audit (Python dependency CVE scan) ---
-# Audit a frozen venv minus the editable local package. Pass the
-# project-wide known-CVE allowlist to pip-audit via --ignore-vuln.
+# We freeze the venv minus our editable local lifelog and audit that
+# requirements file. pip-audit treats editables as unknown packages and
+# exits 1 on them under --strict, so auditing a flattened pip-freeze
+# excludes the local package. We do not require --strict; we look at
+# whether the output reports any "Name Version ID Fix Versions" rows.
 echo ""
 echo "[4/5] pip-audit (Python dependency CVE scan)..."
 set +e
 TMP_REQ="$(mktemp)"
 "$VENV/bin/python" -m pip freeze --exclude-editable > "$TMP_REQ"
-AUDIT_OUT="$($PIP_AUDIT --requirement "$TMP_REQ" "${IGNORE_VULN_ARGS[@]}" 2>&1)"
+AUDIT_OUT="$($PIP_AUDIT --requirement "$TMP_REQ" 2>&1)"
 AUDIT_RC=$?
 rm -f "$TMP_REQ"
 set -e
+# pip-audit exits 1 if any vulnerability is found OR if a non-strict dependency
+# could not be resolved. We accept the latter as long as no vulnerabilities
+# appear in the output.
 if [ "$AUDIT_RC" -eq 0 ]; then
-    echo "  ✓ No unknown CVEs in dependencies"
+    echo "  ✓ No known CVEs in dependencies"
     PASS=$((PASS + 1))
 else
     if echo "$AUDIT_OUT" | grep -qE '^Name +Version +ID +Fix Versions'; then
@@ -101,7 +95,7 @@ else
         echo "$AUDIT_OUT" | sed 's/^/    /'
         FAIL=$((FAIL + 1))
     else
-        echo "  ⚠ pip-audit ran with non-fatal warnings. See full output:"
+        echo "  ⚠ pip-audit ran with warnings but no CVEs. See full output:"
         echo "$AUDIT_OUT" | sed 's/^/    /'
         PASS=$((PASS + 1))
     fi
