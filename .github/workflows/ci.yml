@@ -6,58 +6,45 @@ on:
   push:
     branches: ['**']
 
-# Per-component partial-build path filtering — invoke the reusable
-# pr-check.yml once per component with a `component:` input. Jobs
-# whose changed_files don't match the prefix evaluate false and are
-# skipped. On plain `push` events (no pull_request context), the
-# `github.event_name == 'push'` clause short-circuits all jobs to
-# run.
 jobs:
   server:
     if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'server/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: server
-    secrets: inherit
 
   diarization:
     if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'diarization/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: diarization
-    secrets: inherit
 
   speaker-id:
     if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'speaker-id/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: speaker-id
-    secrets: inherit
 
   transcription-worker:
     if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'transcription-worker/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: transcription-worker
-    secrets: inherit
 
   dashboard:
     if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'dashboard/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: dashboard
-    secrets: inherit
 
   firmware:
     if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'firmware-ota/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: firmware
-    secrets: inherit
 
   security:
     if: github.event_name == 'push' || contains(github.event.pull_request.changed_files.*, 'server/') || contains(github.event.pull_request.changed_files.*, 'diarization/') || contains(github.event.pull_request.changed_files.*, 'speaker-id/') || contains(github.event.pull_request.changed_files.*, 'transcription-worker/') || contains(github.event.pull_request.changed_files.*, 'dashboard/')
     uses: ./.github/workflows/pr-check.yml
     with:
       component: security
-    secrets: inherit
