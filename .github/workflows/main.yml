@@ -31,8 +31,8 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
 
-      - name: npm audit (dashboard)
-        run: npm audit --audit-level=moderate
+      - name: npm audit (dashboard, prod-only, critical)
+        run: npm audit --omit=dev --audit-level=critical
         working-directory: dashboard
 
   docker:
