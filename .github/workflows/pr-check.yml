@@ -1,4 +1,4 @@
-name: PR Check without permissions
+name: PR Check with workflow-level permissions
 on:
   workflow_call:
     inputs:
@@ -7,6 +7,9 @@ on:
         required: false
         default: 'server'
         type: string
+permissions:
+  contents: read
+  security-events: write
 jobs:
   py:
     if: inputs.component == 'server'
