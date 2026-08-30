@@ -368,8 +368,18 @@ Each component has a `build.sh` that runs five gates when applicable. Failure of
 | 1 | `python -m py_compile` (per `.py` file) | Syntax errors |
 | 2 | `ruff check src/ tests/` | Style, bug-prone patterns (B008 excepted for FastAPI Depends) |
 | 3 | `ruff format --check` | Format drift (run `ruff format` to fix) |
-| 4 | `pip-audit` (frozen, excluding the local editable package) | Python dependency CVEs (PyPI advisory / OSV database) |
+| 4 | `pip-audit` (frozen, excluding the local editable package; suppresses `[#4/5]` failures only for IDs listed in the repo-root `.ignoreVuln`) | Python dependency CVEs (PyPI advisory / OSV database) |
 | 5 | `pytest -q` (server also runs `--cov --cov-report=term-missing`) | Failing behaviour; server additionally reports per-file coverage |
+
+### Accepted vulnerability list — `.ignoreVuln`
+
+The repo-root [`.ignoreVuln`](.ignoreVuln) is the **single source of truth** for CVE IDs accepted as residual risk. Each Python service `build.sh` reads it and passes every entry as a `--ignore-vuln ID` flag to pip-audit, so gate `[4/5]` reflects only what we consider blockers.
+
+- One OSV / pip-audit vulnerability ID per line.
+- `#`-prefixed lines and blank lines are ignored.
+- Comments above each entry should cite the upstream fix reference (commit SHA, release tag) so the next maintainer knows exactly when to drop it.
+- Adding an entry is a deliberate acceptance of risk; deleting one is a normal dependency-update step (delete the line, run the service `build.sh` to confirm the gate stays green, and pin the patched release floor in `pyproject.toml` if needed).
+- Currently: `PYSEC-2026-3624` (lightning, transitive via pyannote.audio) — upstream fix committed (`d710d68`, 2026-07-14) but no PyPI release yet. Drop the entry when `lightning>=2.6.6` is available and pyannote.audio resolves to it.
 
 For C++/TypeScript/Python alternatives: the **dashboard** build runs `npm ci` → `npm run test` (Vitest 91 tests) → `npx tsc --noEmit` (strict type-check) → bundle size check (340K cap). **firmware-ota** runs `pio test -e test` (69 Unity native tests).
 
@@ -504,11 +514,11 @@ GitHub Actions runs the verification pipeline on every PR and on every push to `
   ├── firmware
   └── security
   ```
-  `detect-changes` is a single job that runs `actions/github-script@v7` to read `pull_request.changed_files` and emit bools (`server`, `diarization`, `speaker-id`, `transcription-worker`, `dashboard`, `firmware`, `python-source`). Downstream jobs declare `needs: detect-changes` and gate on the corresponding output (`if: needs.detect-changes.outputs.<x> == 'true'`). Each component job is self-contained: it installs Python / Node / PlatformIO as needed and runs that component's `build.sh` (or `npm run test` + `npx tsc` for the dashboard). `security` is inline (CodeQL `init`/`analyze` for python,javascript + `npm audit --omit=dev --audit-level=critical` against the dashboard).
+  `detect-changes` is a single job that runs `actions/github-script@v9` to read `pull_request.changed_files` and emit bools (`server`, `diarization`, `speaker-id`, `transcription-worker`, `dashboard`, `firmware`, `python-source`). Downstream jobs declare `needs: detect-changes` and gate on the corresponding output (`if: needs.detect-changes.outputs.<x> == 'true'`). Each component job is self-contained: it installs Python / Node / PlatformIO as needed and runs that component's `build.sh` (or `npm run test` + `npx tsc` for the dashboard). The `security` job in this workflow is the canonical scanner for both PR and post-merge contexts (CodeQL `init`/`analyze` for python,javascript + `npm audit --omit=dev --audit-level=critical` against the dashboard). It is also the workflow Code Scanning reads for the per-PR diff mapping; running security from a second workflow under `main.yml` would create a duplicate "1 configuration not found" warning.
 - `pr-check.yml` — reusable workflow (`workflow_call`) accepting `inputs.component: string` (required). A single `build` job with `if:` gates on `inputs.component == '<x>'` so each matrix invocation runs just the relevant step (Python `build.sh`, dashboard `npm ci / test / tsc`, or firmware `pio test -e test`). Called by `main.yml`'s `build-and-test.matrix`.
-- `main.yml` — main-branch gate. Drives `pr-check.yml` across all six build components via `matrix: [server, diarization, speaker-id, transcription-worker, dashboard, firmware]`, runs `security` inline, then `docker` (matrix of `server`, `speaker-id`, `transcription-worker`) with `needs: [build-and-test, security]`.
+- `main.yml` — main-branch gate. Drives `pr-check.yml` across all six build components via `matrix: [server, diarization, speaker-id, transcription-worker, dashboard, firmware]`, then `docker` (matrix of `server`, `speaker-id`, `transcription-worker`) with `needs: build-and-test`. The `security` job used to duplicate `ci.yml`'s; it was removed so Code Scanning has a single workflow to map per-PR alerts against.
 
-Partial-build verification: a PR touching only `server/` shows `detect-changes` plus the `server` and `security` jobs (because server source is Python). Dashboard / firmware / diarization / speaker-id / transcription-worker nodes are skipped via the output gate.
+Partial-build verification: a PR touching only `server/` shows `detect-changes` plus the `server` and `security` jobs (because server source is Python and CodeQL/npm-audit run on PRs touching Python or `dashboard/`). Dashboard / firmware / diarization / speaker-id / transcription-worker nodes are skipped via the output gate.
 
 Local validation: `actionlint .github/workflows/*.yml` runs against `.github/actionlint.yaml` (currently a no-op; workflow syntax is straightforward and actionlint's bundled grammar lags GitHub's).
 

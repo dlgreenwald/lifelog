@@ -12,8 +12,7 @@ name: Main Branch
 #     ├── transcription-worker
 #     ├── dashboard
 #     └── firmware
-#   ├── security       (CodeQL py/js + npm audit)
-#   └── docker         (needs: build-and-test, security)
+#   └── docker         (needs: build-and-test)
 
 on:
   push:
@@ -29,29 +28,9 @@ jobs:
     with:
       component: ${{ matrix.component }}
 
-  security:
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: 'python,javascript'
-          queries: security-extended
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
-
-      - name: npm audit (dashboard, prod-only, critical)
-        run: npm audit --omit=dev --audit-level=critical
-        working-directory: dashboard
 
   docker:
-    needs: [build-and-test, security]
+    needs: build-and-test
     runs-on: ubuntu-latest
     strategy:
       matrix:
