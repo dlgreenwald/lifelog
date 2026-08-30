@@ -343,7 +343,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 | Server | Python 3.11+ | `uv` (preferred) / pip | hatchling |
 | Speaker ID | Python 3.11+ | `uv` / pip | hatchling |
 | Transcription worker | Python 3.11+ | `uv` / pip | WhisperX + CUDA Torch |
-| Dashboard | Node.js 20+ | npm | Vite 5 |
+| Dashboard | Node.js 24+ | npm | Vite 5 |
 | Firmware-OTA | PlatformIO | pio lib | Arduino framework (2.x) |
 | Docker | Docker Compose v3.8 | — | Multi-stage builds |
 
@@ -353,7 +353,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - No Python lockfiles exist — builds use floating `>=` constraints
 - Dashboard has `package-lock.json` for reproducible npm installs
 - Firmware targets `seeed_xiao_esp32s3` board with `partitions_ota.csv` (dual 3MB app slots + 1.9MB model)
-- Docker images use CUDA runtime for GPU services; dashboard uses `node:20-alpine` → `nginx:alpine`
+- Docker images use CUDA runtime for GPU services; dashboard uses `node:24-alpine` → `nginx:alpine`
 - GPU services require NVIDIA runtime with CUDA
 - SSL certs are generated at compose level (command overrides), not baked into Dockerfiles
 
@@ -458,7 +458,7 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | `diarization/build.sh` | venv bootstrap (uv) → ruff lint → pytest (8 tests) |
 | `speaker-id/build.sh` | venv bootstrap (uv) → ruff lint → pytest (16 tests) |
 | `dashboard/build.sh` | tsc type check → vite build → vitest (91 tests) → bundle size |
-| `transcription-worker/build.sh` | venv bootstrap (uv) → ruff lint → py_compile → pytest (10 tests) |</input>
+| `transcription-worker/build.sh` | venv bootstrap (uv) → ruff lint → py_compile → pytest (10 tests) |
 
 **Run everything:**
 
@@ -480,4 +480,4 @@ Partial-build verification: a PR touching only `server/` runs the `server` job a
 
 Local validation: `actionlint .github/workflows/*.yml` runs against `.github/actionlint.yaml` (currently a no-op; workflow syntax is straightforward and actionlint's bundled grammar lags GitHub's).
 
-**Required GitHub secrets** for `main.yml` Docker builds: `DOCKER_USERNAME`, `DOCKER_PASSWORD`. Until configured, the Docker job fails on merge to `main`; `build-and-test` is unaffected.</input>
+**Required GitHub secrets** for `main.yml` Docker builds: `DOCKER_USERNAME`, `DOCKER_PASSWORD`. Until configured, the Docker job fails on merge to `main`; `build-and-test` is unaffected.
