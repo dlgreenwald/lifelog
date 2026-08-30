@@ -1,5 +1,7 @@
-name: Test minimal workflow_call no inputs
+name: Test minimal workflow_call with input
 on: push
 jobs:
   test-call:
     uses: ./.github/workflows/pr-check.yml
+    with:
+      component: server

@@ -1,8 +1,14 @@
-name: PR Check minimal
+name: PR Check with inputs
 on:
   workflow_call:
+    inputs:
+      component:
+        description: 'Component'
+        required: false
+        type: string
+        default: 'server'
 jobs:
   hello:
     runs-on: ubuntu-latest
     steps:
-      - run: echo hello from reusable
+      - run: echo ${{ inputs.component }}
