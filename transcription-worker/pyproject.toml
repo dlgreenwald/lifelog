@@ -9,9 +9,9 @@ dependencies = [
     "httpx>=0.25.0",
     "numpy>=1.24.0",
     "whisperx>=3.3.0",
-    "transformers<5",
-    "torch==2.7.1",
-    "torchaudio==2.7.1",
+    "transformers>=5.5.0",
+    "torch>=2.10.0",
+    "torchaudio>=2.10.0",
 ]
 
 [project.optional-dependencies]

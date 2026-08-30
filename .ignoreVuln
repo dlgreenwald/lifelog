@@ -1,0 +1,23 @@
+# .ignoreVuln — Vulnerability IDs accepted as residual risk
+#
+# One OSV / pip-audit vulnerability ID per line. Lines starting with `#`
+# and empty lines are ignored.
+#
+# Each Python service `build.sh` reads this file and passes every entry
+# as a `--ignore-vuln ID` flag to pip-audit.
+#
+# When dropping an entry: confirm the patched release is on PyPI and
+# pip-resolves above the previous vulnerable version. Then re-run the
+# service's `./build.sh` to verify the gate stays green without the flag.
+#
+# Review on every dependency bump — entries here are exceptions, not
+# permanent bypasses.
+
+# lightning (transitive via pyannote.audio)
+# Upstream fix committed (commit d710d68, 2026-07-14) but no PyPI
+# release yet as of 2026-08-30. CVSS 8.4 local; requires a planted
+# malicious .ckpt triggering LightningModule.load_from_checkpoint,
+# which LifeLog does not load from any untrusted path. Drop this
+# entry when lightning>=2.6.6 is on PyPI and pyannote.audio resolves
+# to it.
+PYSEC-2026-3624

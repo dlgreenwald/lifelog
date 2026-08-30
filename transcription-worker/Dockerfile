@@ -14,11 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY pyproject.toml .
 RUN python3 -m pip install --upgrade pip && \
-    python3 -m pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 \
+    python3 -m pip install torch==2.10.0+cu128 torchaudio==2.10.0+cu128 \
         --index-url https://download.pytorch.org/whl/cu128 && \
     python3 -m pip install \
         "fastapi>=0.104.0" "uvicorn[standard]>=0.24.0" "httpx>=0.25.0" \
-        "numpy>=1.24.0" "whisperx>=3.3.0" "transformers<5"
+        "numpy>=1.24.0" "whisperx>=3.3.0" "transformers>=5.5.0"
 COPY audio.py pipeline.py main.py ./
 
 EXPOSE 9000

@@ -71,14 +71,22 @@ fi
 
 # --- Step 4: pip-audit (Python dependency CVE scan) ---
 # We freeze the venv minus our editable local package and audit that
-# requirements file. Then check whether the output reports any
-# vulnerability rows.
+# requirements file. The repo-root .ignoreVuln holds accepted
+# residual-risk IDs (one per line, # for comments) — each entry is
+# passed as a --ignore-vuln flag so the gate reflects only what we
+# consider blockers.
+# Review .ignoreVuln on every dependency bump; remove entries once a
+# patched release is available and pin the fix in pyproject.toml.
 echo ""
 echo "[4/5] pip-audit (Python dependency CVE scan)..."
 set +e
 TMP_REQ="$(mktemp)"
 "$VENV/bin/python" -m pip freeze --exclude-editable > "$TMP_REQ"
-AUDIT_OUT="$($PIP_AUDIT --requirement "$TMP_REQ" 2>&1)"
+IGN_ARGS=""
+if [ -f "../.ignoreVuln" ]; then
+    IGN_ARGS="$(awk 'NF && $1 !~ /^#/' "../.ignoreVuln" | sed 's/^/--ignore-vuln /' | tr '\n' ' ')"
+fi
+AUDIT_OUT="$($PIP_AUDIT --requirement "$TMP_REQ" $IGN_ARGS 2>&1)"
 AUDIT_RC=$?
 rm -f "$TMP_REQ"
 set -e
