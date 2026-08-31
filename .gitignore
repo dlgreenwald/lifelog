@@ -136,6 +136,10 @@ logs/
 # Encrypted audio (runtime data)
 *.enc
 
+# Compiled firmware / native binaries (never source)
+*.bin
+*.elf
+
 # Database files
 *.sqlite
 *.sqlite3
