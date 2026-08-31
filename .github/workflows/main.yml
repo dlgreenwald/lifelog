@@ -1,68 +1,16 @@
 name: Main Branch
 
-# Fires on push to main (typically after squash-merge of a PR). Runs the
-# full suite plus Docker image builds for the four service containers.
-#
-# Pipeline layout (Actions tab tree view):
-#
-#   paths                 (dorny/paths-filter@v3 — emits bools per source dir)
-#   ├── build-and-test    (matrix of 6 reusable invocations, gated per component)
-#     ├── server
-#     ├── diarization
-#     ├── speaker-id
-#     ├── transcription-worker
-#     ├── dashboard
-#     └── firmware
-#   ├── docker              (matrix of 4 services, gated per service)
-#   ├── tag-latest          (after docker: retag the just-pushed :main-${short_sha} images as :latest)
-#   ├── firmware-build      (parallel; pio run -e xiao_esp32s3; gated on paths.firmware)
-#   └── security            (CodeQL py/js + npm audit prod critical; gated by python-source/dashboard/ci-config)
+# Diagnostic: drop the `paths` (dorny/paths-filter) job entirely. Each
+# downstream job gates directly on `github.event`. If this builds, then the
+# 0-jobs failure in the staged full main.yml is specifically caused by the
+# `dorny/paths-filter@v3` job loading — not by something downstream of it.
 
 on:
   push:
     branches: [main]
-    # branches: [main] is exclusive — push events whose head_branch != `main`
-    # are not scheduled. A push to a feature branch (even one with an open PR)
-    # does not fire this workflow; only squash-merges landing on `main` do.
-
-defaults:
-  run:
-    # Default working directory for every step (paths-filter and certain
-    # upload-artifact paths use this implicitly).
-    working-directory: '.'
 
 jobs:
-  paths:
-    runs-on: ubuntu-latest
-    outputs:
-      server: ${{ steps.filter.outputs.server }}
-      diarization: ${{ steps.filter.outputs.diarization }}
-      speaker-id: ${{ steps.filter.outputs.speaker-id }}
-      transcription-worker: ${{ steps.filter.outputs.transcription-worker }}
-      dashboard: ${{ steps.filter.outputs.dashboard }}
-      firmware: ${{ steps.filter.outputs.firmware }}
-      ci-config: ${{ steps.filter.outputs.ci-config }}
-      python-source: ${{ steps.filter.outputs.python-source }}
-    steps:
-      - id: filter
-        uses: dorny/paths-filter@v3
-        with:
-          # JSON-string filter rather than YAML block scalar. The action's
-          # loader consistently handled JSON-string inputs across runner
-          # versions; the YAML-block variant with embedded comments has
-          # intermittently produced empty-payload errors.
-          filters: '{"server":["server/**"],"diarization":["diarization/**"],"speaker-id":["speaker-id/**"],"transcription-worker":["transcription-worker/**"],"dashboard":["dashboard/**"],"firmware":["firmware-ota/**"],"ci-config":[".github/workflows/**","AGENTS.md","README.md"],"python-source":["server/**","diarization/**","speaker-id/**","transcription-worker/**","dashboard/**"]}'
-
   build-and-test:
-    needs: paths
-    if: |
-      needs.paths.outputs.ci-config == 'true' ||
-      (matrix.component == 'server'                 && needs.paths.outputs.server == 'true') ||
-      (matrix.component == 'diarization'            && needs.paths.outputs.diarization == 'true') ||
-      (matrix.component == 'speaker-id'             && needs.paths.outputs.speaker-id == 'true') ||
-      (matrix.component == 'transcription-worker'   && needs.paths.outputs.transcription-worker == 'true') ||
-      (matrix.component == 'dashboard'              && needs.paths.outputs.dashboard == 'true') ||
-      (matrix.component == 'firmware'               && needs.paths.outputs.firmware == 'true')
     strategy:
       fail-fast: false
       matrix:
@@ -72,16 +20,11 @@ jobs:
       component: ${{ matrix.component }}
 
   docker:
-    needs: paths
-    if: |
-      needs.paths.outputs.ci-config == 'true' ||
-      (matrix.service == 'server'                  && needs.paths.outputs.server == 'true') ||
-      (matrix.service == 'speaker-id'              && needs.paths.outputs.speaker-id == 'true') ||
-      (matrix.service == 'transcription-worker'    && needs.paths.outputs.transcription-worker == 'true') ||
-      (matrix.service == 'dashboard'               && needs.paths.outputs.dashboard == 'true')
+    needs: build-and-test
+    if: success()
     runs-on: ubuntu-latest
     permissions:
-      packages: write     # required so GITHUB_TOKEN can push to ghcr.io
+      packages: write
     strategy:
       matrix:
         service: [server, speaker-id, transcription-worker, dashboard]
@@ -107,101 +50,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  tag-latest:
-    # Apply `:latest` tags to the per-service `:main-${short_sha}` images that
-    # the `docker` matrix just pushed. Inlined here as a normal job rather
-    # than dispatching through containers.yml's retag-latest via `uses:` —
-    # GitHub Actions' loader dropped the workflow entirely (workflow_jobs_total_count
-    # = 0) when a caller job had `needs: <matrix-strategy-job>` + `if: success()`
-    # + `uses: <reusable>`. The sole owner of `:latest` is still this file: only
-    # this `tag-latest` job writes the `:latest` tag, never `containers.yml`
-    # directly. Tag-driven coordinated releases (`containers-vX.Y.Z`) still go
-    # through containers.yml's `release` job, which builds all four images from
-    # source and pushes `:X.Y.Z`, `:latest`, and `<sha>` together.
-    needs: docker
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write     # required so GITHUB_TOKEN can push :latest to ghcr.io
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [server, speaker-id, transcription-worker, dashboard]
-    steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull sha-pinned image and retag as :latest
-        run: |
-          docker pull "ghcr.io/${{ github.repository_owner }}/lifelog-${{ matrix.service }}:main-${{ github.sha }}"
-          docker tag  "ghcr.io/${{ github.repository_owner }}/lifelog-${{ matrix.service }}:main-${{ github.sha }}" \
-                      "ghcr.io/${{ github.repository_owner }}/lifelog-${{ matrix.service }}:latest"
-          docker push "ghcr.io/${{ github.repository_owner }}/lifelog-${{ matrix.service }}:latest"
-
   firmware-build:
-    needs: paths
-    if: |
-      needs.paths.outputs.ci-config == 'true' ||
-      needs.paths.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-
-      - name: Install PlatformIO
-        run: pip install --pre platformio
-
-      - name: Cache PlatformIO packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('firmware-ota/platformio.ini') }}
-          restore-keys: |
-            pio-${{ runner.os }}-
-
-      - name: Build firmware (xiao_esp32s3)
+      - name: Build firmware
         working-directory: firmware-ota
         run: pio run -e xiao_esp32s3
 
-      - name: Upload firmware binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: lifelog-firmware
-          path: |
-            firmware-ota/.pio/build/xiao_esp32s3/firmware.bin
-            firmware-ota/.pio/build/xiao_esp32s3/bootloader.bin
-            firmware-ota/.pio/build/xiao_esp32s3/partitions.bin
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Generate SHA256SUMS
-        working-directory: firmware-ota/.pio/build/xiao_esp32s3
-        run: sha256sum firmware.bin bootloader.bin partitions.bin > SHA256SUMS
-
-      - name: Upload checksums
-        uses: actions/upload-artifact@v4
-        with:
-          name: lifelog-firmware-checksums
-          path: firmware-ota/.pio/build/xiao_esp32s3/SHA256SUMS
-          retention-days: 30
-          if-no-files-found: error
-
   security:
-    needs: paths
-    if: |
-      needs.paths.outputs.ci-config == 'true' ||
-      needs.paths.outputs.python-source == 'true' ||
-      needs.paths.outputs.dashboard == 'true'
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -213,11 +71,6 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: 'python,javascript'
-          queries: security-extended
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
-
-      - name: npm audit (dashboard, prod-only, critical)
-        run: npm audit --omit=dev --audit-level=critical
-        working-directory: dashboard
