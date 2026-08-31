@@ -1,25 +1,72 @@
 name: Main Branch
 
 # Fires on push to main (typically after squash-merge of a PR). Runs the
-# full suite plus Docker image builds for the three service containers.
+# full suite plus Docker image builds for the four service containers.
 #
 # Pipeline layout (Actions tab tree view):
 #
-#   build-and-test    (matrix of 6 reusable invocations)
+#   paths                 (dorny/paths-filter@v3 — emits bools per source dir)
+#   ├── build-and-test    (matrix of 6 reusable invocations, gated per component)
 #     ├── server
 #     ├── diarization
 #     ├── speaker-id
 #     ├── transcription-worker
 #     ├── dashboard
 #     └── firmware
-#   └── docker         (needs: build-and-test)
+#   ├── docker         (matrix of 4 services, gated per service)
+#   └── firmware-build (parallel; pio run -e xiao_esp32s3; gated on paths.firmware)
 
 on:
   push:
     branches: [main]
 
 jobs:
+  paths:
+    runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.filter.outputs.server }}
+      diarization: ${{ steps.filter.outputs.diarization }}
+      speaker-id: ${{ steps.filter.outputs.speaker-id }}
+      transcription-worker: ${{ steps.filter.outputs.transcription-worker }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
+      firmware: ${{ steps.filter.outputs.firmware }}
+      ci-config: ${{ steps.filter.outputs.ci-config }}
+    steps:
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          working-directory: '.'
+          filters: |
+            server:
+              - 'server/**'
+            diarization:
+              - 'diarization/**'
+            speaker-id:
+              - 'speaker-id/**'
+            transcription-worker:
+              - 'transcription-worker/**'
+            dashboard:
+              - 'dashboard/**'
+            firmware:
+              - 'firmware-ota/**'
+            # Touching CI files (workflows / AGENTS.md / README) re-runs every
+            # downstream job — a path-filter or workflow change should be
+            # validated everywhere.
+            ci-config:
+              - '.github/workflows/**'
+              - 'AGENTS.md'
+              - 'README.md'
+
   build-and-test:
+    needs: paths
+    if: |
+      needs.paths.outputs.ci-config == 'true' ||
+      (matrix.component == 'server'                 && needs.paths.outputs.server == 'true') ||
+      (matrix.component == 'diarization'            && needs.paths.outputs.diarization == 'true') ||
+      (matrix.component == 'speaker-id'             && needs.paths.outputs.speaker-id == 'true') ||
+      (matrix.component == 'transcription-worker'   && needs.paths.outputs.transcription-worker == 'true') ||
+      (matrix.component == 'dashboard'              && needs.paths.outputs.dashboard == 'true') ||
+      (matrix.component == 'firmware'               && needs.paths.outputs.firmware == 'true')
     strategy:
       fail-fast: false
       matrix:
@@ -30,13 +77,19 @@ jobs:
 
 
   docker:
-    needs: build-and-test
+    needs: paths
+    if: |
+      needs.paths.outputs.ci-config == 'true' ||
+      (matrix.service == 'server'                  && needs.paths.outputs.server == 'true') ||
+      (matrix.service == 'speaker-id'              && needs.paths.outputs.speaker-id == 'true') ||
+      (matrix.service == 'transcription-worker'    && needs.paths.outputs.transcription-worker == 'true') ||
+      (matrix.service == 'dashboard'               && needs.paths.outputs.dashboard == 'true')
     runs-on: ubuntu-latest
     permissions:
       packages: write     # required so GITHUB_TOKEN can push to ghcr.io
     strategy:
       matrix:
-        service: [server, speaker-id, transcription-worker]
+        service: [server, speaker-id, transcription-worker, dashboard]
     steps:
       - uses: actions/checkout@v5
 
@@ -58,3 +111,55 @@ jobs:
           tags: ghcr.io/${{ github.repository_owner }}/lifelog-${{ matrix.service }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  firmware-build:
+    needs: paths
+    if: |
+      needs.paths.outputs.ci-config == 'true' ||
+      needs.paths.outputs.firmware == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install --pre platformio
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware-ota/platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Build firmware (xiao_esp32s3)
+        working-directory: firmware-ota
+        run: pio run -e xiao_esp32s3
+
+      - name: Upload firmware binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifelog-firmware
+          path: |
+            firmware-ota/.pio/build/xiao_esp32s3/firmware.bin
+            firmware-ota/.pio/build/xiao_esp32s3/bootloader.bin
+            firmware-ota/.pio/build/xiao_esp32s3/partitions.bin
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Generate SHA256SUMS
+        working-directory: firmware-ota/.pio/build/xiao_esp32s3
+        run: sha256sum firmware.bin bootloader.bin partitions.bin > SHA256SUMS
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifelog-firmware-checksums
+          path: firmware-ota/.pio/build/xiao_esp32s3/SHA256SUMS
+          retention-days: 30
+          if-no-files-found: error

@@ -1,0 +1,78 @@
+name: Firmware Release
+
+# Cuts a GitHub Release with attached firmware binaries + SHA256SUMS.
+# Triggers:
+#   1. Push of a tag matching firmware-v* (follows the existing firmware-v0.1 convention)
+#   2. Manual workflow_dispatch (lets you cut a release without tagging)
+#
+# Re-builds the firmware on the same Ubuntu runner used by main.yml so the
+# release artifact is reproducible from the tag's source — no dependency on
+# artifact retention between main.yml pushes and the release job.
+
+on:
+  push:
+    tags:
+      - 'firmware-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag string to release under (e.g. firmware-v0.2)'
+        required: true
+        type: string
+
+permissions:
+  contents: write     # required to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # full clone so softprops/action-gh-release@v2 can compute changelog
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install --pre platformio
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware-ota/platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Build firmware (xiao_esp32s3)
+        working-directory: firmware-ota
+        run: pio run -e xiao_esp32s3
+
+      - name: Generate SHA256SUMS
+        working-directory: firmware-ota/.pio/build/xiao_esp32s3
+        run: sha256sum firmware.bin bootloader.bin partitions.bin > SHA256SUMS
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release with binaries attached
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            firmware-ota/.pio/build/xiao_esp32s3/firmware.bin
+            firmware-ota/.pio/build/xiao_esp32s3/bootloader.bin
+            firmware-ota/.pio/build/xiao_esp32s3/partitions.bin
+            firmware-ota/.pio/build/xiao_esp32s3/SHA256SUMS
+          fail_on_unmatched_files: true
