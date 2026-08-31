@@ -1,0 +1,132 @@
+name: Container Releases
+
+# Single owner of the `:latest` tag on ghcr.io.
+# Two trigger shapes, each maps to a distinct job:
+#
+#  - `release` job (trigger: push of `containers-v*` tags):
+#      Builds each service image from source and pushes `:X.Y.Z`, `<sha>`,
+#      and `:latest` (and `:rc-N` if the tag carries an `-rcN` suffix).
+#
+#  - `retag-latest` job (trigger: workflow_call from main.yml):
+#      Pulls the `:main-${short_sha}` image that main.yml's docker job just
+#      pushed, retags it as `:latest`, and pushes that. No rebuild.
+#
+# main.yml never writes `:latest` directly — it pushes only at `:main-${sha}`
+# and uses workflow_call here so that `:latest` always lives in this file.
+# This avoids the race where two workflows could each push `:latest` on the
+# same day.
+
+on:
+  push:
+    tags:
+      - 'containers-v*'
+  workflow_call:
+
+jobs:
+  release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compute version from tag
+        id: version
+        run: |
+          # Tag is `containers-vX.Y.Z` (with optional `-rcN`).
+          raw=${GITHUB_REF_NAME}
+          base=${raw#containers-v}
+          if [[ "$base" == *"-rc"* ]]; then
+            version=${base%%-rc*}
+            rcnum=${base##*-rc}
+            echo "version=$version"
+            echo "rc_tag=rc-$rcnum"
+          else
+            echo "version=$base"
+            echo "rc_tag="
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build, tag, and push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          RC_TAG: ${{ steps.version.outputs.rc_tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for svc in server speaker-id transcription-worker dashboard; do
+            echo "::group::Building lifelog-$svc at $VERSION..."
+            docker build \
+              -t ghcr.io/${{ github.repository_owner }}/lifelog-$svc:$VERSION \
+              -t ghcr.io/${{ github.repository_owner }}/lifelog-$svc:$SHA \
+              -t ghcr.io/${{ github.repository_owner }}/lifelog-$svc:latest \
+              ./$svc
+            docker push ghcr.io/${{ github.repository_owner }}/lifelog-$svc:$VERSION
+            docker push ghcr.io/${{ github.repository_owner }}/lifelog-$svc:$SHA
+            docker push ghcr.io/${{ github.repository_owner }}/lifelog-$svc:latest
+            if [[ -n "$RC_TAG" ]]; then
+              docker tag ghcr.io/${{ github.repository_owner }}/lifelog-$svc:$VERSION \
+                         ghcr.io/${{ github.repository_owner }}/lifelog-$svc:$RC_TAG
+              docker push ghcr.io/${{ github.repository_owner }}/lifelog-$svc:$RC_TAG
+            fi
+            echo "::endgroup::"
+          done
+
+  retag-latest:
+    # Called by main.yml after its `docker` matrix finished. We pull the
+    # `:main-${short_sha}` image we just published from main.yml, retag as
+    # `:latest`, and push. `:latest` writes happen exclusively here.
+    if: github.event_name == 'workflow_call'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve main.yml's push tag
+        id: tag
+        run: |
+          # main.yml pushed at `:main-${short_sha}` (7-char prefix).
+          sha=${GITHUB_SHA:0:7}
+          echo "source_tag=main-$sha"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull, retag, push :latest
+        env:
+          SOURCE_TAG: ${{ steps.tag.outputs.source_tag }}
+        run: |
+          set -euo pipefail
+          for svc in server speaker-id transcription-worker dashboard; do
+            src=ghcr.io/${{ github.repository_owner }}/lifelog-$svc:$SOURCE_TAG
+            dst=ghcr.io/${{ github.repository_owner }}/lifelog-$svc:latest
+            echo "::group::Retagging $src -> $dst"
+            if ! docker pull "$src"; then
+              echo "::warning::Source image $src not found (service not built this merge); skipping retag for $svc"
+              echo "::endgroup::"
+              continue
+            fi
+            docker tag "$src" "$dst"
+            docker push "$dst"
+            echo "::endgroup::"
+          done
