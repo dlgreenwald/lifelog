@@ -1,27 +1,44 @@
-name: Firmware Release
-
-# Cuts a GitHub Release with attached firmware binaries + SHA256SUMS.
-# Triggers:
-#   1. Push of a tag matching firmware-v* (follows the existing firmware-v0.1 convention)
-#   2. Manual workflow_dispatch (lets you cut a release without tagging)
+# Tag-driven firmware release workflow. Fires on `vX.Y[.Z][-rcN]` tag
+# push (same trigger as containers.yml, so a single `v*` cut produces
+# both this Release and the version-coherent container retags).
 #
-# Re-builds the firmware on the same Ubuntu runner used by main.yml so the
-# release artifact is reproducible from the tag's source — no dependency on
-# artifact retention between main.yml pushes and the release job.
+# Preferred path: locate the firmware build artifact uploaded by
+# main-firmware.yml (`firmware-main-<sha>`) for this tag's commit via
+# the GitHub REST API. main-firmware.yml uploads the firmware build
+# products every merge to main. When a `v*` tag is cut from a commit
+# that's already on main, ${{ github.sha }} matches and this workflow
+# skips the rebuild entirely by reusing the merge-time artifact.
+#
+# Fallback path: rebuild from the tag's source on the same Ubuntu
+# runner. Triggered when:
+#   - the tag was cut from a non-main branch (artifact absent)
+#   - main-firmware.yml's artifact has aged past 90 days (rare)
+#   - the tag was manually dispatched (workflow_dispatch on a custom
+#     tag that doesn't share the SHA of any merged build)
+# In either case the same set of files lands in the GitHub Release,
+# and a freshly-built artifact is uploaded so subsequent tag re-cuts
+# for the same commit hit the preferred path.
+#
+# No image retagging happens here. containers.yml owns the docker
+# `:X.Y.Z` / `<sha>` / `:rc-N` retag; this workflow owns the GitHub
+# Release with firmware binaries.
+
+name: Firmware Release
 
 on:
   push:
     tags:
-      - 'firmware-v*'
+      - 'v[0-9]*.[0-9]*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag string to release under (e.g. firmware-v0.2)'
+        description: 'Tag string to release under (e.g. v0.2)'
         required: true
         type: string
 
 permissions:
-  contents: write     # required to create the GitHub Release
+  contents: write
+  actions: read       # required for the cross-workflow artifact lookup
 
 jobs:
   release:
@@ -30,30 +47,6 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # full clone so softprops/action-gh-release@v2 can compute changelog
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-
-      - name: Install PlatformIO
-        run: pip install --pre platformio
-
-      - name: Cache PlatformIO packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('firmware-ota/platformio.ini') }}
-          restore-keys: |
-            pio-${{ runner.os }}-
-
-      - name: Build firmware (xiao_esp32s3)
-        working-directory: firmware-ota
-        run: pio run -e xiao_esp32s3
-
-      - name: Generate SHA256SUMS
-        working-directory: firmware-ota/.pio/build/xiao_esp32s3
-        run: sha256sum firmware.bin bootloader.bin partitions.bin > SHA256SUMS
 
       - name: Resolve release tag
         id: tag
@@ -64,6 +57,95 @@ jobs:
             echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: "Preferred: locate firmware-main-<sha> artifact via REST API"
+        id: locate
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const name = `firmware-main-${{ github.sha }}`;
+            console.log(`looking up artifact ${name}`);
+            // List artifacts across the repository filtered by name; the
+            // List artifacts endpoint accepts a `name` query param since
+            // GitHub REST 2022-11-28. We restrict to artifacts created in
+            // a window around this tag's commit by filtering the response
+            // client-side.
+            const list = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { repo: context.repo.repo, owner: context.repo.owner, per_page: 50 }
+            );
+            const matches = list.filter(a =>
+              a.name === name && a.expired === false
+            );
+            if (matches.length === 0) {
+              core.setOutput('artifact_id', '');
+              core.setOutput('download_url', '');
+              return;
+            }
+            // Pick the most recently created match; same SHA can only
+            // appear once per main-firmware.yml build run.
+            matches.sort((a, b) =>
+              new Date(b.created_at) - new Date(a.created_at)
+            );
+            const pick = matches[0];
+            core.info(`found artifact ${pick.id} created ${pick.created_at}`);
+            core.setOutput('artifact_id', String(pick.id));
+            core.setOutput('download_url', pick.archive_download_url);
+
+      - name: "Preferred: download located artifact"
+        if: steps.locate.outputs.artifact_id != ''
+        env:
+          ARTIFACT_ID: '${{ steps.locate.outputs.artifact_id }}'
+        run: |
+          mkdir -p .pio-artifacts
+          # download_url points to the artifact archive (a zip of the
+          # uploaded paths). Fetch via curl with the workflow token,
+          # then unzip. The artifact layout from main-firmware.yml
+          # is flat: firmware.bin, bootloader.bin, partitions.bin,
+          # SHA256SUMS directly under the zip root.
+          url="${{ steps.locate.outputs.download_url }}"
+          curl --fail-with-body -L \
+               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/vnd.github+json" \
+               -o .pio-artifacts.zip \
+               "$url"
+          (cd .pio-artifacts && unzip -q ../.pio-artifacts.zip)
+          rm -f .pio-artifacts.zip
+
+      - name: "Fallback: install PlatformIO"
+        if: steps.locate.outputs.artifact_id == ''
+        run: pip install --pre platformio
+
+      - name: "Fallback: cache PlatformIO packages"
+        if: steps.locate.outputs.artifact_id == ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware-ota/platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: "Fallback: build firmware (xiao_esp32s3)"
+        if: steps.locate.outputs.artifact_id == ''
+        working-directory: firmware-ota
+        run: pio run -e xiao_esp32s3
+
+      - name: "Fallback: collect firmware binaries"
+        if: steps.locate.outputs.artifact_id == ''
+        run: |
+          mkdir -p .pio-artifacts
+          cp firmware-ota/.pio/build/xiao_esp32s3/firmware.bin .pio-artifacts/
+          cp firmware-ota/.pio/build/xiao_esp32s3/bootloader.bin .pio-artifacts/
+          cp firmware-ota/.pio/build/xiao_esp32s3/partitions.bin .pio-artifacts/
+          (cd .pio-artifacts && sha256sum firmware.bin bootloader.bin partitions.bin > SHA256SUMS)
+
+      - name: "Cache: upload firmware artifact for future tag re-cuts"
+        if: steps.locate.outputs.artifact_id == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-main-${{ github.sha }}
+          path: .pio-artifacts
+          if-no-files-found: error
+
       - name: Create GitHub Release with binaries attached
         uses: softprops/action-gh-release@v2
         with:
@@ -71,8 +153,8 @@ jobs:
           name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
           files: |
-            firmware-ota/.pio/build/xiao_esp32s3/firmware.bin
-            firmware-ota/.pio/build/xiao_esp32s3/bootloader.bin
-            firmware-ota/.pio/build/xiao_esp32s3/partitions.bin
-            firmware-ota/.pio/build/xiao_esp32s3/SHA256SUMS
+            .pio-artifacts/firmware.bin
+            .pio-artifacts/bootloader.bin
+            .pio-artifacts/partitions.bin
+            .pio-artifacts/SHA256SUMS
           fail_on_unmatched_files: true

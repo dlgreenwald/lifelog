@@ -1,23 +1,36 @@
-name: 'Container Releases'
-
-# Tag-only release workflow. No image rebuilds happen here — `:latest` is
-# the source of truth (it was set by each `main-<service>.yml`'s
-# `retag-latest` job after the last merge), and `containers-vX.Y.Z` releases
-# just retag `:latest` to `:X.Y.Z`.
+# Tag-driven docker retag workflow. Source of truth is the per-merge
+# `:latest` write performed by each `main-<service>.yml`'s
+# `retag-latest` job. This workflow:
 #
-# Trigger: push of a tag matching `containers-v*`. Tag shape:
-#   `containers-vX.Y.Z`             → release as `:X.Y.Z` (and `<sha>`)
-#   `containers-vX.Y.Z-rcN`         → release as `:X.Y.Z`, `:rc-N`,
-#                                    `<sha>` — never touches `:latest`
-# `:latest` is never written here. Each `main-<service>.yml`'s
+#   - pulls `:latest` for the four services
+#   - retags and pushes `:X.Y.Z`, `<sha>`, and (when applicable) `:rc-N`
+#
+# Closely paired with `release.yml`: both fire on the same `vX.Y.Z[-rcN]`
+# tag push, so a single `v*` cut produces both a coherent container tag
+# set AND a firmware-coherent GitHub Release without overlapping shape or
+# divergent service lists. The two workflows share a single owner model:
+# `release.yml` owns firmware + GitHub Release; this file owns container
+# tags.
+#
+# Trigger: push of a tag matching `vX.Y.Z[-rcN]`. (Historical prefixes
+# `containers-v*` and `firmware-v*` are deprecated; only `v*` is honored
+# by this workflow going forward.)
+#
+# Tag shape (parity with release.yml):
+#   `vX.Y.Z`               — emit :X.Y.Z and <sha>
+#   `vX.Y.Z-rcN`           — emit :X.Y.Z, :rc-N, and <sha>
+#
+# `:latest` is NEVER written here. Each `main-<service>.yml`'s
 # `retag-latest` job is the only place that touches `:latest`, and it
 # only does so after a successful per-component `publish` job on push
 # to main.
 
+name: 'Container Releases'
+
 on:
   push:
     tags:
-      - 'containers-v*'
+      - 'v[0-9]*.[0-9]*'
 
 permissions:
   packages: write
@@ -29,9 +42,10 @@ jobs:
       - name: Compute version metadata
         id: version
         run: |
-          # Tag is `containers-vX.Y.Z` (with optional `-rcN`).
+          # Tag is `vX.Y.Z` (with optional `-rcN`). Same parse shape as
+          # release.yml so the workflows agree on what -rcN means.
           raw=${GITHUB_REF_NAME}
-          base=${raw#containers-v}
+          base=${raw#v}
           if [[ "$base" == *"-rc"* ]]; then
             version=${base%%-rc*}
             rcnum=${base##*-rc}
