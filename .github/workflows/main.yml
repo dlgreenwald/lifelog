@@ -14,7 +14,8 @@ name: Main Branch
 #     ├── dashboard
 #     └── firmware
 #   ├── docker         (matrix of 4 services, gated per service)
-#   └── firmware-build (parallel; pio run -e xiao_esp32s3; gated on paths.firmware)
+#   ├── firmware-build (parallel; pio run -e xiao_esp32s3; gated on paths.firmware)
+#   └── security       (CodeQL py/js + npm audit prod critical; gated by python-source/dashboard/ci-config)
 
 on:
   push:
@@ -31,6 +32,7 @@ jobs:
       dashboard: ${{ steps.filter.outputs.dashboard }}
       firmware: ${{ steps.filter.outputs.firmware }}
       ci-config: ${{ steps.filter.outputs.ci-config }}
+      python-source: ${{ steps.filter.outputs.python-source }}
     steps:
       - id: filter
         uses: dorny/paths-filter@v3
@@ -56,6 +58,12 @@ jobs:
               - '.github/workflows/**'
               - 'AGENTS.md'
               - 'README.md'
+            python-source:
+              - 'server/**'
+              - 'diarization/**'
+              - 'speaker-id/**'
+              - 'transcription-worker/**'
+              - 'dashboard/**'
 
   build-and-test:
     needs: paths
@@ -163,3 +171,29 @@ jobs:
           path: firmware-ota/.pio/build/xiao_esp32s3/SHA256SUMS
           retention-days: 30
           if-no-files-found: error
+
+  security:
+    needs: paths
+    if: |
+      needs.paths.outputs.ci-config == 'true' ||
+      needs.paths.outputs.python-source == 'true' ||
+      needs.paths.outputs.dashboard == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: 'python,javascript'
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+
+      - name: npm audit (dashboard, prod-only, critical)
+        run: npm audit --omit=dev --audit-level=critical
+        working-directory: dashboard

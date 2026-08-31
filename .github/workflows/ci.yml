@@ -3,13 +3,6 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  # squash-merge of a PR doesn't re-trigger pull_request, so add this
-  # push hook to scan the default branch after merge. CodeQL emits:
-  #   "Please specify an on.push hook to analyze and see code scanning
-  #    alerts from the default branch on the Security tab."
-  # until this is present.
-  push:
-    branches: [main]
 
 # Pipeline layout (see Actions tab for the dependency tree):
 #
