@@ -4,12 +4,12 @@ name: 'Main: Firmware'
 # Triggers on push to main when files inside firmware-ota/** or the shared
 # merge-infra change. Firmware binaries are NOT shipped as containers; the
 # release workflow (release.yml) attaches `.pio/build/**` to a GitHub
-# Release when somebody cuts a firmware-v* tag. This workflow only verifies
-# that the firmware still builds and tests pass after a merge.
-#
-# Two jobs: `test` calls pr-check.yml to run pio test -e test; `build`
-# runs the production board compile to confirm the firmware still builds
-# after the merge (it would otherwise be caught only at release-tag time).
+# Release when somebody cuts a firmware-v* tag. This workflow verifies
+# that the firmware still builds and tests pass after a merge, and uploads
+# the build outputs (firmware.bin / bootloader.bin / partitions.bin /
+# SHA256SUMS) as a 90-day Actions artifact so they're inspectable per run
+# without requiring a release tag. PR builds deliberately don't get these —
+# the firmware production compile is a post-merge job, not a PR job.
 
 on:
   push:
@@ -46,3 +46,18 @@ jobs:
       - name: Build firmware (xiao_esp32s3)
         working-directory: firmware-ota
         run: pio run -e xiao_esp32s3
+
+      - name: Generate SHA256SUMS
+        working-directory: firmware-ota/.pio/build/xiao_esp32s3
+        run: sha256sum firmware.bin bootloader.bin partitions.bin > SHA256SUMS
+
+      - name: Upload merged-to-main firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-main-${{ github.sha }}
+          path: |
+            firmware-ota/.pio/build/xiao_esp32s3/firmware.bin
+            firmware-ota/.pio/build/xiao_esp32s3/bootloader.bin
+            firmware-ota/.pio/build/xiao_esp32s3/partitions.bin
+            firmware-ota/.pio/build/xiao_esp32s3/SHA256SUMS
+          if-no-files-found: error
