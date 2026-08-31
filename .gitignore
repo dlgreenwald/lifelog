@@ -152,5 +152,3 @@ temp/
 *.tmp
 *.orig
 
-# Alembic config (contains DB credentials)
-alembic.ini
