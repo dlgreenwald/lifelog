@@ -503,7 +503,7 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 
 GitHub Actions runs the verification pipeline on every PR and on every push to `main`. Three workflows live under `.github/workflows/`:
 
-- `ci.yml` — PR trigger (`opened` / `synchronize` / `reopened`). Pipeline layout (visible on the Actions tab as a tree):
+- `ci.yml` — PR trigger (`opened` / `synchronize` / `reopened`) and post-merge `push` hook on `main`. The push hook exists so Code Scanning has a default-branch scan target — squash-merge isn't a PR event, so without `on.push` the merged code would only re-scan if a follow-up PR opened against it. The push event reuses the same `ci-config` and per-component gates; components whose paths changed in the squash commit run, security runs whenever the merged tree contains Python or dashboard source.
   ```
   detect-changes               (dorny/paths-filter@v3)
   ├── server
