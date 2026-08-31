@@ -26,6 +26,7 @@ jobs:
       dashboard: ${{ steps.filter.outputs.dashboard }}
       firmware: ${{ steps.filter.outputs.firmware }}
       python-source: ${{ steps.filter.outputs.python-source }}
+      ci-config: ${{ steps.filter.outputs.ci-config }}
     steps:
       - id: filter
         uses: dorny/paths-filter@v3
@@ -44,6 +45,13 @@ jobs:
               - 'dashboard/**'
             firmware:
               - 'firmware-ota/**'
+            # Touching CI files (workflows / AGENTS.md / README) re-runs
+            # every downstream job — a path-filter or workflow change
+            # should be validated everywhere.
+            ci-config:
+              - '.github/workflows/**'
+              - 'AGENTS.md'
+              - 'README.md'
             python-source:
               - 'server/**'
               - 'diarization/**'
@@ -53,7 +61,9 @@ jobs:
 
   server:
     needs: detect-changes
-    if: needs.detect-changes.outputs.server == 'true'
+    if: |
+      needs.detect-changes.outputs.ci-config == 'true' ||
+      needs.detect-changes.outputs.server == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -74,7 +84,9 @@ jobs:
 
   diarization:
     needs: detect-changes
-    if: needs.detect-changes.outputs.diarization == 'true'
+    if: |
+      needs.detect-changes.outputs.ci-config == 'true' ||
+      needs.detect-changes.outputs.diarization == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -95,7 +107,9 @@ jobs:
 
   speaker-id:
     needs: detect-changes
-    if: needs.detect-changes.outputs.speaker-id == 'true'
+    if: |
+      needs.detect-changes.outputs.ci-config == 'true' ||
+      needs.detect-changes.outputs.speaker-id == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -116,7 +130,9 @@ jobs:
 
   transcription-worker:
     needs: detect-changes
-    if: needs.detect-changes.outputs.transcription-worker == 'true'
+    if: |
+      needs.detect-changes.outputs.ci-config == 'true' ||
+      needs.detect-changes.outputs.transcription-worker == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -137,7 +153,9 @@ jobs:
 
   dashboard:
     needs: detect-changes
-    if: needs.detect-changes.outputs.dashboard == 'true'
+    if: |
+      needs.detect-changes.outputs.ci-config == 'true' ||
+      needs.detect-changes.outputs.dashboard == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -157,7 +175,9 @@ jobs:
 
   firmware:
     needs: detect-changes
-    if: needs.detect-changes.outputs.firmware == 'true'
+    if: |
+      needs.detect-changes.outputs.ci-config == 'true' ||
+      needs.detect-changes.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -173,7 +193,9 @@ jobs:
 
   security:
     needs: detect-changes
-    if: needs.detect-changes.outputs.python-source == 'true'
+    if: |
+      needs.detect-changes.outputs.ci-config == 'true' ||
+      needs.detect-changes.outputs.python-source == 'true'
     runs-on: ubuntu-latest
     permissions:
       security-events: write
