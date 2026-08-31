@@ -13,13 +13,23 @@ name: Main Branch
 #     ├── transcription-worker
 #     ├── dashboard
 #     └── firmware
-#   ├── docker         (matrix of 4 services, gated per service)
-#   ├── firmware-build (parallel; pio run -e xiao_esp32s3; gated on paths.firmware)
-#   └── security       (CodeQL py/js + npm audit prod critical; gated by python-source/dashboard/ci-config)
+#   ├── docker              (matrix of 4 services, gated per service)
+#   ├── tag-latest          (after docker: retag the just-pushed :main-${short_sha} images as :latest)
+#   ├── firmware-build      (parallel; pio run -e xiao_esp32s3; gated on paths.firmware)
+#   └── security            (CodeQL py/js + npm audit prod critical; gated by python-source/dashboard/ci-config)
 
 on:
   push:
     branches: [main]
+    # branches: [main] is exclusive — push events whose head_branch != `main`
+    # are not scheduled. A push to a feature branch (even one with an open PR)
+    # does not fire this workflow; only squash-merges landing on `main` do.
+
+defaults:
+  run:
+    # Default working directory for every step (paths-filter and certain
+    # upload-artifact paths use this implicitly).
+    working-directory: '.'
 
 jobs:
   paths:
@@ -37,33 +47,11 @@ jobs:
       - id: filter
         uses: dorny/paths-filter@v3
         with:
-          working-directory: '.'
-          filters: |
-            server:
-              - 'server/**'
-            diarization:
-              - 'diarization/**'
-            speaker-id:
-              - 'speaker-id/**'
-            transcription-worker:
-              - 'transcription-worker/**'
-            dashboard:
-              - 'dashboard/**'
-            firmware:
-              - 'firmware-ota/**'
-            # Touching CI files (workflows / AGENTS.md / README) re-runs every
-            # downstream job — a path-filter or workflow change should be
-            # validated everywhere.
-            ci-config:
-              - '.github/workflows/**'
-              - 'AGENTS.md'
-              - 'README.md'
-            python-source:
-              - 'server/**'
-              - 'diarization/**'
-              - 'speaker-id/**'
-              - 'transcription-worker/**'
-              - 'dashboard/**'
+          # JSON-string filter rather than YAML block scalar. The action's
+          # loader consistently handled JSON-string inputs across runner
+          # versions; the YAML-block variant with embedded comments has
+          # intermittently produced empty-payload errors.
+          filters: '{"server":["server/**"],"diarization":["diarization/**"],"speaker-id":["speaker-id/**"],"transcription-worker":["transcription-worker/**"],"dashboard":["dashboard/**"],"firmware":["firmware-ota/**"],"ci-config":[".github/workflows/**","AGENTS.md","README.md"],"python-source":["server/**","diarization/**","speaker-id/**","transcription-worker/**","dashboard/**"]}'
 
   build-and-test:
     needs: paths
@@ -82,7 +70,6 @@ jobs:
     uses: ./.github/workflows/pr-check.yml
     with:
       component: ${{ matrix.component }}
-
 
   docker:
     needs: paths
@@ -121,13 +108,41 @@ jobs:
           cache-to: type=gha,mode=max
 
   tag-latest:
-    # Apply `@latest` tags to the per-service `:main-${short_sha}` images that
-    # the `docker` matrix just pushed. This is the single owner of `:latest`
-    # across the whole repo — see .github/workflows/containers.yml for the
-    # design. Runs after `docker` to give it the new sha-pushed images.
+    # Apply `:latest` tags to the per-service `:main-${short_sha}` images that
+    # the `docker` matrix just pushed. Inlined here as a normal job rather
+    # than dispatching through containers.yml's retag-latest via `uses:` —
+    # GitHub Actions' loader dropped the workflow entirely (workflow_jobs_total_count
+    # = 0) when a caller job had `needs: <matrix-strategy-job>` + `if: success()`
+    # + `uses: <reusable>`. The sole owner of `:latest` is still this file: only
+    # this `tag-latest` job writes the `:latest` tag, never `containers.yml`
+    # directly. Tag-driven coordinated releases (`containers-vX.Y.Z`) still go
+    # through containers.yml's `release` job, which builds all four images from
+    # source and pushes `:X.Y.Z`, `:latest`, and `<sha>` together.
     needs: docker
-    if: success()
-    uses: ./.github/workflows/containers.yml
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write     # required so GITHUB_TOKEN can push :latest to ghcr.io
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [server, speaker-id, transcription-worker, dashboard]
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull sha-pinned image and retag as :latest
+        run: |
+          docker pull "ghcr.io/${{ github.repository_owner }}/lifelog-${{ matrix.service }}:main-${{ github.sha }}"
+          docker tag  "ghcr.io/${{ github.repository_owner }}/lifelog-${{ matrix.service }}:main-${{ github.sha }}" \
+                      "ghcr.io/${{ github.repository_owner }}/lifelog-${{ matrix.service }}:latest"
+          docker push "ghcr.io/${{ github.repository_owner }}/lifelog-${{ matrix.service }}:latest"
 
   firmware-build:
     needs: paths
