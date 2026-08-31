@@ -17,68 +17,40 @@ on:
 
 jobs:
   detect-changes:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
-      server: ${{ steps.classify.outputs.server }}
-      diarization: ${{ steps.classify.outputs.diarization }}
-      speaker-id: ${{ steps.classify.outputs.speaker-id }}
-      transcription-worker: ${{ steps.classify.outputs.transcription-worker }}
-      dashboard: ${{ steps.classify.outputs.dashboard }}
-      firmware: ${{ steps.classify.outputs.firmware }}
-      python-source: ${{ steps.classify.outputs.python-source }}
+      server: ${{ steps.filter.outputs.server }}
+      diarization: ${{ steps.filter.outputs.diarization }}
+      speaker-id: ${{ steps.filter.outputs.speaker-id }}
+      transcription-worker: ${{ steps.filter.outputs.transcription-worker }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
+      firmware: ${{ steps.filter.outputs.firmware }}
+      python-source: ${{ steps.filter.outputs.python-source }}
     steps:
-      - id: classify
-        uses: actions/github-script@v9
+      - id: filter
+        uses: dorny/paths-filter@v3
         with:
-          script: |
-            // GitHub's `pull_request synchronize` webhook event sometimes delivers
-            // changed_files as the FULL PR diff (on initial `opened`) but only the
-            // last commit's paths on subsequent commits — and on a fast rebase it
-            // can be empty. To stay robust, we read context.payload for the
-            // available snapshot, then *also* call the REST diff API as a fallback
-            // when the snapshot is empty or missing the prefix we expect.
-            const featPrefixes = ['server/','diarization/','speaker-id/','transcription-worker/','dashboard/','firmware-ota/'];
-            const startsWith = (prefix) => (f) =>
-              typeof f === 'string' && f.startsWith(prefix);
+          working-directory: '.'
+          filters: |
+            server:
+              - 'server/**'
+            diarization:
+              - 'diarization/**'
+            speaker-id:
+              - 'speaker-id/**'
+            transcription-worker:
+              - 'transcription-worker/**'
+            dashboard:
+              - 'dashboard/**'
+            firmware:
+              - 'firmware-ota/**'
+            python-source:
+              - 'server/**'
+              - 'diarization/**'
+              - 'speaker-id/**'
+              - 'transcription-worker/**'
+              - 'dashboard/**'
 
-            const snap = (context.payload.pull_request &&
-                          context.payload.pull_request.changed_files) || [];
-            let files = Array.isArray(snap) ? snap : [];
-
-            if (files.length === 0 && context.payload.pull_request) {
-              const { owner, repo } = context.repo;
-              const prNumber = context.payload.pull_request.number;
-              try {
-                files = await github.paginate(
-                  github.rest.pulls.listFiles,
-                  { owner, repo, pull_number: prNumber, per_page: 100 },
-                  (resp) => resp.data.map((f) => f.filename),
-                );
-                core.info(`changed_files snapshot was empty; pulled ${files.length} files via REST`);
-              } catch (err) {
-                core.warning(`listFiles failed: ${err.message}; falling back to empty list`);
-                files = [];
-              }
-            }
-
-            const any = (prefix) => files.some(startsWith(prefix));
-            const result = {
-              server:                 any('server/'),
-              diarization:            any('diarization/'),
-              'speaker-id':           any('speaker-id/'),
-              'transcription-worker': any('transcription-worker/'),
-              dashboard:              any('dashboard/'),
-              firmware:               any('firmware-ota/'),
-              'python-source':        any('server/') || any('diarization/') ||
-                                      any('speaker-id/') || any('transcription-worker/') ||
-                                      any('dashboard/'),
-            };
-            for (const [k, v] of Object.entries(result)) {
-              core.setOutput(k, String(v));
-            }
-            console.log('changed_files count:', files.length, 'classification:', JSON.stringify(result));
-            return result;
   server:
     needs: detect-changes
     if: needs.detect-changes.outputs.server == 'true'

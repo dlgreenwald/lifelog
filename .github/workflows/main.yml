@@ -5,22 +5,59 @@ name: Main Branch
 #
 # Pipeline layout (Actions tab tree view):
 #
-#   build-and-test    (matrix of 6 reusable invocations)
+#   paths                 (dorny/paths-filter@v3 — emits bools per source dir)
+#   ├── build-and-test    (matrix of 6 reusable invocations, gated per component)
 #     ├── server
 #     ├── diarization
 #     ├── speaker-id
 #     ├── transcription-worker
 #     ├── dashboard
 #     └── firmware
-#   ├── docker         (needs: build-and-test)
-#   └── firmware-build (parallel; pio run -e xiao_esp32s3 + artifact upload)
+#   ├── docker         (matrix of 3 services, gated per service)
+#   └── firmware-build (parallel; pio run -e xiao_esp32s3; gated on paths.firmware)
 
 on:
   push:
     branches: [main]
 
 jobs:
+  paths:
+    runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.filter.outputs.server }}
+      diarization: ${{ steps.filter.outputs.diarization }}
+      speaker-id: ${{ steps.filter.outputs.speaker-id }}
+      transcription-worker: ${{ steps.filter.outputs.transcription-worker }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
+      firmware: ${{ steps.filter.outputs.firmware }}
+    steps:
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          working-directory: '.'
+          filters: |
+            server:
+              - 'server/**'
+            diarization:
+              - 'diarization/**'
+            speaker-id:
+              - 'speaker-id/**'
+            transcription-worker:
+              - 'transcription-worker/**'
+            dashboard:
+              - 'dashboard/**'
+            firmware:
+              - 'firmware-ota/**'
+
   build-and-test:
+    needs: paths
+    if: |
+      (matrix.component == 'server'                 && needs.paths.outputs.server == 'true') ||
+      (matrix.component == 'diarization'            && needs.paths.outputs.diarization == 'true') ||
+      (matrix.component == 'speaker-id'             && needs.paths.outputs.speaker-id == 'true') ||
+      (matrix.component == 'transcription-worker'   && needs.paths.outputs.transcription-worker == 'true') ||
+      (matrix.component == 'dashboard'              && needs.paths.outputs.dashboard == 'true') ||
+      (matrix.component == 'firmware'               && needs.paths.outputs.firmware == 'true')
     strategy:
       fail-fast: false
       matrix:
@@ -31,7 +68,11 @@ jobs:
 
 
   docker:
-    needs: build-and-test
+    needs: paths
+    if: |
+      (matrix.service == 'server'                  && needs.paths.outputs.server == 'true') ||
+      (matrix.service == 'speaker-id'              && needs.paths.outputs.speaker-id == 'true') ||
+      (matrix.service == 'transcription-worker'    && needs.paths.outputs.transcription-worker == 'true')
     runs-on: ubuntu-latest
     permissions:
       packages: write     # required so GITHUB_TOKEN can push to ghcr.io
@@ -61,6 +102,8 @@ jobs:
           cache-to: type=gha,mode=max
 
   firmware-build:
+    needs: paths
+    if: needs.paths.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
