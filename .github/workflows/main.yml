@@ -12,7 +12,8 @@ name: Main Branch
 #     ├── transcription-worker
 #     ├── dashboard
 #     └── firmware
-#   └── docker         (needs: build-and-test)
+#   ├── docker         (needs: build-and-test)
+#   └── firmware-build (parallel; pio run -e xiao_esp32s3 + artifact upload)
 
 on:
   push:
@@ -58,3 +59,51 @@ jobs:
           tags: ghcr.io/${{ github.repository_owner }}/lifelog-${{ matrix.service }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  firmware-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install --pre platformio
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware-ota/platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Build firmware (xiao_esp32s3)
+        working-directory: firmware-ota
+        run: pio run -e xiao_esp32s3
+
+      - name: Upload firmware binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifelog-firmware
+          path: |
+            firmware-ota/.pio/build/xiao_esp32s3/firmware.bin
+            firmware-ota/.pio/build/xiao_esp32s3/bootloader.bin
+            firmware-ota/.pio/build/xiao_esp32s3/partitions.bin
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Generate SHA256SUMS
+        working-directory: firmware-ota/.pio/build/xiao_esp32s3
+        run: sha256sum firmware.bin bootloader.bin partitions.bin > SHA256SUMS
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifelog-firmware-checksums
+          path: firmware-ota/.pio/build/xiao_esp32s3/SHA256SUMS
+          retention-days: 30
+          if-no-files-found: error
