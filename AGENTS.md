@@ -46,6 +46,9 @@ Aspirational thoughts live in **one place**: the root `TODO.md` (untracked, giti
 
 **Migration**: `scripts/promote_todo_to_issues.sh` reads the un-tracked root `TODO.md`, classifies each aspirational item into the label taxonomy above, and previews a list of `gh issue create` invocations. Default is dry-run; pass `--apply` to actually call the API, and `--rewrite` to drop migrated bullets from `TODO.md`. Re-promote by re-running once new items accumulate.
 
+**Project board**: <https://github.com/users/dlgreenwald/projects/1> (`lifelog-roadmap`). v2 board, owner = single maintainer. Every `idea`-labeled issue is added as a card under the default `Status` field (columns: `Todo`, `In Progress`, `Done`). Triage by `area/*` label filtering; `priority/*` and `size/*` travel with each card via inherited issue labels. **Views:** the project ships with an Overview (cards grouped by Status only). To get kanban-with-swimlanes, click the `+` next to the view tabs → New view → Board, then set Group by `Labels` and Sub-group by None. Each distinct label value becomes a horizontal row within each Status column. Filter the Board view to `area/*` and `idea` to see only the lifecycle lanes by area. Move a card to `Done` when its closing PR merges. New work: drop into `TODO.md` first, then run `scripts/promote_todo_to_issues.sh --apply --rewrite`. Never add cards directly via `gh project item-add` for fresh work — issue-then-card is the invariant.
+
+
 **Never PR `TODO.md`.** It is not a code file. Items that graduate leave the file and become issues.
 
 ## ⚠️ Documentation Sync Rule
