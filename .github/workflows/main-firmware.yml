@@ -6,6 +6,10 @@ name: 'Main: Firmware'
 # release workflow (release.yml) attaches `.pio/build/**` to a GitHub
 # Release when somebody cuts a firmware-v* tag. This workflow only verifies
 # that the firmware still builds and tests pass after a merge.
+#
+# Two jobs: `test` calls pr-check.yml to run pio test -e test; `build`
+# runs the production board compile to confirm the firmware still builds
+# after the merge (it would otherwise be caught only at release-tag time).
 
 on:
   push:
@@ -17,15 +21,16 @@ on:
       - 'AGENTS.md'
 
 jobs:
+  test:
+    uses: ./.github/workflows/pr-check.yml
+    with:
+      component: firmware
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      - name: Run firmware tests (pio test -e test)
-        uses: ./.github/workflows/pr-check.yml
-        with:
-          component: firmware
 
       - name: Install PlatformIO
         run: pip install --pre platformio
