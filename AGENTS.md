@@ -46,6 +46,7 @@ Aspirational thoughts live in **one place**: the root `TODO.md` (untracked, giti
 
 **Migration**: `scripts/promote_todo_to_issues.sh` reads the un-tracked root `TODO.md`, classifies each aspirational item into the label taxonomy above, and previews a list of `gh issue create` invocations. Default is dry-run; pass `--apply` to actually call the API, and `--rewrite` to drop migrated bullets from `TODO.md`. Re-promote by re-running once new items accumulate.
 
+**Never PR `TODO.md`.** It is not a code file. Items that graduate leave the file and become issues.
 
 ## ⚠️ Documentation Sync Rule
 
@@ -315,6 +316,8 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `firmware-ota/partitions/partitions_ota.csv` | Dual OTA partition table (3MB app slots + 1.9MB model) |
 | `firmware-ota/platformio.ini` | OTA firmware build config |
 | `firmware-ota/AGENTS.md` | Detailed firmware guide (architecture, build, model partition, tests) |
+| `AGENTS.md` | This file — repository-wide guidance for agents and maintainers |
+| `TODO.md` | **Untracked, gitignored.** Personal in-tray for aspirational thoughts. See the "Capture → Issue → PR Rule" above. Never PR. |
 | `firmware-ota/ARCHITECTURE.md` | Firmware architecture deep-dive with PlantUML diagrams (tasks, cores, data flow, synchronization) |
 
 ## Database Migrations
