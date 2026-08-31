@@ -152,3 +152,9 @@ temp/
 *.tmp
 *.orig
 
+
+# ---------- Personal in-tray files ----------
+# Untracked personal parking lot for aspirational thoughts. Capture here in
+# one line; promote to a GitHub Issue when committed; PRs link to the issue
+# with "Part of #N" or "Fixes #N". Not a PR target — do not commit.
+TODO.md
