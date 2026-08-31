@@ -1,0 +1,43 @@
+name: 'Main: Firmware'
+
+# Per-component merge contract for firmware-ota.
+# Triggers on push to main when files inside firmware-ota/** or the shared
+# merge-infra change. Firmware binaries are NOT shipped as containers; the
+# release workflow (release.yml) attaches `.pio/build/**` to a GitHub
+# Release when somebody cuts a firmware-v* tag. This workflow only verifies
+# that the firmware still builds and tests pass after a merge.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'firmware-ota/**'
+      - '.github/workflows/**'
+      - 'AGENTS.md'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run firmware tests (pio test -e test)
+        uses: ./.github/workflows/pr-check.yml
+        with:
+          component: firmware
+
+      - name: Install PlatformIO
+        run: pip install --pre platformio
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware-ota/platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Build firmware (xiao_esp32s3)
+        working-directory: firmware-ota
+        run: pio run -e xiao_esp32s3
