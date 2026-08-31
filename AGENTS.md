@@ -31,6 +31,22 @@
 
 **Long-lived branches are prohibited.** If a branch lives more than a few days, it's too big — break it into smaller PRs. The only exception is `release/*` branches for versioned releases (not applicable until needed).
 
+## ⚠️ Capture → Issue → PR Rule
+
+Aspirational thoughts live in **one place**: the root `TODO.md` (untracked, gitignored by `.gitignore`'s "Personal in-tray files" section). Append as a one-line bullet under the appropriate area heading — fastest possible capture, no CI, no branch.
+
+- **Capture:** append a bullet to `TODO.md`. No PR.
+- **Commit (issue):** when you actually intend to do one, run `gh issue create --title "..." --label idea,priority/<x>,area/<y>,size/<z>` and remove the line from `TODO.md`. The issue becomes the unit of work.
+- **Implement (PR):** branch off the chosen issue. PR body uses `Part of #N` for sub-PRs of a complex parent, or `Fixes #N` for the closing PR. Auto-close on squash-merge.
+
+**Label taxonomy** (applied by `scripts/promote_todo_to_issues.sh` and manually on `gh issue create`):
+- `area/<firmware|server|dashboard|transcription-worker|speaker-id|infra>` — surface owned by the issue.
+- `priority/<high|medium|low>` and `size/<small|medium|large>` — independent ordinals.
+- `idea` — every bucket item carries this; distinguishes aspirational from bug-driven issues.
+
+**Migration**: `scripts/promote_todo_to_issues.sh` reads the un-tracked root `TODO.md`, classifies each aspirational item into the label taxonomy above, and previews a list of `gh issue create` invocations. Default is dry-run; pass `--apply` to actually call the API, and `--rewrite` to drop migrated bullets from `TODO.md`. Re-promote by re-running once new items accumulate.
+
+
 ## ⚠️ Documentation Sync Rule
 
 ## Project Overview
@@ -290,6 +306,10 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `firmware-ota/src/main.cpp` | OTA firmware: WiFi, OTA, PDM mic, SD card, runtime log levels |
 | `firmware-ota/src/audio.cpp` | Ring buffer + producer (audioInit, sdTake/sdGive) |
 | `firmware-ota/src/i2s_fe.cpp` | I2S PDM driver, AFE init, feed/fetch tasks, processAfeResult |
+| `firmware-ota/AGENTS.md` | Detailed firmware guide (architecture, build, model partition, tests) |
+| `scripts/promote_todo_to_issues.sh` | Dry-run-first `TODO.md` → GitHub Issues migration tool. Heuristic per-bullet label assignment, `--apply` to actually create, `--rewrite` to drop migrated bullets. |
+| `AGENTS.md` | This file — repository-wide guidance for agents and maintainers |
+| `TODO.md` | **Untracked, gitignored.** Personal in-tray for aspirational thoughts. See the "Capture → Issue → PR Rule" above. Never PR. |
 | `firmware-ota/src/writer.cpp` | Consumer: Opus/OGG encode, PSRAM-first buffering, SD fallback, upload queue |
 | `firmware-ota/src/oauth2_client.cpp` | ESP32 OAuth2 client — wires device flow library to NVS storage |
 | `firmware-ota/partitions/partitions_ota.csv` | Dual OTA partition table (3MB app slots + 1.9MB model) |
