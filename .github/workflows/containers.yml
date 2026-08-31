@@ -1,17 +1,18 @@
 name: 'Container Releases'
 
 # Tag-only release workflow. No image rebuilds happen here — `:latest` is
-# the source of truth (it was published by main-tag-latest.yml after the
-# last merge), and `containers-vX.Y.Z` releases just retag `:latest` to
-# `:X.Y.Z`. The merge contract is in main-tag-latest.yml.
+# the source of truth (it was set by each `main-<service>.yml`'s
+# `retag-latest` job after the last merge), and `containers-vX.Y.Z` releases
+# just retag `:latest` to `:X.Y.Z`.
 #
 # Trigger: push of a tag matching `containers-v*`. Tag shape:
 #   `containers-vX.Y.Z`             → release as `:X.Y.Z` (and `<sha>`)
 #   `containers-vX.Y.Z-rcN`         → release as `:X.Y.Z`, `:rc-N`,
 #                                    `<sha>` — never touches `:latest`
-# `:latest` is never written here. The merge contract (main-tag-latest.yml)
-# is the only place that touches `:latest`, and it only does so after a
-# successful per-component test+publish cycle on push to main.
+# `:latest` is never written here. Each `main-<service>.yml`'s
+# `retag-latest` job is the only place that touches `:latest`, and it
+# only does so after a successful per-component `publish` job on push
+# to main.
 
 on:
   push:
