@@ -1,7 +1,7 @@
 name: Main Branch
 
 # Fires on push to main (typically after squash-merge of a PR). Runs the
-# full suite plus Docker image builds for the three service containers.
+# full suite plus Docker image builds for the four service containers.
 #
 # Pipeline layout (Actions tab tree view):
 #
@@ -13,7 +13,7 @@ name: Main Branch
 #     ├── transcription-worker
 #     ├── dashboard
 #     └── firmware
-#   ├── docker         (matrix of 3 services, gated per service)
+#   ├── docker         (matrix of 4 services, gated per service)
 #   └── firmware-build (parallel; pio run -e xiao_esp32s3; gated on paths.firmware)
 
 on:
@@ -72,13 +72,14 @@ jobs:
     if: |
       (matrix.service == 'server'                  && needs.paths.outputs.server == 'true') ||
       (matrix.service == 'speaker-id'              && needs.paths.outputs.speaker-id == 'true') ||
-      (matrix.service == 'transcription-worker'    && needs.paths.outputs.transcription-worker == 'true')
+      (matrix.service == 'transcription-worker'    && needs.paths.outputs.transcription-worker == 'true') ||
+      (matrix.service == 'dashboard'               && needs.paths.outputs.dashboard == 'true')
     runs-on: ubuntu-latest
     permissions:
       packages: write     # required so GITHUB_TOKEN can push to ghcr.io
     strategy:
       matrix:
-        service: [server, speaker-id, transcription-worker]
+        service: [server, speaker-id, transcription-worker, dashboard]
     steps:
       - uses: actions/checkout@v5
 
