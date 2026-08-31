@@ -31,6 +31,16 @@
 
 **Long-lived branches are prohibited.** If a branch lives more than a few days, it's too big — break it into smaller PRs. The only exception is `release/*` branches for versioned releases (not applicable until needed).
 
+## ⚠️ Capture → Issue → PR Rule
+
+Aspirational thoughts live in **one place**: the root `TODO.md` (untracked, gitignored by `.gitignore`'s "Personal in-tray files" section). Append as a one-line bullet under the appropriate area heading — fastest possible capture, no CI, no branch.
+
+- **Capture:** append a bullet to `TODO.md`. No PR.
+- **Commit (issue):** when you actually intend to do one, run `gh issue create --title "..." --label idea,priority/<x>,area/<y>,size/<z>` and remove the line from `TODO.md`. The issue becomes the unit of work.
+- **Implement (PR):** branch off the chosen issue. PR body uses `Part of #N` for sub-PRs of a complex parent, or `Fixes #N` for the closing PR. Auto-close on squash-merge.
+
+**Never PR `TODO.md`.** It is not a code file. Items that graduate leave the file and become issues.
+
 ## ⚠️ Documentation Sync Rule
 
 ## Project Overview
@@ -295,6 +305,8 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `firmware-ota/partitions/partitions_ota.csv` | Dual OTA partition table (3MB app slots + 1.9MB model) |
 | `firmware-ota/platformio.ini` | OTA firmware build config |
 | `firmware-ota/AGENTS.md` | Detailed firmware guide (architecture, build, model partition, tests) |
+| `AGENTS.md` | This file — repository-wide guidance for agents and maintainers |
+| `TODO.md` | **Untracked, gitignored.** Personal in-tray for aspirational thoughts. See the "Capture → Issue → PR Rule" above. Never PR. |
 | `firmware-ota/ARCHITECTURE.md` | Firmware architecture deep-dive with PlantUML diagrams (tasks, cores, data flow, synchronization) |
 
 ## Database Migrations
