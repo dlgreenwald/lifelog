@@ -201,9 +201,9 @@ async def _create_session_quick_jobs() -> None:
         user_settings = await db.get_user_settings(session["user_id"])
         last_completed = await db.get_latest_completed_quick_job(session["id"])
         if last_completed and last_completed.get("completed_at"):
-            window_floor = last_completed["completed_at"].replace(
-                tzinfo=None
-            ) + _MICROSECOND
+            window_floor = (
+                last_completed["completed_at"].replace(tzinfo=None) + _MICROSECOND
+            )
         else:
             window_floor = window_end - timedelta(
                 minutes=max(1, settings.quick_window_minutes)
@@ -316,9 +316,7 @@ async def _apply_quick_transcripts() -> None:
                     best_overlap = -1.0
                     for utt_id, (sp_start, sp_end) in span_by_utt.items():
                         if sp_start <= midpoint < sp_end:
-                            overlap = min(seg_end, sp_end) - max(
-                                seg_start, sp_start
-                            )
+                            overlap = min(seg_end, sp_end) - max(seg_start, sp_start)
                             if overlap > best_overlap:
                                 best_overlap = overlap
                                 assigned = utt_id

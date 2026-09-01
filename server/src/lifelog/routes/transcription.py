@@ -29,6 +29,7 @@ class JobResult(BaseModel):
     speaker_map: dict
     utterance_spans: list[UtteranceSpan] = Field(default_factory=list)
 
+
 class JobError(BaseModel):
     error: str
 
