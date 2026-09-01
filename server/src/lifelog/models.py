@@ -51,6 +51,7 @@ class JobResult(BaseModel):
     speaker_map: dict = Field(default_factory=dict)
     speaker_segments: list[dict] = Field(default_factory=list)
     utterance_spans: list[UtteranceSpan] = Field(default_factory=list)
+    utterance_ids: list[int] = Field(default_factory=list)
 
 
 class SpeakerLabel(BaseModel):

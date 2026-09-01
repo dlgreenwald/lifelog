@@ -74,6 +74,7 @@ def test_completion_persists_all_result_fields():
             "speaker_map": {},
             "utterance_spans": [],
             "speaker_segments": [{"speaker": "SPEAKER_00"}],
+            "utterance_ids": [],
         },
     )
 

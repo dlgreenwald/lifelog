@@ -525,6 +525,7 @@ class TestHourlyReprocessing:
                 "id": 4,
                 "chunk_index": 0,
                 "window_start": datetime(2025, 1, 1, 10),
+                "window_end": datetime(2025, 1, 1, 10, 10),
                 "status": "done",
                 "job_type": "full",
                 "result": {

@@ -27,6 +27,7 @@ class JobResult(BaseModel):
     speaker_segments: list[dict] = Field(default_factory=list)
     speaker_map: dict
     utterance_spans: list[UtteranceSpan] = Field(default_factory=list)
+    utterance_ids: list[int] = Field(default_factory=list)
 
 
 class JobError(BaseModel):
@@ -137,9 +138,88 @@ async def get_job_audio(job_id: int):
                 "audio_segments": audio_segments,
                 "timestamps": timestamps,
                 "utterances": [],
+                "utterance_ids": utterance_ids,
             }
-        # Legacy single-utterance quick job
+        # Legacy or reprocessed quick job: if utterance_spans exist, use them
+        utterance_spans = result.get("utterance_spans", [])
+        if utterance_spans:
+            span_ids = [
+                span["utterance_id"]
+                for span in utterance_spans
+                if span.get("utterance_id")
+            ]
+            utterances = await db.get_session_utterances_in_range(
+                job["session_id"], job["window_start"], job["window_end"]
+            )
+            utterances = [u for u in utterances if u["utterance_id"] in set(span_ids)]
+            audio_segments = []
+            timestamps = []
+            for utterance in utterances:
+                fname = utterance.get("audio_filename")
+                if not fname:
+                    continue
+                try:
+                    audio = audio_crypto.decrypt_audio(fname, secret, salt)
+                except Exception:
+                    logger.warning(
+                        "audio_unavailable",
+                        filename=fname,
+                        job_id=job_id,
+                        exc_info=True,
+                    )
+                    continue
+                audio_segments.append(base64.b64encode(audio).decode("ascii"))
+                timestamps.append(_iso(utterance["created_at"]))
+            if not audio_segments:
+                raise HTTPException(
+                    status_code=404, detail="No usable audio for session quick job"
+                )
+            return {
+                "audio_segments": audio_segments,
+                "timestamps": timestamps,
+                "utterances": [],
+                "utterance_ids": span_ids,
+            }
+        # Legacy format: no utterance_spans.
+        # fall back to single audio file.
+        if job.get("window_start") and job.get("window_end"):
+            utterances = await db.get_session_utterances_in_range(
+                job["session_id"], job["window_start"], job["window_end"]
+            )
+            audio_segments = []
+            timestamps = []
+            utterance_ids = []
+            for utterance in utterances:
+                fname = utterance.get("audio_filename")
+                if not fname:
+                    continue
+                try:
+                    audio = audio_crypto.decrypt_audio(fname, secret, salt)
+                except Exception:
+                    logger.warning(
+                        "audio_unavailable",
+                        filename=fname,
+                        job_id=job_id,
+                        exc_info=True,
+                    )
+                    continue
+                audio_segments.append(base64.b64encode(audio).decode("ascii"))
+                timestamps.append(_iso(utterance["created_at"]))
+                utterance_ids.append(utterance["utterance_id"])
+            if audio_segments:
+                return {
+                    "audio_segments": audio_segments,
+                    "timestamps": timestamps,
+                    "utterances": [],
+                    "utterance_ids": utterance_ids,
+                }
+        # Fallback: single audio file in result (very old format)
         filename = result.get("audio_filename")
+        if not filename:
+            raise HTTPException(
+                status_code=400,
+                detail="Quick job has no utterance_ids and no audio_filename",
+            )
         try:
             audio = audio_crypto.decrypt_audio(filename, secret, salt)
         except Exception as exc:
@@ -151,13 +231,8 @@ async def get_job_audio(job_id: int):
             "audio_segments": [base64.b64encode(audio).decode("ascii")],
             "timestamps": [],
             "utterances": [],
+            "utterance_ids": [],
         }
-
-    utterances = await db.get_session_utterances_in_range(
-        job["session_id"], job["window_start"], job["window_end"]
-    )
-    audio_segments = []
-    timestamps = []
     metadata = []
     for utterance in utterances:
         filename = utterance.get("audio_filename")
@@ -217,6 +292,7 @@ async def complete_job(job_id: int, body: JobResult):
                 }
                 for span in body.utterance_spans
             ],
+            "utterance_ids": body.utterance_ids,
         },
     )
     return {"status": "ok"}

@@ -845,9 +845,10 @@ async def mark_session_processed(session_id: int):
 async def reset_session_for_reprocessing(session_id: int) -> bool:
     """Reset a session so the hourly reprocess loop picks it up.
 
-    Sets status back to 'ended'. The existing recording is kept but is now
-    stale (its created_at < session.ended_at), which matches the hourly
-    loop's staleness check in get_sessions_for_reprocessing().
+    Deletes existing recordings for the session (required because the
+    ``recordings_session_partition_idx`` unique constraint prevents
+    re-inserting partitions that already exist), then sets status back
+    to 'ended' so the hourly loop regenerates them.
 
     Returns True if a session was reset, False if session not found.
     """
@@ -860,8 +861,17 @@ async def reset_session_for_reprocessing(session_id: int) -> bool:
         if not session:
             return False
 
+        # Delete existing recordings and transcription jobs so they can be regenerated fresh
+        await conn.execute(
+            "DELETE FROM recordings WHERE session_id = $1",
+            session_id,
+        )
+        await conn.execute(
+            "DELETE FROM transcription_jobs WHERE session_id = $1",
+            session_id,
+        )
+
         # Reset status to 'ended' so hourly loop picks it up
-        # The recording stays but is stale (created_at < ended_at)
         await conn.execute(
             """
             UPDATE sessions
@@ -872,7 +882,9 @@ async def reset_session_for_reprocessing(session_id: int) -> bool:
         )
 
         logger.info(
-            "Session %d reset for reprocessing (was %s)", session_id, session["status"]
+            "Session %d reset for reprocessing (was %s)",
+            session_id,
+            session["status"],
         )
         return True
 

@@ -1,5 +1,3 @@
-"""WhisperX model loading and quick/full transcription."""
-
 from __future__ import annotations
 
 import base64
