@@ -19,6 +19,9 @@
 // Pull in OAuth2 device flow tests from the library's test directory
 #include "../lib/oauth2_device_flow/test/test_oauth2_device_flow.cpp"
 
+// Pull in LED state machine tests + their SUT (led.cpp) at file scope so all
+// 9 RUN_TESTs below find their test_* symbols. Defines its own audio globals.
+#include "test_led.h"
 // ═══════════════════════════════════════════════════════════════════
 // Test state — reset each test via setUp()
 // ═══════════════════════════════════════════════════════════════════
@@ -420,6 +423,7 @@ void setUp() {
     memset(&deviceSettings, 0, sizeof(deviceSettings));
     knownNetworkCount = 0;
     mock_millis_value = 10000;
+    reset_led_state();
 }
 void tearDown() {}
 
@@ -509,6 +513,17 @@ int main() {
     RUN_TEST(test_oauth2_put_no_auth_header_when_not_authenticated);
     RUN_TEST(test_oauth2_patch_returns_zero_when_not_authenticated);
     RUN_TEST(test_oauth2_malformed_json_response);
+
+    // ── LED State Machine (9 tests) ──
+    RUN_TEST(test_audio_activity_listen_turns_led_on);
+    RUN_TEST(test_audio_activity_idle_turns_led_off);
+    RUN_TEST(test_listen_blinks_1hz);
+    RUN_TEST(test_record_blinks_2hz);
+    RUN_TEST(test_idle_skips_toggle_when_already_off);
+    RUN_TEST(test_listen_transitions_to_record_after_2000ms);
+    RUN_TEST(test_100ms_guard_skips_rapid_calls);
+    RUN_TEST(test_voice_restart_resets_listen_timer);
+    RUN_TEST(test_idle_after_listen_clears_immediately);
 
     UNITY_END();
     return 0;

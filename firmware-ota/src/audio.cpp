@@ -11,8 +11,12 @@ static const char* TAG = "AUDIO";
 // ── Global state ──────────────────────────────────────────────────
 volatile bool recording = false;
 volatile bool vadMode = true;
+
+// Audio activity (set by i2s_fe.cpp on voice-start/voice-end, read by ledLoop())
+volatile AudioActivity audioActivity = AUDIO_IDLE;
+unsigned long listenStartMs = 0;
+
 SemaphoreHandle_t sdMutex = NULL;
-uint32_t fileIndex = 0;
 static uint32_t recordDurationMs = 5000;
 char lastSavedFile[64] = {0};
 TaskHandle_t writerTaskHandle = NULL;

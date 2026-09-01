@@ -20,6 +20,7 @@
 #include "i2s_fe.h"
 #include "writer.h"
 #include "upload.h"
+#include "led.h"
 #include "oauth2_client.h"
 #ifdef BUILD_DEVELOPMENT
 #define PROGRAM_NAME "LifeLog"
@@ -661,4 +662,6 @@ void loop() {
         lastDashPush = millis();
         dash.update();
     }
+
+    ledLoop();
 }

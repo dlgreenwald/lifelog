@@ -92,7 +92,7 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 | `lib/lifelog_core/codec.h` | Opus/OGG codec helpers |
 | `lib/lifelog_core/filename.h` | Recording filename generation |
 | `test/mocks.h` | Complete ESP32/FreeRTOS/Arduino/Opus/OGG mock layer |
-| `test/test_all.cpp` | 66 Unity tests across 10 categories |
+| `test/test_all.cpp` | 78 Unity tests across 11 categories (LED state machine included) |
 | `partitions/partitions_ota.csv` | OTA partition table with model partition |
 
 ## Development Commands
@@ -159,7 +159,7 @@ esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
 ### Tests
 
 ```bash
-pio test -e test                  # Run all 66 native tests
+pio test -e test                  # Run all 78 native tests
 ```
 
 ### Serial Monitor
@@ -352,7 +352,7 @@ To fix this properly: restructure tests to `#include` the actual `.cpp` files (w
 ### Framework
 
 - **Unity** (throwtheswitch/Unity@^2.5.2) — native platform, no hardware needed
-- **66 tests** across 10 categories
+- **78 tests** across 11 categories (LED state machine added in 2026-Q3)
 
 ### Categories
 
@@ -426,7 +426,7 @@ pio test -e test
 
 | Script | Steps |
 |---|---|
-| `build.sh` | pio compile → native tests (66 tests) |
+| `build.sh` | pio compile → native tests (78 tests) |
 
 ## Dependencies
 
