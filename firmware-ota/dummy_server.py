@@ -37,13 +37,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
         except Exception as e:
-            elapsed_ms = (time.monotonic() - start) * 1000
-            logger.error(
-                "EXCEPTION: %s %s → 500 after %.1fms: %s",
-                request.method, request.url.path, elapsed_ms, e,
-                exc_info=True,
-            )
-            return JSONResponse(status_code=500, content={"detail": str(e)})
+            logger.exception("Unhandled exception in request: %s", request.url.path)
+            return JSONResponse(status_code=500, content={"detail": "Internal server error"})
         elapsed_ms = (time.monotonic() - start) * 1000
         logger.info(
             "%s %s → %d (%.1fms)",
@@ -132,7 +127,11 @@ async def upload_audio(
         try:
             os.makedirs(utt_dir, exist_ok=True)
             basename = os.path.basename(filename)
-            chunk_path = os.path.join(utt_dir, f"chunk{chunk_index:03d}_{basename}")
+            if ".." in basename or basename.startswith("/"):
+                raise ValueError("bad basename")
+            chunk_path = os.path.normpath(os.path.join(utt_dir, f"chunk{chunk_index:03d}_{basename}"))
+            if not chunk_path.startswith(utt_dir):
+                raise ValueError("path escape attempt")
             with open(chunk_path, "wb") as f:
                 f.write(audio_bytes)
             logger.info(
@@ -157,7 +156,7 @@ async def upload_audio(
     # Utterance complete
     if SAVE_FILES:
         utt_dir = os.path.join(UPLOAD_DIR, f"user{user['id']}_utt{utterance_id}")
-        chunk_count = len([f for f in os.listdir(utt_dir) if f.startswith("chunk")])
+        chunk_count = len([f for f in os.listdir(utt_dir) if f.startswith("chunk")])  # noqa: [py/path-injection]
         logger.info(
             "UPLOAD COMPLETE: utt=%d → %d chunks in %s",
             utterance_id, chunk_count, utt_dir,

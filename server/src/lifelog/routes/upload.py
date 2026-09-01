@@ -1,6 +1,6 @@
-import logging
 import time
 
+import structlog
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, UploadFile
 
 from lifelog import database
@@ -43,8 +43,7 @@ def _opus_sample_rate(audio_bytes: bytes) -> int | None:
     return None
 
 
-logger = logging.getLogger("lifelog.upload")
-
+logger = structlog.get_logger()
 router = APIRouter()
 
 
@@ -76,7 +75,7 @@ def _evict_stale_utterances() -> None:
             entry = _active_utterances[uid][dev_id]
             if now - entry.get("last_seen", now) > UTTERANCE_TTL:
                 logger.warning(
-                    "Evicting stale utterance user=%d device=%d", uid, dev_id
+                    "evicting_stale_utterance", user_id=uid, device_id=dev_id
                 )
                 _active_utterances[uid].pop(dev_id)
         if not _active_utterances[uid]:
@@ -98,7 +97,7 @@ async def _finalize_utterance(user_id: int, server_utt_id: int) -> None:
             user_id,
             server_utt_id,
         )
-    logger.info("Utterance %d/%d enqueued for processing", user_id, server_utt_id)
+    logger.info("utterance_enqueued", user_id=user_id, utterance_id=server_utt_id)
 
 
 @router.post("/upload")
@@ -127,12 +126,12 @@ async def upload_audio(
     _evict_stale_utterances()
 
     logger.info(
-        "Upload: user=%d, device_utt=%d, chunk=%d, final=%s, size=%d bytes",
-        user_id,
-        utterance_id,
-        chunk_index,
-        is_final,
-        len(audio_bytes),
+        "upload_chunk_received",
+        user_id=user_id,
+        device_utt=utterance_id,
+        chunk_index=chunk_index,
+        is_final=is_final,
+        size_bytes=len(audio_bytes),
     )
 
     user_utterances = _active_utterances.setdefault(user_id, {})
@@ -204,13 +203,12 @@ async def upload_audio(
     if is_final:
         rate = _opus_sample_rate(audio_bytes)
         logger.info(
-            "Upload final: user=%d, device_utt=%d, server_utt=%d, "
-            "size=%d bytes, sample_rate=%s",
-            user_id,
-            utterance_id,
-            server_utt_id,
-            len(audio_bytes),
-            rate,
+            "upload_final",
+            user_id=user_id,
+            device_utt=utterance_id,
+            server_utt=server_utt_id,
+            size_bytes=len(audio_bytes),
+            sample_rate=rate,
         )
         await _finalize_utterance(user_id, server_utt_id)
         user_utterances.pop(device_utt, None)

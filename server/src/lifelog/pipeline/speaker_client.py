@@ -1,9 +1,9 @@
 import base64
 import json
-import logging
 import time
 
 import httpx
+import structlog
 
 from lifelog.config import settings
 from lifelog.database import get_all_voiceprints
@@ -16,7 +16,7 @@ def serialize_embedding(embedding: list[float] | bytes) -> bytes:
     return json.dumps(embedding).encode("utf-8")
 
 
-logger = logging.getLogger("lifelog.speaker_id")
+logger = structlog.get_logger()
 
 
 async def identify_speakers(
@@ -35,10 +35,10 @@ async def identify_speakers(
                 embedding = list(embedding)
         voiceprint_data.append({"name": vp["name"], "embedding": list(embedding)})
     logger.info(
-        "Identifying speakers: %d segments, %d voiceprints for user %d",
-        len(segments),
-        len(voiceprint_data),
-        user_id,
+        "speaker_identification_start",
+        segment_count=len(segments),
+        voiceprint_count=len(voiceprint_data),
+        user_id=user_id,
     )
     async with httpx.AsyncClient(timeout=300) as client:
         response = await client.post(
@@ -59,9 +59,9 @@ async def identify_speakers(
         if speaker.get("name") and speaker["name"] != "Unknown"
     ]
     logger.info(
-        "Speaker identification complete in %.2fs: %d results, %d matched to voiceprints",
-        duration,
-        len(result),
-        len(matched),
+        "speaker_identification_complete",
+        duration_s=duration,
+        result_count=len(result),
+        matched_count=len(matched),
     )
     return result

@@ -60,6 +60,7 @@ class AudioEncryption:
         ):
             raise ValueError(f"Path traversal attempt: {filename}")
 
+        # CodeQL [py/path-injection]: filepath is validated by realpath guard above
         with open(filepath, "rb") as f:
             encrypted_data = f.read()
 

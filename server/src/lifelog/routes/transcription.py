@@ -1,14 +1,13 @@
 import base64
-import logging
 
+import structlog
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from lifelog import database as db
 from lifelog.crypto import audio_crypto
 
-logger = logging.getLogger("lifelog.transcription")
-
+logger = structlog.get_logger()
 router = APIRouter()
 
 
@@ -122,13 +121,8 @@ async def get_job_audio(job_id: int):
                     audio = audio_crypto.decrypt_audio(fname, secret, salt)
                 except Exception:
                     logger.warning(
-                        "Skipping unavailable audio %s for job %d",
-                        fname,
-                        job_id,
-                        exc_info=True,
+                        "skipping_unavailable_audio", fname=fname, job_id=job_id
                     )
-                    continue
-                audio_segments.append(base64.b64encode(audio).decode("ascii"))
                 timestamps.append(_iso(utterance["created_at"]))
             if not audio_segments:
                 raise HTTPException(
@@ -144,7 +138,7 @@ async def get_job_audio(job_id: int):
         try:
             audio = audio_crypto.decrypt_audio(filename, secret, salt)
         except Exception as exc:
-            logger.exception("Unable to decrypt quick job %d audio", job_id)
+            logger.exception("decrypt_quick_job_audio_failed", job_id=job_id)
             raise HTTPException(
                 status_code=500, detail="Unable to decrypt quick job audio"
             ) from exc
@@ -168,10 +162,7 @@ async def get_job_audio(job_id: int):
             audio = audio_crypto.decrypt_audio(filename, secret, salt)
         except Exception:
             logger.warning(
-                "Skipping unavailable audio %s for job %d",
-                filename,
-                job_id,
-                exc_info=True,
+                "skipping_unavailable_audio", filename=filename, job_id=job_id
             )
             continue
         audio_segments.append(base64.b64encode(audio).decode("ascii"))
