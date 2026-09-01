@@ -25,6 +25,34 @@ class RecordingResponse(BaseModel):
     conversation_changes: list | None = None
 
 
+class UtteranceSpan(BaseModel):
+    """Per-utterance range in combined-stream seconds.
+
+    The worker emits one entry per utterance in a quick (and full) job
+    so the server-side apply loop can map combined segments back to the
+    right utterance without relying on wall-clock timestamp drift.
+    """
+
+    utterance_id: int
+    start: float
+    end: float
+
+
+class JobResult(BaseModel):
+    """Body of ``/internal/transcription/complete/{job_id}``.
+
+    The transcription worker POSTs WhisperX segments plus speaker data;
+    quick jobs also POST ``utterance_spans`` so the server can route
+    each segment back to the right utterance precisely.
+    """
+
+    segments: list[dict] = Field(default_factory=list)
+    full_transcript: dict | None = None
+    speaker_map: dict = Field(default_factory=dict)
+    speaker_segments: list[dict] = Field(default_factory=list)
+    utterance_spans: list[UtteranceSpan] = Field(default_factory=list)
+
+
 class SpeakerLabel(BaseModel):
     recording_id: int
     speaker_id: str = Field(..., max_length=50)

@@ -62,6 +62,7 @@ def test_completion_persists_all_result_fields():
                 "full_transcript": {"segments": []},
                 "speaker_map": {},
                 "speaker_segments": [{"speaker": "SPEAKER_00"}],
+                "utterance_spans": [],
             },
         )
     assert response.status_code == 200
@@ -71,6 +72,7 @@ def test_completion_persists_all_result_fields():
             "segments": [],
             "full_transcript": {"segments": []},
             "speaker_map": {},
+            "utterance_spans": [],
             "speaker_segments": [{"speaker": "SPEAKER_00"}],
         },
     )

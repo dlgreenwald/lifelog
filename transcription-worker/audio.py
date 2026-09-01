@@ -63,7 +63,29 @@ def _timestamp(value: str | datetime) -> datetime:
 def concatenate_segments(
     audio_segments: list[bytes], timestamps: list[str]
 ) -> tuple[np.ndarray, int]:
-    """Decode segments and place them at their relative timestamps."""
+    """Decode segments and place them at their relative timestamps.
+
+    Returns the assembled waveform and the detected sample rate. For
+    callers that also need per-utterance offsets/lengths (so the result
+    segments can be mapped back to the right utterance on the server),
+    use ``concatenate_segments_with_spans`` instead.
+    """
+    waveform, sample_rate, _ = concatenate_segments_with_spans(
+        audio_segments, timestamps
+    )
+    return waveform, sample_rate
+
+
+def concatenate_segments_with_spans(
+    audio_segments: list[bytes], timestamps: list[str]
+) -> tuple[np.ndarray, int, list[tuple[float, float]]]:
+    """Assemble per-utterance audio and emit combined-stream spans.
+
+    The third return value is a list of ``(start_seconds, end_seconds)``
+    tuples in the same order as ``audio_segments``/``timestamps``. The
+    server uses these spans to map WhisperX segments back to the right
+    utterance — independent of timestamp drift on either end.
+    """
     if not audio_segments or not timestamps:
         raise ValueError("audio segments and timestamps are required")
     if len(audio_segments) != len(timestamps):
@@ -74,20 +96,29 @@ def concatenate_segments(
         raise ValueError("audio segments have different sample rates")
     start_time = _timestamp(timestamps[0])
     placements = []
+    spans: list[tuple[float, float]] = []
     total_samples = 0
     for samples, _ in decoded:
-        offset = max(
-            0.0, (_timestamp(timestamps[len(placements)]) - start_time).total_seconds()
-        )
+        sample_offset = (
+            _timestamp(timestamps[len(placements)]) - start_time
+        ).total_seconds()
+        offset = max(0.0, sample_offset)
         begin = round(offset * sample_rate)
         placements.append((begin, samples))
-        total_samples = max(total_samples, begin + len(samples))
+        end_samples = begin + len(samples)
+        spans.append(
+            (
+                begin / sample_rate,
+                end_samples / sample_rate if end_samples > 0 else 0.0,
+            )
+        )
+        total_samples = max(total_samples, end_samples)
     if total_samples <= 0:
         raise ValueError("decoded audio contains no samples")
     output = np.zeros(total_samples, dtype=np.float32)
     for begin, samples in placements:
         output[begin : begin + len(samples)] = samples
-    return output, sample_rate
+    return output, sample_rate, spans
 
 
 def waveform_to_numpy(waveform: np.ndarray) -> np.ndarray:

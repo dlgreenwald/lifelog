@@ -70,7 +70,12 @@ def unload_models(models: dict) -> None:
     if torch.cuda.is_available():
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
+        # NOTE: torch.cuda.ipc_collect() is intentionally omitted.
+        # In a single-process context it is unnecessary (IPC handles are
+        # for inter-process GPU sharing) and can corrupt the CUDA context
+        # in a way that makes subsequent whisperx.load_model() calls fail
+        # silently — leaving self._models = {} and causing KeyError: 'asr'
+        # on every subsequent job (confirmed 2026-09-01, job 1880+).
 
 
 from audio import waveform_to_numpy

@@ -16,11 +16,18 @@ class StageUpdate(BaseModel):
     stage: str
 
 
+class UtteranceSpan(BaseModel):
+    utterance_id: int
+    start: float
+    end: float
+
+
 class JobResult(BaseModel):
     segments: list[dict]
     full_transcript: dict
-    speaker_map: dict
     speaker_segments: list[dict] = Field(default_factory=list)
+    speaker_map: dict
+    utterance_spans: list[UtteranceSpan] = Field(default_factory=list)
 
 
 class JobError(BaseModel):
@@ -203,6 +210,14 @@ async def complete_job(job_id: int, body: JobResult):
             "full_transcript": body.full_transcript,
             "speaker_map": body.speaker_map,
             "speaker_segments": body.speaker_segments,
+            "utterance_spans": [
+                {
+                    "utterance_id": span.utterance_id,
+                    "start": span.start,
+                    "end": span.end,
+                }
+                for span in body.utterance_spans
+            ],
         },
     )
     return {"status": "ok"}
