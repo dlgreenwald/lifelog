@@ -18,8 +18,8 @@ RUN python3 -m pip install --upgrade pip && \
         --index-url https://download.pytorch.org/whl/cu128 && \
     python3 -m pip install \
         "fastapi>=0.104.0" "uvicorn[standard]>=0.24.0" "httpx>=0.25.0" \
-        "numpy>=1.24.0" "whisperx>=3.3.0" "transformers>=5.5.0"
-COPY audio.py pipeline.py main.py ./
+        "numpy>=1.24.0" "whisperx>=3.3.0" "transformers>=5.5.0" "pydantic-settings>=2.1.0"
+    COPY audio.py pipeline.py main.py ./
 
 EXPOSE 9000
 CMD ["python3", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9000"]
