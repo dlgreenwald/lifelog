@@ -11,10 +11,7 @@ import time
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-from audio import concatenate_segments
+from audio import concatenate_segments, concatenate_segments_with_spans
 from pipeline import transcribe_audio  # load_models called via model_manager.load()
 
 logger = logging.getLogger("transcription-worker")
@@ -220,12 +217,27 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
     try:
         models = model_manager.load()
         if job_type == "quick":
-            # Use timestamps from payload for proper offset-based concatenation
+            # Quick jobs run ASR+align+diarization over a per-utterance
+            # concatenation; emit combined-stream spans alongside the
+            # segments so the server can map each segment back to the
+            # utterance that produced it without re-deriving offsets
+            # from wall-clock timestamps.
             timestamps = payload.get("timestamps") or [job["window_start"]]
-            audio_np, sample_rate = concatenate_segments(audio_segments, timestamps)
+            utterance_ids = (job.get("result") or {}).get("utterance_ids") or []
+            audio_np, sample_rate, spans = concatenate_segments_with_spans(
+                audio_segments, timestamps
+            )
             complete = transcribe_audio(
                 models, audio_np, sample_rate, language=language
             )
+            complete["utterance_spans"] = [
+                {
+                    "utterance_id": utterance_ids[i],
+                    "start": round(spans[i][0], 6),
+                    "end": round(spans[i][1], 6),
+                }
+                for i in range(min(len(spans), len(utterance_ids)))
+            ]
         else:
             await _post_stage(client, job_id, "concatenating")
             audio_np, sample_rate = concatenate_segments(
@@ -236,6 +248,7 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
             complete = transcribe_audio(
                 models, audio_np, sample_rate, language=language
             )
+            complete["utterance_spans"] = []
             await _post_stage(client, job_id, "done")
         response = await client.post(
             f"{SERVER_URL}/internal/transcription/complete/{job_id}", json=complete

@@ -1121,8 +1121,29 @@ async def get_pending_session_quick_job(session_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+async def get_latest_completed_quick_job(session_id: int) -> dict | None:
+    """Return the most recently completed quick job for the session.
+
+    The completed_at floor and id are returned so the worker can pick up
+    audio that arrived after the last applied window without ever
+    re-transcribing the same audio twice. ``completed_at`` may be None
+    for the legacy single-utterance shape; ``id`` is the tiebreaker.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, completed_at, status, stage
+            FROM transcription_jobs
+            WHERE session_id = $1 AND job_type = 'quick' AND status = 'done'
+            ORDER BY completed_at DESC NULLS LAST, id DESC
+            LIMIT 1
+            """,
+            session_id,
+        )
+        return dict(row) if row else None
+
+
 async def get_session_user_id(session_id: int) -> int | None:
-    """Get the user_id for a session."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT user_id FROM sessions WHERE id = $1",

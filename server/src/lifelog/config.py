@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     encryption_secret: str = ""
     verify_audio_writes: bool = False
     reprocess_chunk_minutes: int = 10
+    quick_window_minutes: int = 5
     transcription_worker_poll_interval: int = 5
 
     class Config:

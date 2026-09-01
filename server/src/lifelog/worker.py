@@ -16,6 +16,7 @@ from lifelog.pipeline.llm import summarize
 logger = logging.getLogger("lifelog.worker")
 POLL_INTERVAL = 60.0
 _ALLOWED_AUDIO_LABELS = lambda name: name not in {"Unknown", ""}
+_MICROSECOND = timedelta(microseconds=1)
 
 
 async def claim_utterance(user_id: int, utterance_id: int) -> bool:
@@ -188,12 +189,30 @@ async def _create_session_quick_jobs() -> None:
                 existing["id"],
             )
             continue
-        # Create one job for all untranscribed utterances in this session
+        # Create one job for untranscribed utterances in this session,
+        # bounded as a rolling window past the last completed quick job
+        # so each batch transcribes only newly-arrived audio — never
+        # repainting the full session history. The window floor is
+        # ``last_completed + 1µs`` when we have one; otherwise we fall
+        # back to ``window_end - quick_window_minutes`` so first-ever
+        # jobs still respect the rolling cap.
         utterance_ids = [u["utterance_id"] for u in untranscribed]
-        window_start = untranscribed[0]["created_at"].replace(tzinfo=None)
         window_end = untranscribed[-1]["created_at"].replace(tzinfo=None)
-        settings = await db.get_user_settings(session["user_id"])
-        language = settings.get("language", "auto")
+        user_settings = await db.get_user_settings(session["user_id"])
+        last_completed = await db.get_latest_completed_quick_job(session["id"])
+        if last_completed and last_completed.get("completed_at"):
+            window_floor = last_completed["completed_at"].replace(
+                tzinfo=None
+            ) + _MICROSECOND
+        else:
+            window_floor = window_end - timedelta(
+                minutes=max(1, settings.quick_window_minutes)
+            )
+        window_start = max(
+            window_floor,
+            untranscribed[0]["created_at"].replace(tzinfo=None),
+        )
+        language = user_settings.get("language", "auto")
         try:
             await db.create_session_quick_job(
                 session["id"],
@@ -259,41 +278,109 @@ async def _apply_quick_transcripts() -> None:
                 logger.warning("No utterances found for quick job %s", job["id"])
                 await db.mark_quick_job_applied(job["id"])
                 continue
-            # Compute offsets: (created_at - first_created_at).total_seconds() for each utterance
-            offsets: dict[int, float] = {}
-            first_ts = utterances[0]["created_at"].replace(tzinfo=None)
-            for utt in utterances:
-                offsets[utt["utterance_id"]] = (
-                    utt["created_at"].replace(tzinfo=None) - first_ts
-                ).total_seconds()
-            # Assign combined segments to utterances based on offset ranges
+            # Build an utterance → combined-stream-seconds span lookup from
+            # the worker's reported ``utterance_spans``. Each entry declares
+            # where the utterance's audio sits in the concatenated waveform
+            # so a WhisperX segment overlaps exactly one span. We fall back
+            # to the wall-clock offsets only for legacy results that
+            # arrived without the spans field.
+            span_by_utt: dict[int, tuple[float, float]] = {}
+            for span in result.get("utterance_spans") or []:
+                utt_id = span.get("utterance_id")
+                if utt_id is None:
+                    continue
+                try:
+                    sp_start = float(span["start"])
+                    sp_end = float(span["end"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                span_by_utt[utt_id] = (sp_start, sp_end)
+            # Per-utterance destination buffer; we always write into this
+            # even when the span map is empty.
             utterance_segments: dict[int, list] = {
                 u["utterance_id"]: [] for u in utterances
             }
             all_segments = result.get("segments", []) or []
-            for seg in all_segments:
-                seg_start = seg.get("start", 0.0)
-                seg_end = seg.get("end", 0.0)
-                text = seg.get("text", "").strip()
-                speaker = seg.get("speaker", "SPEAKER_00")
-                assigned = False
-                for i, utt in enumerate(utterances):
-                    off_start = offsets[utt["utterance_id"]]
-                    if i + 1 < len(utterances):
-                        off_end = offsets[utterances[i + 1]["utterance_id"]]
-                    else:
-                        # Last utterance: cover rest of combined audio
-                        if i > 0:
-                            prev_end = offsets[utterances[i - 1]["utterance_id"]]
-                            off_end = (
-                                off_start + (off_start - prev_end)
-                                if off_start > prev_end
-                                else 2.0
+            if span_by_utt:
+                # Use a midpoint-overlap rule. Spans never overlap, so a
+                # single pass per segment is sufficient; we still pick
+                # the largest-overlap span to be robust against noise in
+                # the diarizer.
+                for seg in all_segments:
+                    seg_start = float(seg.get("start", 0.0) or 0.0)
+                    seg_end = float(seg.get("end", 0.0) or 0.0)
+                    text = (seg.get("text") or "").strip()
+                    speaker = seg.get("speaker", "SPEAKER_00")
+                    midpoint = (seg_start + seg_end) / 2.0
+                    assigned: int | None = None
+                    best_overlap = -1.0
+                    for utt_id, (sp_start, sp_end) in span_by_utt.items():
+                        if sp_start <= midpoint < sp_end:
+                            overlap = min(seg_end, sp_end) - max(
+                                seg_start, sp_start
                             )
+                            if overlap > best_overlap:
+                                best_overlap = overlap
+                                assigned = utt_id
+                    if assigned is None:
+                        # Span map gaps during diarizer drift — drop seg.
+                        continue
+                    utt_start, _ = span_by_utt[assigned]
+                    utterance_segments[assigned].append(
+                        {
+                            "start": max(0.0, seg_start - utt_start),
+                            "end": max(seg_start - utt_start, seg_end - utt_start),
+                            "text": text,
+                            "speaker": speaker,
+                        }
+                    )
+            else:
+                # Legacy wall-clock partition: assign each segment to the
+                # utterance whose [off_start, off_end) bracket still
+                # contains seg_start. Drift from clock skew lands in the
+                # nearest neighbour.
+                offsets: dict[int, float] = {}
+                first_ts = utterances[0]["created_at"].replace(tzinfo=None)
+                for utt in utterances:
+                    offsets[utt["utterance_id"]] = (
+                        utt["created_at"].replace(tzinfo=None) - first_ts
+                    ).total_seconds()
+                for seg in all_segments:
+                    seg_start = seg.get("start", 0.0)
+                    seg_end = seg.get("end", 0.0)
+                    text = seg.get("text", "").strip()
+                    speaker = seg.get("speaker", "SPEAKER_00")
+                    assigned = False
+                    for i, utt in enumerate(utterances):
+                        off_start = offsets[utt["utterance_id"]]
+                        if i + 1 < len(utterances):
+                            off_end = offsets[utterances[i + 1]["utterance_id"]]
                         else:
-                            off_end = off_start + 2.0
-                    if off_start <= seg_start < off_end:
-                        utterance_segments[utt["utterance_id"]].append(
+                            # Last utterance: cover rest of combined audio
+                            if i > 0:
+                                prev_end = offsets[utterances[i - 1]["utterance_id"]]
+                                off_end = (
+                                    off_start + (off_start - prev_end)
+                                    if off_start > prev_end
+                                    else 2.0
+                                )
+                            else:
+                                off_end = off_start + 2.0
+                        if off_start <= seg_start < off_end:
+                            utterance_segments[utt["utterance_id"]].append(
+                                {
+                                    "start": seg_start - off_start,
+                                    "end": seg_end - off_start,
+                                    "text": text,
+                                    "speaker": speaker,
+                                }
+                            )
+                            assigned = True
+                            break
+                    if not assigned and utterances:
+                        last = utterances[-1]
+                        off_start = offsets[last["utterance_id"]]
+                        utterance_segments[last["utterance_id"]].append(
                             {
                                 "start": seg_start - off_start,
                                 "end": seg_end - off_start,
@@ -301,19 +388,6 @@ async def _apply_quick_transcripts() -> None:
                                 "speaker": speaker,
                             }
                         )
-                        assigned = True
-                        break
-                if not assigned and utterances:
-                    last = utterances[-1]
-                    off_start = offsets[last["utterance_id"]]
-                    utterance_segments[last["utterance_id"]].append(
-                        {
-                            "start": seg_start - off_start,
-                            "end": seg_end - off_start,
-                            "text": text,
-                            "speaker": speaker,
-                        }
-                    )
             for utt in utterances:
                 await db.update_session_utterance_transcript(
                     session_id,
