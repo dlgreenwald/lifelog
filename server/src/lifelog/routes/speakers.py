@@ -18,6 +18,18 @@ from lifelog.pipeline.speaker_client import identify_speakers, serialize_embeddi
 
 logger = structlog.get_logger()
 
+
+def _sanitize(value: str) -> str:
+    """Strip log-format meta-chars from user-controlled strings to prevent injection."""
+    return (
+        value.replace("%", "%%")
+        .replace("$", "$$")
+        .replace("{", "{{")
+        .replace("}", "}}")
+        .replace("\n", "\\n")
+    )
+
+
 router = APIRouter()
 
 
@@ -58,7 +70,7 @@ async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_
         "labeling_speaker",
         recording_id=label.recording_id,
         speaker_id=label.speaker_id,
-        label=label.label,
+        label=_sanitize(label.label),
     )
 
     recording = await get_recording(user["id"], label.recording_id)
@@ -79,7 +91,9 @@ async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_
     )
     segment_audio = extract_speaker_audio(recording_for_audio, label.speaker_id)
     logger.info(
-        "enrolling_voiceprint", label=label.label, audio_bytes=len(segment_audio)
+        "enrolling_voiceprint",
+        label=_sanitize(label.label),
+        audio_bytes=len(segment_audio),
     )
 
     async with httpx.AsyncClient(timeout=300) as client:
@@ -92,7 +106,7 @@ async def label_speaker(label: SpeakerLabel, user: dict = Depends(validate_oidc_
         embedding = response.json()["embedding"]
 
     await save_voiceprint(user["id"], label.label, serialize_embedding(embedding))
-    logger.info("voiceprint_saved", label=label.label)
+    logger.info("voiceprint_saved", label=_sanitize(label.label))
 
     return {"status": "labeled", "label": label.label}
 
@@ -136,7 +150,9 @@ async def rerun_identification(user: dict):
                         )
                     except Exception:
                         logger.warning(
-                            "reidentify_segment_failed", raw=raw, exc_info=True
+                            "reidentify_segment_failed",
+                            raw=_sanitize(raw),
+                            exc_info=True,
                         )
                 updated_segments.append(item)
             await update_recording_speaker_data(

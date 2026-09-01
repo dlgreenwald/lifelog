@@ -19,6 +19,16 @@ _ALLOWED_AUDIO_LABELS = lambda name: name not in {"Unknown", ""}
 _MICROSECOND = timedelta(microseconds=1)
 
 
+def _sanitize(value: str) -> str:
+    """Strip format-string meta-chars from user-controlled strings to prevent log-injection."""
+    return (
+        value.replace("%", "%%")
+        .replace("$", "$$")
+        .replace("{", "{{")
+        .replace("}", "}}")
+        .replace("\n", "\\n")
+    )
+
 async def claim_utterance(user_id: int, utterance_id: int) -> bool:
     """Try to claim an utterance for processing. Returns True if claimed."""
     async with db.pool.acquire() as conn:

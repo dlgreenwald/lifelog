@@ -41,6 +41,17 @@ from lifelog.validation import validate_llm_context
 logger = structlog.get_logger()
 
 
+def _sanitize(value: str) -> str:
+    """Strip log-format meta-chars from user-controlled strings to prevent injection."""
+    return (
+        value.replace("%", "%%")
+        .replace("$", "$$")
+        .replace("{", "{{")
+        .replace("}", "}}")
+        .replace("\n", "\\n")
+    )
+
+
 def _normalize_recording(rec: dict) -> dict:
     """Ensure summary is a string — LLM may return {"summary": "..."} instead of "..."."""
     summary = rec.get("summary")
@@ -99,10 +110,17 @@ async def get_day_recordings(
     Optional query param: category (personal, work, not_meaningful).
     """
     logger.debug(
-        "day_recordings_request", user_id=user["id"], date=date, category=category
+        "day_recordings_request",
+        user_id=user["id"],
+        date=_sanitize(date) if date else None,
+        category=_sanitize(category) if category else None,
     )
     recordings = await get_recordings_by_date(user["id"], date, category=category)
-    logger.debug("recordings_found", count=len(recordings), date=date)
+    logger.debug(
+        "recordings_found",
+        count=len(recordings),
+        date=_sanitize(date) if date else None,
+    )
     return {"recordings": [_normalize_recording(r) for r in recordings]}
 
 
