@@ -29,6 +29,7 @@ def _sanitize(value: str) -> str:
         .replace("\n", "\\n")
     )
 
+
 async def claim_utterance(user_id: int, utterance_id: int) -> bool:
     """Try to claim an utterance for processing. Returns True if claimed."""
     async with db.pool.acquire() as conn:
