@@ -66,7 +66,9 @@ async def test_window_floor_is_last_completed_plus_one_microsecond():
         patch.object(
             lm_worker.db,
             "get_latest_completed_quick_job",
-            new=AsyncMock(return_value={"id": 1854, "completed_at": last_completed_at}),
+            new=AsyncMock(
+                return_value={"id": 1854, "completed_at": last_completed_at}
+            ),
         ),
         patch.object(
             lm_worker.db,
