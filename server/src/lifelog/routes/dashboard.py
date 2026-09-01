@@ -210,7 +210,7 @@ async def get_speaker_audio(
                     )
                 )
             except Exception:
-                logger.warning("skipping_unavailable_speaker_file", filename=filename)
+                logger.warning("skipping_unavailable_speaker_file", filename=filename, exc_info=True)
         audio = _concatenate_wav(audio_files) if audio_files else b""
         if not audio:
             raise HTTPException(status_code=404, detail="Speaker audio not found")

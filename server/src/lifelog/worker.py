@@ -524,7 +524,7 @@ def _persist_partition_segments(
                     bytes(user["key_salt"]),
                 )
             except Exception:
-                logger.warning("skipping_invalid_speaker_segment_audio")
+                logger.warning("skipping_invalid_speaker_segment_audio", exc_info=True)
                 continue
         else:
             audio_filename = ""
@@ -601,7 +601,7 @@ async def _auto_enroll_speakers(user: dict, speaker_segments: list[dict]) -> Non
                 filename, user["encryption_secret"], bytes(user["key_salt"])
             )
         except Exception:
-            logger.warning("skipping_corrupt_audio_for_speaker", label=label)
+            logger.warning("skipping_corrupt_audio_for_speaker", label=label, exc_info=True)
             continue
         grouped.setdefault(label, []).append(audio)
 
@@ -655,7 +655,7 @@ async def _enroll_session_speakers(
                 all_speakers[label] = audio
             except Exception:
                 logger.warning(
-                    "skipping_corrupt_audio_for_partition_speaker", label=label
+                    "skipping_corrupt_audio_for_partition_speaker", label=label, exc_info=True
                 )
 
     for label, opus_audio in all_speakers.items():
@@ -741,7 +741,7 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
                 if identified and identified[0].get("name") not in {None, "Unknown"}:
                     labels[raw] = identified[0]["name"]
             except Exception:
-                logger.warning("reidentify_segment_failed", raw=raw)
+                logger.warning("reidentify_segment_failed", raw=raw, exc_info=True)
         item["speaker"] = labels.get(raw, raw)
         updated.append(item)
     speakers = [

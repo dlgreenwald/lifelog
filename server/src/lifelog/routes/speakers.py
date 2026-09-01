@@ -38,6 +38,7 @@ def extract_speaker_audio(recording: dict, speaker_id: str) -> bytes:
             logger.warning(
                 "skipping_unavailable_speaker_segment",
                 filename=segment.get("audio_filename"),
+                exc_info=True,
             )
     if recording.get("speaker_segments"):
         raise ValueError("speaker has no stored audio")
@@ -134,7 +135,7 @@ async def rerun_identification(user: dict):
                             identified[0].get("name", raw) if identified else raw
                         )
                     except Exception:
-                        logger.warning("reidentify_segment_failed", raw=raw)
+                        logger.warning("reidentify_segment_failed", raw=raw, exc_info=True)
                 updated_segments.append(item)
             await update_recording_speaker_data(
                 recording["id"],
