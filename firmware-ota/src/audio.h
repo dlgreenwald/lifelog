@@ -14,7 +14,11 @@ extern RingbufHandle_t audioRingBuf;
 // Public state
 extern volatile bool recording;
 extern volatile bool vadMode;
-// SD card mutex — guards all SD SPI access
+
+// Audio pipeline activity (set by VAD handler in i2s_fe.cpp, read by ledLoop())
+enum AudioActivity { AUDIO_IDLE = 0, AUDIO_LISTEN = 1, AUDIO_RECORD = 2 };
+extern volatile AudioActivity audioActivity;
+extern unsigned long listenStartMs;
 extern SemaphoreHandle_t sdMutex;
 void sdTake();
 void sdGive();

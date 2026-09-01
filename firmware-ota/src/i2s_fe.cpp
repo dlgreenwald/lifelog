@@ -191,6 +191,8 @@ static void processAfeResult(afe_fetch_result_t *result) {
 
     if (isVoice) {
         if (!wasVoice) {
+            listenStartMs = millis();
+            audioActivity = AUDIO_LISTEN;
             recording = true;
             utteranceId++;
             chunkIndex = 0;
@@ -243,6 +245,7 @@ static void processAfeResult(afe_fetch_result_t *result) {
         // Wake writer to drain ring
         if (writerTaskHandle) xTaskNotifyGive(writerTaskHandle);
     } else if (wasVoice) {
+        audioActivity = AUDIO_IDLE;
         recording = false;
         isFinal = true;
         flushBuffer();

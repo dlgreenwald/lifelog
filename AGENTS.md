@@ -106,7 +106,7 @@ lifelog/
 ├── firmware-ota/          ESP32-S3 OTA firmware (C++/Arduino)
 │   ├── src/               main.cpp, audio.cpp, i2s_fe.cpp, writer.cpp, upload.cpp, oauth2_client.cpp + headers (audio.h, i2s_fe.h, writer.h, upload.h, oauth2_client.h, settings.h, config.h, afe_stubs.h)
 │   ├── lib/               lifelog_core, oauth2_device_flow, taskman
-│   └── test/              Unity native tests (69 tests)
+│   └── test/              Unity native tests (78 tests)
 ├── e2e/                   End-to-end test suite (Piper TTS → upload → verify)
 ├── scripts/               generate-certs.sh (TLS cert generation)
 ├── docker-compose.yml     Orchestrates all services
@@ -164,7 +164,7 @@ npm run build        # Production build
 ```bash
 cd firmware-ota
 pio run                              # Build only
-pio test -e test                     # Run native tests (69 tests)
+pio test -e test                     # Run native tests (78 tests)
 pio device monitor                   # Serial monitor (115200 baud)
 
 # OTA update (HTTP, not ArduinoOTA):
@@ -203,7 +203,7 @@ cd transcription-worker && python -m pytest -q           # 25 tests
 cd dashboard && npx vitest run                            # 91 tests
 
 # Firmware-OTA
-cd firmware-ota && pio test -e test                       # 69 tests
+cd firmware-ota && pio test -e test                       # 78 tests
 ```
 
 ## Code Conventions & Common Patterns
@@ -407,7 +407,7 @@ The repo-root [`.ignoreVuln`](.ignoreVuln) is the **single source of truth** for
 - Adding an entry is a deliberate acceptance of risk; deleting one is a normal dependency-update step (delete the line, run the service `build.sh` to confirm the gate stays green, and pin the patched release floor in `pyproject.toml` if needed).
 - Currently: `PYSEC-2026-3624` (lightning, transitive via pyannote.audio) — upstream fix committed (`d710d68`, 2026-07-14) but no PyPI release yet. Drop the entry when `lightning>=2.6.6` is available and pyannote.audio resolves to it.
 
-For C++/TypeScript/Python alternatives: the **dashboard** build runs `npm ci` → `npm run test` (Vitest 91 tests) → `npx tsc --noEmit` (strict type-check) → bundle size check (340K cap). **firmware-ota** runs `pio test -e test` (69 Unity native tests).
+For C++/TypeScript/Python alternatives: the **dashboard** build runs `npm ci` → `npm run test` (Vitest 91 tests) → `npx tsc --noEmit` (strict type-check) → bundle size check (340K cap). **firmware-ota** runs `pio test -e test` (78 Unity native tests).
 
 ### Failing the build
 
@@ -441,7 +441,7 @@ Total: **~345 tests** across 6 components (134 server + 8 diarization + 16 speak
 | Dashboard components | 7 components | `vi.mock` API client, `render` + `screen` queries |
 | API client | 8 methods | `vi.stubGlobal('fetch')` with mock responses |
 | ML pipeline | 3 functions | `sys.modules` mocking for pyannote/torch/speechbrain |
-| Firmware-OTA | 69 tests | Native Unity tests with full ESP32/FreeRTOS mock layer |
+| Firmware-OTA | 78 tests | Native Unity tests with full ESP32/FreeRTOS mock layer |
 
 ### Key testing patterns
 

@@ -33,14 +33,30 @@ inline void delay(uint32_t ms) { mock_millis_value += ms; }
 #define pdMS_TO_TICKS(x) ((x))
 #define portMAX_DELAY 0xFFFFFFFF
 #define pdTRUE 1
-#define pdFALSE 0
-
 inline void vTaskDelay(TickType_t ticks) { mock_millis_value += ticks; }
 inline BaseType_t xTaskNotifyTake(BaseType_t clear, TickType_t timeout) { return pdTRUE; }
 inline void xTaskNotifyGive(TaskHandle_t handle) {}
 
-// ── I2S stubs ──────────────────────────────────────────────────────
-
+// ── GPIO / LED stubs (native test) ────────────────────────────────
+// LED_PIN comes from config.h via led.cpp's include chain — do not redefine.
+#define HIGH 1
+#define LOW 0
+extern int mock_digital_write_pin;
+extern int mock_digital_write_val;
+extern std::vector<std::pair<int,int>> mock_digital_write_calls;
+int mock_digital_write_pin = -1;
+int mock_digital_write_val = -1;
+std::vector<std::pair<int,int>> mock_digital_write_calls;
+inline void digitalWrite(int pin, int val) {
+    mock_digital_write_pin = pin;
+    mock_digital_write_val = val;
+    mock_digital_write_calls.push_back({pin, val});
+}
+// ── Recursive mutex stubs (LED preemption) ────────────────────────
+extern "C" {
+inline BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t, TickType_t) { return pdTRUE; }
+inline BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t) { return pdTRUE; }
+}
 #define I2S_NUM_0 0
 #define I2S_MODE_MASTER 1
 #define I2S_MODE_RX 2
