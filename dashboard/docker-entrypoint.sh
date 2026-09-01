@@ -13,10 +13,16 @@ else
 fi
 export OIDC_CSP_CONNECT_SRC
 
+# Defaults: Docker embedded DNS; 30s TTL balances freshness vs resolver load.
+: "${NGINX_RESOLVER_IP:=127.0.0.11}"
+: "${NGINX_RESOLVER_TTL:=30s}"
+export NGINX_RESOLVER_IP NGINX_RESOLVER_TTL
+
 # Inject env vars into nginx config
-envsubst '${OIDC_CSP_CONNECT_SRC}' \
-  < /etc/nginx/conf.d/default.conf \
-  > /etc/nginx/conf.d/default.conf.tmp
-mv /etc/nginx/conf.d/default.conf.tmp /etc/nginx/conf.d/default.conf
+envsubst \
+  '${OIDC_CSP_CONNECT_SRC} ${NGINX_RESOLVER_IP} ${NGINX_RESOLVER_TTL}' \
+   < /etc/nginx/conf.d/default.conf \
+   > /etc/nginx/conf.d/default.conf.tmp
+ mv /etc/nginx/conf.d/default.conf.tmp /etc/nginx/conf.d/default.conf
 
 exec "$@"

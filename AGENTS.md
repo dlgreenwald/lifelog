@@ -25,6 +25,7 @@
 **PR requirements:**
 - Every PR targets `main`
 - PR title must use [Conventional Commits](https://www.conventionalcommits.org/) format: `feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:` — this becomes the squash commit message
+- **PR body must reference the closing issue** with one of: `Fixes #N` (closing PR), `Closes #N` (closing PR), or `Part of #N` (sub-PR of a parent issue). Listing only `Refs #N` is informational and does NOT auto-close the issue — match the keyword to the desired post-merge behaviour. Squash-merge only sees the body keywords; manual close of the issue is the workaround when the keyword is missed (do not rely on it as a habit).
 - All CI checks must pass before merge
 - Squash merge (no merge commits, no rebase merges)
 - Delete branch after merge
