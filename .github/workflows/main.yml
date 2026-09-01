@@ -1,14 +1,12 @@
-# Satisfies GitHub Advanced Security's reference to main.yml:security.
-# The real analysis is in codeql.yml.  This job uses workflow_run so it
-# fires AFTER codeql.yml on the same PR commit, avoiding duplicate runs.
-# It uploads with the same category so GitHub deduplicates the results.
+# GitHub Advanced Security requires main.yml to have a "security" job.
+# The actual CodeQL analysis runs here directly to satisfy the config lookup.
 
 name: Main
 
 on:
-  workflow_run:
-    workflows: [CodeQL]
-    types: [completed]
+  push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 permissions:
@@ -17,12 +15,9 @@ permissions:
 
 jobs:
   security:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -33,4 +28,4 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
-          category: "/language:替"
+          category: "/language:main"
