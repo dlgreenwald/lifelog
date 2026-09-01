@@ -11,6 +11,9 @@ import time
 from contextlib import asynccontextmanager
 
 import httpx
+from fastapi import FastAPI
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 from audio import concatenate_segments, concatenate_segments_with_spans
 from pipeline import transcribe_audio  # load_models called via model_manager.load()
 

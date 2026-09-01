@@ -3,8 +3,12 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from audio import concatenate_segments, decode_audio, waveform_to_numpy
-from audio import concatenate_segments_with_spans
+from audio import (
+    concatenate_segments,
+    concatenate_segments_with_spans,
+    decode_audio,
+    waveform_to_numpy,
+)
 
 
 def test_decode_rejects_empty_audio():
