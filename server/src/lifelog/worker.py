@@ -164,16 +164,15 @@ async def process_utterance(user_id: int, utterance_id: int):
 
 
 async def _create_session_quick_jobs() -> None:
-    """Create one quick job per active session covering all untranscribed utterances.
+    """Create one quick job per active session, batching utterances for ``quick_window_minutes``.
 
-    Groups all utterances without transcripts from each active session into a
-    single sliding-window quick job, so the transcription worker can batch
-    them together for better ASR quality (longer audio = better WhisperX output).
+    Waits at least ``quick_window_minutes`` after the last completed job before
+    creating the next one, so the transcription worker gets adequate audio context
+    for quality ASR output. When the window expires, processes every utterance
+    from the last completion boundary through the newest utterance.
     """
     sessions = await db.get_active_sessions_with_utterances()
     for session in sessions:
-        # Find utterances in this session that have no transcript yet
-        # (transcript is NULL or segments array is empty)
         utterances = await db.get_session_all_utterances(session["id"])
         untranscribed = [
             u
@@ -184,7 +183,7 @@ async def _create_session_quick_jobs() -> None:
         ]
         if not untranscribed:
             continue
-        # Check if there's already a pending quick job for this session
+
         existing = await db.get_pending_session_quick_job(session["id"])
         if existing:
             logger.debug(
@@ -193,29 +192,37 @@ async def _create_session_quick_jobs() -> None:
                 job_id=existing["id"],
             )
             continue
-        # Create one job for untranscribed utterances in this session,
-        # bounded as a rolling window past the last completed quick job
-        # so each batch transcribes only newly-arrived audio — never
-        # repainting the full session history. The window floor is
-        # ``last_completed + 1µs`` when we have one; otherwise we fall
-        # back to ``window_end - quick_window_minutes`` so first-ever
-        # jobs still respect the rolling cap.
-        utterance_ids = [u["utterance_id"] for u in untranscribed]
-        window_end = untranscribed[-1]["created_at"].replace(tzinfo=None)
+
         user_settings = await db.get_user_settings(session["user_id"])
         last_completed = await db.get_latest_completed_quick_job(session["id"])
+
         if last_completed and last_completed.get("completed_at"):
-            window_floor = (
-                last_completed["completed_at"].replace(tzinfo=None) + _MICROSECOND
-            )
+            window_floor = last_completed["completed_at"].replace(tzinfo=None)
+            elapsed = (
+                datetime.now(UTC).replace(tzinfo=None) - window_floor
+            ).total_seconds()
+            if elapsed < settings.quick_window_minutes * 60:
+                logger.debug(
+                    "session_quick_job_too_soon",
+                    session_id=session["id"],
+                    elapsed_seconds=round(elapsed, 1),
+                    window_minutes=settings.quick_window_minutes,
+                )
+                continue
         else:
-            window_floor = window_end - timedelta(
-                minutes=max(1, settings.quick_window_minutes)
-            )
-        window_start = max(
-            window_floor,
-            untranscribed[0]["created_at"].replace(tzinfo=None),
-        )
+            # No prior job: process immediately — nothing to batch with yet
+            window_floor = untranscribed[0]["created_at"].replace(tzinfo=None)
+
+        batched = [
+            u for u in untranscribed
+            if u["created_at"].replace(tzinfo=None) >= window_floor
+        ]
+        if not batched:
+            continue
+
+        utterance_ids = [u["utterance_id"] for u in batched]
+        window_start = window_floor
+        window_end = batched[-1]["created_at"].replace(tzinfo=None)
         language = user_settings.get("language", "auto")
         try:
             await db.create_session_quick_job(
@@ -231,10 +238,10 @@ async def _create_session_quick_jobs() -> None:
                 utterance_count=len(utterance_ids),
                 window_start=window_start.isoformat(),
                 window_end=window_end.isoformat(),
+                elapsed_seconds=round(elapsed, 1),
             )
         except Exception:
             logger.exception("session_quick_job_error", session_id=session["id"])
-
 
 async def _apply_quick_transcripts() -> None:
     """Apply completed quick jobs: map combined diarized segments back to individual utterances."""
@@ -777,9 +784,15 @@ async def _finalize_completed_sessions() -> None:
             transcript_segments = []
             speaker_segments = []
             speaker_map = {}
+            seen_windows: set[tuple] = set()
             for job in sorted(
                 full_jobs, key=lambda item: (item.get("chunk_index") or 0, item["id"])
             ):
+                # Skip duplicate windows (same start/end from reprocess rescheduling)
+                window = (job["window_start"], job["window_end"])
+                if window in seen_windows:
+                    continue
+                seen_windows.add(window)
                 result = job.get("result") or {}
                 if isinstance(result, str):
                     import json
@@ -1095,7 +1108,7 @@ async def _daily_reprocess_user(user_id: int, target_date=None, llm_context: str
     for session in sessions:
         utterances = await db.get_session_all_utterances(session["id"])
         for utt in utterances:
-            transcript = utt.get("transcript", {})
+            transcript = utt.get("transcript") or {}
             if isinstance(transcript, str):
                 import json
 

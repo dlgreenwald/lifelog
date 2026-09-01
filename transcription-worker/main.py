@@ -162,8 +162,12 @@ class ModelManager:
             if not self._models:
                 from pipeline import load_models as _load
 
-                self._models = _load()
-                logger.info("WhisperX models loaded")
+                try:
+                    self._models = _load()
+                    logger.info("WhisperX models loaded")
+                except Exception:
+                    self._models = {}
+                    raise
             return self._models
 
     def get_models(self) -> dict:

@@ -1,6 +1,6 @@
 """Unit tests for the quick-job windowing + the apply-loop span partitioning."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,8 +35,8 @@ def _make_pool(return_value=None):
 
 @pytest.mark.asyncio
 async def test_window_floor_is_last_completed_plus_one_microsecond():
-    """A fresh quick job's window_start should sit 1µs past the most recent
-    completed quick job — never re-running WhisperX over already-applied audio.
+    """A fresh quick job only includes utterances newer than the last completed job
+    and only after the 5-minute batching window has elapsed.
     """
     untranscribed = [
         _utt(1, datetime(2026, 9, 1, 13, 19, 8, tzinfo=UTC)),
@@ -44,9 +44,7 @@ async def test_window_floor_is_last_completed_plus_one_microsecond():
         _utt(3, datetime(2026, 9, 1, 15, 40, 0, tzinfo=UTC)),
     ]
     last_completed_at = datetime(2026, 9, 1, 15, 39, 30, 150_000, tzinfo=UTC)
-    expected_floor = (last_completed_at + timedelta(microseconds=1)).replace(
-        tzinfo=None
-    )
+    expected_floor = last_completed_at.replace(tzinfo=None)
 
     mock_create = AsyncMock(return_value=9999)
     with (
@@ -68,7 +66,9 @@ async def test_window_floor_is_last_completed_plus_one_microsecond():
         patch.object(
             lm_worker.db,
             "get_latest_completed_quick_job",
-            new=AsyncMock(return_value={"id": 1854, "completed_at": last_completed_at}),
+            new=AsyncMock(
+                return_value={"id": 1854, "completed_at": last_completed_at}
+            ),
         ),
         patch.object(
             lm_worker.db,
@@ -76,22 +76,27 @@ async def test_window_floor_is_last_completed_plus_one_microsecond():
             new=AsyncMock(return_value={"language": "auto"}),
         ),
         patch.object(lm_worker.db, "create_session_quick_job", new=mock_create),
+        patch("lifelog.worker.datetime") as mock_datetime,
     ):
+        mock_datetime.now.return_value = datetime(
+            2026, 9, 1, 15, 45, 0, tzinfo=UTC
+        )
         await lm_worker._create_session_quick_jobs()
 
     args = mock_create.await_args.args
     # signature: (session_id, utterance_ids, window_start, window_end, language)
-    assert args[1] == [1, 2, 3], f"utterance_ids={args[1]!r}"
+    # Only utterances newer than last_completed_at are included
+    assert args[1] == [3], f"utterance_ids={args[1]!r}"
     assert args[2] == expected_floor, (
         f"window_start={args[2]!r} expected={expected_floor!r}"
     )
-    assert args[2] > last_completed_at.replace(tzinfo=None)
-
-
+    assert args[3] == datetime(2026, 9, 1, 15, 40, 0, tzinfo=UTC).replace(
+        tzinfo=None
+    )
 @pytest.mark.asyncio
-async def test_window_floor_defaults_to_5_minutes_when_no_completed_history():
-    """With no prior completed quick jobs, window_start is at most 5 minutes
-    before window_end — never painting back over the entire session history.
+async def test_first_job_processes_all_untranscribed_when_no_prior_history():
+    """With no prior completed quick jobs, the first job processes every
+    untranscribed utterance immediately (no 5-minute wait — nothing to batch).
     """
     last_utt_ts = datetime(2026, 9, 1, 15, 45, 0, tzinfo=UTC)
     untranscribed = [
@@ -99,12 +104,9 @@ async def test_window_floor_defaults_to_5_minutes_when_no_completed_history():
         _utt(50, datetime(2026, 9, 1, 14, 50, 0, tzinfo=UTC)),
         _utt(99, last_utt_ts),
     ]
-    expected_floor = last_utt_ts.replace(tzinfo=None) - timedelta(minutes=5)
-    first_ts = untranscribed[0]["created_at"].replace(tzinfo=None)
-    expected_window_start = max(expected_floor, first_ts)
+    expected_window_start = untranscribed[0]["created_at"].replace(tzinfo=None)
 
     mock_create = AsyncMock(return_value=9999)
-    # Stub pool so the real get_user_settings can run and return {"language": "auto"}
     fake_pool = _make_pool(return_value={"language": "auto"})
     with (
         patch.object(
@@ -140,6 +142,7 @@ async def test_window_floor_defaults_to_5_minutes_when_no_completed_history():
             lm_db.pool = original_pool
 
     args = mock_create.await_args.args
+    assert args[1] == [1, 50, 99], f"utterance_ids={args[1]!r}"
     assert args[2] == expected_window_start, (
         f"window_start={args[2]!r} expected={expected_window_start!r}"
     )
