@@ -66,9 +66,7 @@ async def test_window_floor_is_last_completed_plus_one_microsecond():
         patch.object(
             lm_worker.db,
             "get_latest_completed_quick_job",
-            new=AsyncMock(
-                return_value={"id": 1854, "completed_at": last_completed_at}
-            ),
+            new=AsyncMock(return_value={"id": 1854, "completed_at": last_completed_at}),
         ),
         patch.object(
             lm_worker.db,
@@ -78,9 +76,7 @@ async def test_window_floor_is_last_completed_plus_one_microsecond():
         patch.object(lm_worker.db, "create_session_quick_job", new=mock_create),
         patch("lifelog.worker.datetime") as mock_datetime,
     ):
-        mock_datetime.now.return_value = datetime(
-            2026, 9, 1, 15, 45, 0, tzinfo=UTC
-        )
+        mock_datetime.now.return_value = datetime(2026, 9, 1, 15, 45, 0, tzinfo=UTC)
         await lm_worker._create_session_quick_jobs()
 
     args = mock_create.await_args.args
@@ -90,9 +86,9 @@ async def test_window_floor_is_last_completed_plus_one_microsecond():
     assert args[2] == expected_floor, (
         f"window_start={args[2]!r} expected={expected_floor!r}"
     )
-    assert args[3] == datetime(2026, 9, 1, 15, 40, 0, tzinfo=UTC).replace(
-        tzinfo=None
-    )
+    assert args[3] == datetime(2026, 9, 1, 15, 40, 0, tzinfo=UTC).replace(tzinfo=None)
+
+
 @pytest.mark.asyncio
 async def test_first_job_processes_all_untranscribed_when_no_prior_history():
     """With no prior completed quick jobs, the first job processes every

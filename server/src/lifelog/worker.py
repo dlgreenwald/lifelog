@@ -214,7 +214,8 @@ async def _create_session_quick_jobs() -> None:
             window_floor = untranscribed[0]["created_at"].replace(tzinfo=None)
 
         batched = [
-            u for u in untranscribed
+            u
+            for u in untranscribed
             if u["created_at"].replace(tzinfo=None) >= window_floor
         ]
         if not batched:
@@ -242,6 +243,7 @@ async def _create_session_quick_jobs() -> None:
             )
         except Exception:
             logger.exception("session_quick_job_error", session_id=session["id"])
+
 
 async def _apply_quick_transcripts() -> None:
     """Apply completed quick jobs: map combined diarized segments back to individual utterances."""
