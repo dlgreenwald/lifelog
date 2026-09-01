@@ -31,6 +31,11 @@ logger = logging.getLogger("dummy-server")
 app = FastAPI(title="LifeLog Dummy Server")
 
 
+def _safe_path(value: str) -> str:
+    """Escape log injection chars from user-supplied strings."""
+    return value.replace("%", "%%").replace("\n", "\\0") if isinstance(value, str) else value
+
+
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         start = time.monotonic()
@@ -39,18 +44,21 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             elapsed_ms = (time.monotonic() - start) * 1000
             logger.error(
-                "EXCEPTION: %s %s → 500 after %.1fms: %s",
-                request.method, request.url.path, elapsed_ms, e,
+                "request_exception",
+                method=request.method,
+                path=_safe_path(request.url.path),
+                elapsed_ms=elapsed_ms,
+                error=str(e),
                 exc_info=True,
             )
-            return JSONResponse(status_code=500, content={"detail": str(e)})
+            return JSONResponse(status_code=500, content={"detail": "Internal server error"})
         elapsed_ms = (time.monotonic() - start) * 1000
         logger.info(
-            "%s %s → %d (%.1fms)",
-            request.method,
-            request.url.path,
-            response.status_code,
-            elapsed_ms,
+            "request_complete",
+            method=request.method,
+            path=_safe_path(request.url.path),
+            status=response.status_code,
+            elapsed_ms=elapsed_ms,
         )
         return response
 
@@ -61,8 +69,10 @@ app.add_middleware(RequestLoggingMiddleware)
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
     logger.warning(
-        "VALIDATION ERROR: %s %s → 422: %s",
-        request.method, request.url.path, exc.errors(),
+        "validation_error",
+        method=request.method,
+        path=_safe_path(request.url.path),
+        errors=exc.errors(),
     )
     return JSONResponse(
         status_code=422,
@@ -73,8 +83,11 @@ async def validation_exception_handler(request, exc):
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
     logger.warning(
-        "HTTP ERROR: %s %s → %d: %s",
-        request.method, request.url.path, exc.status_code, exc.detail,
+        "http_error",
+        method=request.method,
+        path=_safe_path(request.url.path),
+        status_code=exc.status_code,
+        detail=exc.detail,
     )
     return JSONResponse(
         status_code=exc.status_code,
@@ -85,12 +98,15 @@ async def http_exception_handler(request, exc):
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     logger.error(
-        "UNHANDLED: %s %s → 500: %s\n%s",
-        request.method, request.url.path, exc, traceback.format_exc(),
+        "unhandled_exception",
+        method=request.method,
+        path=_safe_path(request.url.path),
+        error=str(exc),
+        traceback=traceback.format_exc(),
     )
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)},
+        content={"detail": "Internal server error"},
     )
 
 
@@ -111,40 +127,62 @@ async def upload_audio(
     filename = file.filename or f"chunk_{chunk_index}.opus"
 
     logger.info(
-        "UPLOAD START: utt=%d chunk=%d final=%s file=%s key=%s content_type=%s",
-        utterance_id, chunk_index, is_final, filename, x_api_key[:8] + "...",
-        file.content_type,
+        "upload_start",
+        utterance_id=utterance_id,
+        chunk_index=chunk_index,
+        is_final=is_final,
+        filename=_safe_path(filename),
+        content_type=file.content_type,
     )
 
     try:
         audio_bytes = await file.read()
     except Exception as e:
-        logger.error("Failed to read upload body: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Read failed: {e}")
+        logger.error("upload_read_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail="Read failed")
 
     logger.info(
-        "UPLOAD READ: utt=%d chunk=%d %d bytes",
-        utterance_id, chunk_index, len(audio_bytes),
+        "upload_read",
+        utterance_id=utterance_id,
+        chunk_index=chunk_index,
+        byte_count=len(audio_bytes),
     )
 
     if SAVE_FILES:
         utt_dir = os.path.join(UPLOAD_DIR, f"user{user['id']}_utt{utterance_id}")
+        # Guard: resolve path and verify it stays within UPLOAD_DIR
+        real_utt_dir = os.path.realpath(utt_dir)
+        if not real_utt_dir.startswith(os.path.realpath(UPLOAD_DIR) + os.sep):
+            raise ValueError("path escape attempt")
+        utt_dir = real_utt_dir  # Use resolved path for all operations
         try:
             os.makedirs(utt_dir, exist_ok=True)
             basename = os.path.basename(filename)
+            if ".." in basename or basename.startswith("/"):
+                raise ValueError("bad basename")
             chunk_path = os.path.join(utt_dir, f"chunk{chunk_index:03d}_{basename}")
+            # Assert chunk_path stays within utt_dir
+            if not os.path.realpath(chunk_path).startswith(utt_dir + os.sep):
+                raise ValueError("path escape in chunk_path")
             with open(chunk_path, "wb") as f:
                 f.write(audio_bytes)
             logger.info(
-                "UPLOAD SAVED: utt=%d chunk=%d → %s (%d bytes)",
-                utterance_id, chunk_index, chunk_path, len(audio_bytes),
+                "upload_saved",
+                utterance_id=utterance_id,
+                chunk_index=chunk_index,
+                path=chunk_path,
+                byte_count=len(audio_bytes),
             )
         except Exception as e:
-            logger.error("Failed to save file: %s", e, exc_info=True)
-            raise HTTPException(status_code=500, detail=f"Save failed: {e}")
+            logger.error("upload_save_failed", error=str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail="Save failed")
 
     if not is_final:
-        logger.debug("UPLOAD CHUNK-ONLY: utt=%d chunk=%d (waiting for more)", utterance_id, chunk_index)
+        logger.debug(
+            "upload_chunk_pending",
+            utterance_id=utterance_id,
+            chunk_index=chunk_index,
+        )
         return JSONResponse(
             content={
                 "status": "chunk_stored",
@@ -157,10 +195,16 @@ async def upload_audio(
     # Utterance complete
     if SAVE_FILES:
         utt_dir = os.path.join(UPLOAD_DIR, f"user{user['id']}_utt{utterance_id}")
+        real_utt_dir = os.path.realpath(utt_dir)
+        if not real_utt_dir.startswith(os.path.realpath(UPLOAD_DIR) + os.sep):
+            raise ValueError("path escape attempt")
+        utt_dir = real_utt_dir
         chunk_count = len([f for f in os.listdir(utt_dir) if f.startswith("chunk")])
         logger.info(
-            "UPLOAD COMPLETE: utt=%d → %d chunks in %s",
-            utterance_id, chunk_count, utt_dir,
+            "upload_complete",
+            utterance_id=utterance_id,
+            chunk_count=chunk_count,
+            dir=utt_dir,
         )
 
     return JSONResponse(
@@ -173,6 +217,6 @@ if __name__ == "__main__":
     import uvicorn
 
     mode = "SAVE mode" if SAVE_FILES else "log-only mode"
-    logger.info("Starting LifeLog Dummy Server on http://0.0.0.0:8444 (%s)", mode)
-    logger.info("Usage: python dummy_server.py [--save]")
+    logger.info("server_starting", host="0.0.0.0", port=8444, mode=mode)
+    logger.info("server_usage", note="python dummy_server.py [--save]")
     uvicorn.run(app, host="0.0.0.0", port=8444, log_level="warning")

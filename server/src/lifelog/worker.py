@@ -1,11 +1,11 @@
 """Background worker for encrypted upload and asynchronous transcription jobs."""
 
 import asyncio
-import logging
 import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import structlog
 
 import lifelog.database as db
 from lifelog.config import settings
@@ -13,7 +13,7 @@ from lifelog.crypto import audio_crypto
 from lifelog.database import delete_utterance_chunks, get_utterance_chunks
 from lifelog.pipeline.llm import summarize
 
-logger = logging.getLogger("lifelog.worker")
+logger = structlog.get_logger()
 POLL_INTERVAL = 60.0
 _ALLOWED_AUDIO_LABELS = lambda name: name not in {"Unknown", ""}
 _MICROSECOND = timedelta(microseconds=1)
@@ -45,10 +45,10 @@ async def complete_utterance(user_id: int, utterance_id: int, recording_id: int 
             utterance_id,
         )
     logger.info(
-        "Utterance %d/%d complete: recording_id=%s",
-        user_id,
-        utterance_id,
-        recording_id,
+        "utterance_complete",
+        user_id=user_id,
+        utterance_id=utterance_id,
+        recording_id=recording_id,
     )
 
 
@@ -63,7 +63,9 @@ async def fail_utterance(user_id: int, utterance_id: int, error: str):
             utterance_id,
             error,
         )
-    logger.error("Utterance %d/%d failed: %s", user_id, utterance_id, error)
+    logger.error(
+        "utterance_failed", user_id=user_id, utterance_id=utterance_id, error=error
+    )
 
 
 async def get_pending_utterances() -> list[dict]:
@@ -91,10 +93,10 @@ async def get_user_secret(user_id: int) -> dict | None:
 async def process_utterance(user_id: int, utterance_id: int):
     """Encrypt audio and assign to a session for later quick transcription."""
     start = time.monotonic()
-    logger.info("Processing utterance %d/%d", user_id, utterance_id)
+    logger.info("processing_utterance", user_id=user_id, utterance_id=utterance_id)
     chunks = await get_utterance_chunks(user_id, utterance_id)
     if not chunks:
-        logger.warning("No chunks found for utterance %d/%d", user_id, utterance_id)
+        logger.warning("no_chunks_found", user_id=user_id, utterance_id=utterance_id)
         await fail_utterance(user_id, utterance_id, "no chunks found")
         return
 
@@ -112,7 +114,9 @@ async def process_utterance(user_id: int, utterance_id: int):
         audio_filenames.append(filename)
         if settings.verify_audio_writes:
             audio_crypto.decrypt_audio(filename, encryption_secret, key_salt)
-        logger.debug("Utterance %d/%d chunk %d encrypted", user_id, utterance_id, index)
+        logger.debug(
+            "chunk_encrypted", user_id=user_id, utterance_id=utterance_id, index=index
+        )
     await delete_utterance_chunks(user_id, utterance_id)
 
     queue_entry = await db.get_utterance_queue_entry(user_id, utterance_id)
@@ -135,7 +139,7 @@ async def process_utterance(user_id: int, utterance_id: int):
             try:
                 await _reprocess_session(active_session)
             except Exception:
-                logger.exception("Error queuing ended session %d", active_session["id"])
+                logger.exception("session_queue_error", session_id=active_session["id"])
             session_id = await db.create_session(user_id, utterance_time)
     else:
         session_id = await db.create_session(user_id, utterance_time)
@@ -151,11 +155,11 @@ async def process_utterance(user_id: int, utterance_id: int):
     )
     await complete_utterance(user_id, utterance_id, None)
     logger.info(
-        "Utterance %d/%d assigned to session %d in %.2fs",
-        user_id,
-        utterance_id,
-        session_id,
-        time.monotonic() - start,
+        "utterance_assigned_to_session",
+        user_id=user_id,
+        utterance_id=utterance_id,
+        session_id=session_id,
+        duration_s=time.monotonic() - start,
     )
 
 
@@ -184,9 +188,9 @@ async def _create_session_quick_jobs() -> None:
         existing = await db.get_pending_session_quick_job(session["id"])
         if existing:
             logger.debug(
-                "Session %d already has pending quick job %s",
-                session["id"],
-                existing["id"],
+                "session_has_pending_quick_job",
+                session_id=session["id"],
+                job_id=existing["id"],
             )
             continue
         # Create one job for untranscribed utterances in this session,
@@ -222,16 +226,14 @@ async def _create_session_quick_jobs() -> None:
                 language=language,
             )
             logger.info(
-                "Session %d: queued quick job for %d untranscribed utterances [%s, %s]",
-                session["id"],
-                len(utterance_ids),
-                window_start.isoformat(),
-                window_end.isoformat(),
+                "session_quick_job_queued",
+                session_id=session["id"],
+                utterance_count=len(utterance_ids),
+                window_start=window_start.isoformat(),
+                window_end=window_end.isoformat(),
             )
         except Exception:
-            logger.exception(
-                "Error creating session quick job for session %d", session["id"]
-            )
+            logger.exception("session_quick_job_error", session_id=session["id"])
 
 
 async def _apply_quick_transcripts() -> None:
@@ -275,7 +277,7 @@ async def _apply_quick_transcripts() -> None:
                 u for u in utterances if u["utterance_id"] in set(utterance_ids)
             ]
             if not utterances:
-                logger.warning("No utterances found for quick job %s", job["id"])
+                logger.warning("no_utterances_for_quick_job", job_id=job["id"])
                 await db.mark_quick_job_applied(job["id"])
                 continue
             # Build an utterance → combined-stream-seconds span lookup from
@@ -394,15 +396,13 @@ async def _apply_quick_transcripts() -> None:
                 )
             await db.mark_quick_job_applied(job["id"])
             logger.info(
-                "Quick job %d applied: %d utterances, %d combined segments",
-                job["id"],
-                len(utterances),
-                len(all_segments),
+                "quick_job_applied",
+                job_id=job["id"],
+                utterance_count=len(utterances),
+                segment_count=len(all_segments),
             )
         except Exception:
-            logger.exception(
-                "Unable to apply quick transcription job %s", job.get("id")
-            )
+            logger.exception("quick_job_apply_error", job_id=job.get("id"))
 
 
 def _window_ranges(utterances: list[dict]) -> list[tuple[datetime, datetime]]:
@@ -425,7 +425,7 @@ async def _reprocess_session(session: dict):
     session_id = session["id"]
     utterances = await db.get_session_all_utterances(session_id)
     if not utterances:
-        logger.warning("Session %d has no utterances, marking processed", session_id)
+        logger.warning("session_no_utterances", session_id=session_id)
         await db.mark_session_processed(session_id)
         return
     existing = await db.get_transcription_jobs(session_id)
@@ -441,9 +441,9 @@ async def _reprocess_session(session: dict):
         if job is not None:
             if job.get("status") == "failed":
                 logger.error(
-                    "Session %d chunk %d has terminal failed transcription job",
-                    session_id,
-                    chunk_index,
+                    "terminal_failed_transcription_job",
+                    session_id=session_id,
+                    chunk_index=chunk_index,
                 )
             continue
         settings = await db.get_user_settings(session["user_id"])
@@ -452,7 +452,9 @@ async def _reprocess_session(session: dict):
             session_id, window_start, window_end, chunk_index, language=language
         )
         logger.info(
-            "Session %d queued full transcription chunk %d", session_id, chunk_index
+            "session_full_transcription_queued",
+            session_id=session_id,
+            chunk_index=chunk_index,
         )
 
 
@@ -515,7 +517,7 @@ def _persist_partition_segments(
                     bytes(user["key_salt"]),
                 )
             except Exception:
-                logger.warning("Skipping invalid speaker segment audio", exc_info=True)
+                logger.warning("skipping_invalid_speaker_segment_audio", exc_info=True)
                 continue
         else:
             audio_filename = ""
@@ -592,9 +594,7 @@ async def _auto_enroll_speakers(user: dict, speaker_segments: list[dict]) -> Non
                 filename, user["encryption_secret"], bytes(user["key_salt"])
             )
         except Exception:
-            logger.warning(
-                "Skipping corrupt audio for speaker '%s'", label, exc_info=True
-            )
+            logger.warning("skipping_corrupt_audio", label=label, exc_info=True)
             continue
         grouped.setdefault(label, []).append(audio)
 
@@ -613,9 +613,9 @@ async def _auto_enroll_speakers(user: dict, speaker_segments: list[dict]) -> Non
                 embedding = response.json()["embedding"]
             await db.save_voiceprint(user["id"], label, serialize_embedding(embedding))
             known.add(label)
-            logger.info("Auto-enrolled voiceprint for '%s'", label)
+            logger.info("voiceprint_auto_enrolled", label=label)
         except Exception:
-            logger.exception("Unable to auto-enroll speaker '%s'", label)
+            logger.exception("auto_enroll_error", label=label)
 
 
 async def _enroll_session_speakers(
@@ -648,7 +648,7 @@ async def _enroll_session_speakers(
                 all_speakers[label] = audio
             except Exception:
                 logger.warning(
-                    "Skipping corrupt audio for speaker '%s'", label, exc_info=True
+                    "skipping_corrupt_audio_for_speaker", label=label, exc_info=True
                 )
 
     for label, opus_audio in all_speakers.items():
@@ -663,11 +663,9 @@ async def _enroll_session_speakers(
                 embedding = response.json()["embedding"]
             await db.save_voiceprint(user["id"], label, serialize_embedding(embedding))
             known.add(label)
-            logger.info("Enrolled speaker '%s' from session partitions", label)
+            logger.info("speaker_enrolled_from_partitions", label=label)
         except Exception:
-            logger.exception(
-                "Unable to enroll speaker '%s' from session partitions", label
-            )
+            logger.exception("speaker_enroll_error", label=label)
 
 
 async def _reidentify_recording(user: dict, recording: dict) -> None:
@@ -701,7 +699,9 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
             )
             await db.update_recording_speakers(recording["id"], identified)
         except Exception:
-            logger.exception("Unable to re-identify recording %s", recording.get("id"))
+            logger.exception(
+                "reidentify_recording_error", recording_id=recording.get("id")
+            )
         return
     updated = []
     labels: dict[str, str] = {}
@@ -734,9 +734,7 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
                 if identified and identified[0].get("name") not in {None, "Unknown"}:
                     labels[raw] = identified[0]["name"]
             except Exception:
-                logger.warning(
-                    "Unable to re-identify segment for '%s'", raw, exc_info=True
-                )
+                logger.warning("segment_reidentify_error", raw=raw, exc_info=True)
         item["speaker"] = labels.get(raw, raw)
         updated.append(item)
     speakers = [
@@ -804,8 +802,8 @@ async def _finalize_completed_sessions() -> None:
             partitions = _partition_segments(speaker_segments)
             if not partitions:
                 logger.warning(
-                    "Session %d has no speaker segments to persist, skipping",
-                    session["id"],
+                    "session_no_speaker_segments",
+                    session_id=session["id"],
                 )
                 await db.mark_session_processed(session["id"])
                 continue
@@ -863,14 +861,14 @@ async def _finalize_completed_sessions() -> None:
                     )
                 except Exception:
                     logger.exception(
-                        "Error updating daily summary after session %d", session["id"]
+                        "daily_summary_update_error", session_id=session["id"]
                     )
             else:
                 # Gap split — create one recording per partition
                 logger.info(
-                    "Session %d split into %d partitions (gaps > 5 min)",
-                    session["id"],
-                    len(partitions),
+                    "session_split_into_partitions",
+                    session_id=session["id"],
+                    partition_count=len(partitions),
                 )
                 # First partition gets the existing session-level summary + todos/decisions
                 partition_0 = partitions[0]
@@ -937,9 +935,9 @@ async def _finalize_completed_sessions() -> None:
                         )
                     except Exception:
                         logger.exception(
-                            "Failed to create partition %d recording for session %d",
-                            idx,
-                            session["id"],
+                            "partition_recording_error",
+                            partition_idx=idx,
+                            session_id=session["id"],
                         )
 
                 # Enroll any speakers from partitions 1+ that weren't in partition 0
@@ -963,16 +961,17 @@ async def _finalize_completed_sessions() -> None:
                     )
                 except Exception:
                     logger.exception(
-                        "Error updating daily summary after session %d", session["id"]
+                        "daily_summary_update_error_after_finalize",
+                        session_id=session["id"],
                     )
 
         except Exception:
-            logger.exception("Error finalizing session %d", session["id"])
+            logger.exception("session_finalize_error", session_id=session["id"])
 
 
 async def worker_loop():
     """Poll uploads, apply quick results, and orchestrate full jobs."""
-    logger.info("Worker started, polling every %.0fs", POLL_INTERVAL)
+    logger.info("worker_started", poll_interval=POLL_INTERVAL)
     while True:
         try:
             for utterance in await get_pending_utterances():
@@ -986,9 +985,9 @@ async def worker_loop():
                     )
                 except Exception as exc:
                     logger.exception(
-                        "Error processing utterance %d/%d",
-                        utterance["user_id"],
-                        utterance["utterance_id"],
+                        "utterance_processing_error",
+                        user_id=utterance["user_id"],
+                        utterance_id=utterance["utterance_id"],
                     )
                     await fail_utterance(
                         utterance["user_id"], utterance["utterance_id"], str(exc)
@@ -996,11 +995,11 @@ async def worker_loop():
             try:
                 await _apply_quick_transcripts()
             except Exception:
-                logger.exception("Error applying quick transcripts")
+                logger.exception("quick_transcripts_apply_error")
             try:
                 await _create_session_quick_jobs()
             except Exception:
-                logger.exception("Error creating session quick jobs")
+                logger.exception("session_quick_jobs_error")
             try:
                 for session in await db.get_idle_active_sessions(
                     settings.session_gap_minutes
@@ -1009,15 +1008,17 @@ async def worker_loop():
                     try:
                         await _reprocess_session(session)
                     except Exception:
-                        logger.exception("Error queuing idle session %d", session["id"])
+                        logger.exception(
+                            "idle_session_queue_error", session_id=session["id"]
+                        )
             except Exception:
-                logger.exception("Error ending idle sessions")
+                logger.exception("idle_sessions_end_error")
             try:
                 await _finalize_completed_sessions()
             except Exception:
-                logger.exception("Error finalizing completed sessions")
+                logger.exception("completed_sessions_finalize_error")
         except Exception:
-            logger.exception("Worker poll error")
+            logger.exception("worker_poll_error")
         await asyncio.sleep(POLL_INTERVAL)
 
 
@@ -1025,8 +1026,8 @@ async def hourly_reprocess_loop():
     """Run every hour: process ended sessions that need LLM summarization."""
     interval = settings.hourly_reprocess_interval_minutes * 60
     logger.info(
-        "Hourly reprocess loop started (interval=%ds)",
-        settings.hourly_reprocess_interval_minutes * 60,
+        "hourly_reprocess_started",
+        interval=settings.hourly_reprocess_interval_minutes * 60,
     )
 
     while True:
@@ -1035,23 +1036,25 @@ async def hourly_reprocess_loop():
         try:
             sessions = await db.get_sessions_for_reprocessing()
             logger.info(
-                "Hourly reprocess: %d session(s) to process%s",
-                len(sessions),
-                " [session ids: %s]" % [s["id"] for s in sessions] if sessions else "",
+                "hourly_reprocess_check",
+                session_count=len(sessions),
+                session_ids=[s["id"] for s in sessions] if sessions else [],
             )
             for session in sessions:
                 logger.info(
-                    "Hourly reprocess: starting session %d (user=%d, started=%s)",
-                    session["id"],
-                    session["user_id"],
-                    session["started_at"],
+                    "hourly_reprocess_session_start",
+                    session_id=session["id"],
+                    user_id=session["user_id"],
+                    started=session["started_at"],
                 )
                 try:
                     await _reprocess_session(session)
                 except Exception:
-                    logger.exception("Error reprocessing session %d", session["id"])
+                    logger.exception(
+                        "session_reprocess_error", session_id=session["id"]
+                    )
         except Exception:
-            logger.exception("Hourly reprocess loop error")
+            logger.exception("hourly_reprocess_loop_error")
 
 
 # ── Daily reprocessing ─────────────────────────────────────────────
@@ -1083,7 +1086,7 @@ async def _daily_reprocess_user(user_id: int, target_date=None, llm_context: str
     sessions = await db.get_sessions_by_date_range(user_id, day_start, day_end)
     if not sessions:
         logger.info(
-            "Daily reprocess: user %d has no sessions for %s", user_id, target_date
+            "daily_reprocess_no_sessions", user_id=user_id, target_date=str(target_date)
         )
         return
 
@@ -1106,16 +1109,18 @@ async def _daily_reprocess_user(user_id: int, target_date=None, llm_context: str
 
     if not all_lines:
         logger.info(
-            "Daily reprocess: user %d has no transcripts for %s", user_id, target_date
+            "daily_reprocess_no_transcripts",
+            user_id=user_id,
+            target_date=str(target_date),
         )
         return
 
     combined = "\n".join(all_lines)
     logger.info(
-        "Daily reprocess: user %d, %d sessions, %d transcript lines",
-        user_id,
-        len(sessions),
-        len(all_lines),
+        "daily_reprocess_combining",
+        user_id=user_id,
+        session_count=len(sessions),
+        transcript_line_count=len(all_lines),
     )
 
     # Generate daily summary via LLM
@@ -1126,8 +1131,8 @@ async def _daily_reprocess_user(user_id: int, target_date=None, llm_context: str
     await db.save_daily_summary(user_id, target_date, {"daily_summary": daily_summary})
 
     logger.info(
-        "Daily summary for user %d on %s: %d chars",
-        user_id,
-        target_date,
-        len(daily_summary),
+        "daily_summary_created",
+        user_id=user_id,
+        target_date=str(target_date),
+        char_count=len(daily_summary),
     )
