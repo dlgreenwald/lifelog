@@ -1,13 +1,15 @@
-# Code scanning — push-only (main branch)
+# Code scanning — runs on both push to main and PRs
 #
-# This file exists to satisfy GitHub Advanced Security config references.
-# All pull-request CodeQL analysis is handled by main.yml:security.
-# On push to main, this provides dedicated CodeQL analysis.
+# This file provides dedicated CodeQL analysis. It runs on push to main
+# for baseline population and on PRs so GitHub Advanced Security finds
+# its configurations in the PR diff check.
 
 name: CodeQL
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 jobs:

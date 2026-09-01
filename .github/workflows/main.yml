@@ -1,5 +1,6 @@
 # GitHub Advanced Security requires main.yml to have a "security" job.
-# The actual CodeQL analysis runs here directly to satisfy the config lookup.
+# This workflow provides CodeQL analysis on push to main.
+# ci.yml handles PR component builds.
 
 name: Main
 
