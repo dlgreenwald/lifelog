@@ -40,10 +40,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             logger.exception("Unhandled exception in request: %s", request.url.path)
             return JSONResponse(status_code=500, content={"detail": "Internal server error"})
         elapsed_ms = (time.monotonic() - start) * 1000
+        safe_path = request.url.path.replace("%", "%25").replace("\n", "%0A")
         logger.info(
             "%s %s → %d (%.1fms)",
             request.method,
-            request.url.path,
+            safe_path,
             response.status_code,
             elapsed_ms,
         )

@@ -1,0 +1,37 @@
+# Code scanning — push-only (main branch)
+#
+# This file exists to satisfy GitHub Advanced Security config references.
+# All pull-request CodeQL analysis is handled by main.yml:security.
+# On push to main, this provides dedicated CodeQL analysis.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
