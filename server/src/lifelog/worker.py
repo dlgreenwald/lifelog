@@ -233,13 +233,18 @@ async def _create_session_quick_jobs() -> None:
                 window_end,
                 language=language,
             )
+            extra = (
+                {"elapsed_seconds": round(elapsed, 1)}
+                if last_completed and last_completed.get("completed_at")
+                else {}
+            )
             logger.info(
                 "session_quick_job_queued",
                 session_id=session["id"],
                 utterance_count=len(utterance_ids),
                 window_start=window_start.isoformat(),
                 window_end=window_end.isoformat(),
-                elapsed_seconds=round(elapsed, 1),
+                **extra,
             )
         except Exception:
             logger.exception("session_quick_job_error", session_id=session["id"])
@@ -247,7 +252,8 @@ async def _create_session_quick_jobs() -> None:
 
 async def _apply_quick_transcripts() -> None:
     """Apply completed quick jobs: map combined diarized segments back to individual utterances."""
-    for job in await db.get_completed_quick_jobs():
+    jobs = await db.get_completed_quick_jobs()
+    for job in jobs:
         try:
             result = job.get("result") or {}
             if isinstance(result, str):
@@ -255,7 +261,14 @@ async def _apply_quick_transcripts() -> None:
 
                 result = json.loads(result)
             session_id = result.get("session_id") or job.get("session_id")
-            utterance_ids = result.get("utterance_ids", [])
+            # Reconstruct from utterance_spans if missing (result overwritten by prior worker run)
+            utterance_ids = result.get("utterance_ids") or []
+            if not utterance_ids:
+                utterance_ids = [
+                    span["utterance_id"]
+                    for span in (result.get("utterance_spans") or [])
+                    if span.get("utterance_id")
+                ]
             if not utterance_ids:
                 # Legacy per-utterance job: single-utterance path
                 utterance_id = result.get("utterance_id") or job.get("chunk_index")

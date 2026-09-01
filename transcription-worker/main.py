@@ -230,6 +230,10 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
     audio_response.raise_for_status()
     payload = audio_response.json()
     audio_segments = [base64.b64decode(value) for value in payload["audio_segments"]]
+    # Fallback: if utterance_ids not in job result (overwritten by prior run), try audio response
+    utterance_ids = (job.get("result") or {}).get("utterance_ids") or []
+    if not utterance_ids and "utterance_ids" in payload:
+        utterance_ids = payload["utterance_ids"]
     model_manager.begin_job()
     model_manager.record_activity()
     try:
@@ -241,7 +245,6 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
             # utterance that produced it without re-deriving offsets
             # from wall-clock timestamps.
             timestamps = payload.get("timestamps") or [job["window_start"]]
-            utterance_ids = (job.get("result") or {}).get("utterance_ids") or []
             audio_np, sample_rate, spans = concatenate_segments_with_spans(
                 audio_segments, timestamps
             )
@@ -256,6 +259,8 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
                 }
                 for i in range(min(len(spans), len(utterance_ids)))
             ]
+            # Preserve utterance_ids in result so apply loop can find them
+            complete["utterance_ids"] = utterance_ids
         else:
             await _post_stage(client, job_id, "concatenating")
             audio_np, sample_rate = concatenate_segments(
@@ -272,8 +277,16 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
             f"{SERVER_URL}/internal/transcription/complete/{job_id}", json=complete
         )
         response.raise_for_status()
+    except Exception:
+        logger.exception("transcription_failed", job_id=job_id)
+        try:
+            await client.post(
+                f"{SERVER_URL}/internal/transcription/fail/{job_id}", json={}
+            )
+        except Exception:
+            logger.exception("failed_to_mark_job_failed", job_id=job_id)
+        raise
     finally:
-        model_manager.record_activity()
         model_manager.end_job()
 
 
