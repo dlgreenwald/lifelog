@@ -20,7 +20,7 @@
 #define ESP_LOGV(tag, format, ...) esp_log_write(ESP_LOG_VERBOSE, tag, _ESP_LOG_FMT(V, format), esp_log_timestamp(), __FILE__, __LINE__, __FUNCTION__, tag, ##__VA_ARGS__)
 
 // LED — shares GPIO21 with SD CS on XIAO ESP32-S3 Sense.
-// LED is only used during boot (bootConfirm); safe to share.
+// SD operations preempt LED via sdMutex (non-blocking take inside ledLoop()).
 #define LED_PIN  21
 
 // SD Card - XIAO ESP32-S3 Sense built-in slot
