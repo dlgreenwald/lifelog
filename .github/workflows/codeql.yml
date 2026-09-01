@@ -1,0 +1,41 @@
+# Code scanning
+#
+# Owned workflow file so GitHub's action database doesn't reach back into
+# the pre-rename `main.yml:security` alias (PRs #6/#7/#8 reshuffled the CI
+# architecture and split the build into per-service `main-*.yml` files).
+# Keeping a dedicated `codeql.yml` here gives CodeQL a fresh, unambiguous
+# source-of-truth for the python + javascript scans and the audit.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"

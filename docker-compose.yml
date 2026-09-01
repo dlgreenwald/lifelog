@@ -68,6 +68,14 @@ services:
       - ASR_DEVICE=cuda
       - MODEL_CACHE_DIR=/root/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN}
+      - IDLE_UNLOAD_SECONDS=${TRANSCRIPTION_IDLE_UNLOAD_SECONDS:-300}
+      - WARM_KEEPALIVE_SECONDS=${TRANSCRIPTION_WARM_KEEPALIVE_SECONDS:-60}
+      # When set to >0 the worker exits itself after this many seconds of
+      # full idleness. Combined with the ``restart: unless-stopped``
+      # policy below, docker-compose will bring it back up so the
+      # CTranslate2 + pyannote pinned GPU buffers (which the in-process
+      # unload cannot free) are reclaimed on a clean cold start.
+      - IDLE_PROCESS_RESTART_SECONDS=${TRANSCRIPTION_IDLE_PROCESS_RESTART_SECONDS:-900}
     volumes:
       - ./whisper-asr/hf-cache:/root/.cache/huggingface
     healthcheck:
@@ -86,7 +94,12 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-
+    # Required for the IDLE_PROCESS_RESTART_SECONDS self-exit path:
+    # docker-compose must resurrect the worker after it kills itself
+    # so the GPU's pinned CTranslate2 / pyannote buffers (which
+    # ``unload_models`` cannot free from inside the process) are
+    # reclaimed on a clean cold start.
+    restart: unless-stopped
 
   # Speaker identification - No DB access
   speaker-id:

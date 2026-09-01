@@ -191,27 +191,24 @@ jobs:
       - run: ./build.sh
         working-directory: ./firmware-ota
 
-  security:
+  # CodeQL scanning moved to .github/workflows/codeql.yml so the action
+  # database registers a fresh source-of-truth (`codeql.yml:analyze`) and
+  # doesn't chase the legacy `main.yml:security` alias. npm audit stays
+  # here because it is dashboard-prod-only and orthogonal to CodeQL.
+
+  npm-audit:
     needs: detect-changes
-    if: |
-      needs.detect-changes.outputs.ci-config == 'true' ||
-      needs.detect-changes.outputs.python-source == 'true'
+    if: needs.detect-changes.outputs.dashboard == 'true'
     runs-on: ubuntu-latest
     permissions:
-      security-events: write
       contents: read
     steps:
       - uses: actions/checkout@v5
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+      - uses: actions/setup-node@v5
         with:
-          languages: 'python,javascript'
-          queries: security-extended
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
-
-      - name: npm audit (dashboard, prod-only, critical)
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Run npm audit (dashboard prod-only, critical)
         run: npm audit --omit=dev --audit-level=critical
-        working-directory: dashboard
+        working-directory: ./dashboard

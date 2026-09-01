@@ -196,8 +196,8 @@ docker-compose logs -f server  # Tail orchestrator logs
 # Python services (each in its own venv)
 cd server && .venv/bin/python -m pytest tests/ -q        # 134 tests
 cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
-cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 14 tests
-cd transcription-worker && python -m pytest -q           # 10 tests
+cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 16 tests
+cd transcription-worker && python -m pytest -q           # 25 tests
 
 # Dashboard
 cd dashboard && npx vitest run                            # 91 tests
@@ -289,8 +289,8 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `server/src/lifelog/pipeline/speaker_client.py` | Audio-bearing speaker identification client |
 | `server/src/lifelog/pipeline/llm.py` | LLM prompt template + `summarize()` |
 | `transcription-worker/audio.py` | ffmpeg decoding and timestamp-aware waveform assembly |
-| `transcription-worker/pipeline.py` | Process-global WhisperX ASR/alignment/diarization and segment extraction |
-| `transcription-worker/main.py` | GPU job poller and health endpoint |
+| `transcription-worker/pipeline.py` | Process-global WhisperX ASR/alignment/diarization, segment extraction, and a `torch.load` retry wrapper that transparently downgrades `weights_only=True` to `weights_only=False` for checkpoints resolved under the HuggingFace cache, the pyannote.audio cache (`~/.cache/torch/pyannote`), and the active Python `site-packages` tree (torch 2.6+ safe-globals workaround for `omegaconf` / `pyannote.audio`). Also wraps `huggingface_hub.hf_hub_download` to translate pyannote.audio 3.x's deprecated `use_auth_token=` keyword to `token=` for compatibility with huggingface_hub 1.0+ |
+| `transcription-worker/main.py` | GPU job poller, `ModelManager` with lazy load + watchdog-triggered idle unload (`IDLE_UNLOAD_SECONDS=300`) and self-restart (`IDLE_PROCESS_RESTART_SECONDS=900` by default via `docker-compose.yml`) which calls `os._exit` after extended idleness so docker-compose's `restart: unless-stopped` policy resurrects the container and reclaims GPU memory that the in-process unload cannot (CTranslate2 + pyannote pinned device buffers). Restart path requires `IDLE_PROCESS_RESTART_SECONDS > IDLE_UNLOAD_SECONDS + WARM_KEEPALIVE_SECONDS` so unload runs first; `/health` reports `models_loaded` and `last_activity` |
 | `transcription-worker/Dockerfile` | CUDA worker image |
 | `speaker-id/src/speaker_id/routes.py` | `cosine_similarity()`, `match_voiceprint()`, audio-aware `/identify` + `/enroll` |
 | `speaker-id/src/speaker_id/embeddings.py` | ECAPA-TDNN `SpeakerEncoder` class |
@@ -415,7 +415,7 @@ A failed build produces `conclusion: failure` for that component's job in `ci.ym
 
 ### Test counts
 
-Total: **~335 tests** across 6 components (134 server + 8 diarization + 16 speaker-id + 10 transcription-worker + 91 dashboard + 78 firmware-ota).
+Total: **~345 tests** across 6 components (134 server + 8 diarization + 16 speaker-id + 29 transcription-worker + 91 dashboard + 69 firmware-ota).
 
 ### Python test framework
 
@@ -479,7 +479,7 @@ Before merging any change:
 
 1. **Lint**: `ruff check src/ tests/` passes on all Python services (0 errors)
 2. **Type check**: `npx tsc --noEmit` passes on dashboard (0 errors)
-3. **Tests**: All ~303 tests pass across all 6 components
+3. **Tests**: All ~345 tests pass across all 6 components
 4. **No regressions**: Existing functionality not broken
 
 ### Ruff configuration
@@ -515,7 +515,7 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | `diarization/build.sh` | venv bootstrap (uv) → ruff lint → pytest (8 tests) |
 | `speaker-id/build.sh` | venv bootstrap (uv) → ruff lint → pytest (16 tests) |
 | `dashboard/build.sh` | tsc type check → vite build → vitest (91 tests) → bundle size |
-| `transcription-worker/build.sh` | venv bootstrap (uv) → ruff lint → py_compile → pytest (10 tests) |
+| `transcription-worker/build.sh` | venv bootstrap (uv) → ruff lint → py_compile → pytest (29 tests) |
 
 **Run everything:**
 
