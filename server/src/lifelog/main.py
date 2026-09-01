@@ -33,15 +33,7 @@ def _configure_structlog() -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
-            structlog.stdlib.ProcessorFormatter(
-                processor=structlog.dev.ConsoleRenderer(colors=False),
-                foreign_pre_chain=[
-                    structlog.stdlib.filter_by_level,
-                    structlog.stdlib.add_logger_name,
-                    structlog.stdlib.add_log_level,
-                    structlog.stdlib.PositionalArgumentsFormatter(),
-                ],
-            ),
+            structlog.dev.ConsoleRenderer(colors=False),
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
@@ -59,7 +51,6 @@ def _configure_logging() -> None:
         logging.config.dictConfig(log_config)
 
     # Bridge structlog to the stdlib handler that dictConfig set up.
-    # Re-configure with a processor that writes to the root logger's handler.
     structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,
@@ -69,15 +60,7 @@ def _configure_logging() -> None:
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
-            structlog.stdlib.ProcessorFormatter(
-                processor=structlog.processors.JSONRenderer(),
-                foreign_pre_chain=[
-                    structlog.stdlib.filter_by_level,
-                    structlog.stdlib.add_logger_name,
-                    structlog.stdlib.add_log_level,
-                    structlog.stdlib.PositionalArgumentsFormatter(),
-                ],
-            ),
+            structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
