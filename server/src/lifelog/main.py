@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import logging.config
-import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,6 +17,7 @@ from lifelog.database import init_pool
 from lifelog.rate_limit import limiter
 from lifelog.routes import dashboard, speakers, transcription, upload
 from lifelog.worker import hourly_reprocess_loop, worker_loop
+
 
 # Configure structlog: bridge to existing stdlib dictConfig handler so output format is unchanged.
 # All server modules use `logger = structlog.get_logger()` instead of stdlib logging.

@@ -1,7 +1,16 @@
-import logging
 import os
 import subprocess
 import tempfile
+
+import structlog
+
+
+def _sanitize(value: str) -> str:
+    """Escape log injection chars from user-supplied strings."""
+    if not isinstance(value, str):
+        return value
+    return value.replace("%", "%%").replace("${", "${").replace("\n", "\\n")
+
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -38,7 +47,7 @@ from lifelog.database import (
 from lifelog.models import CreateDecision, CreateTodo, UserSettings
 from lifelog.validation import validate_llm_context
 
-logger = logging.getLogger("lifelog.dashboard")
+logger = structlog.get_logger()
 
 
 def _normalize_recording(rec: dict) -> dict:
@@ -66,9 +75,7 @@ async def get_calendar(
     year: int, month: int, user: dict = Depends(validate_oidc_token)
 ):
     """Get calendar data for a month (days with recordings)."""
-    logger.debug(
-        "Calendar request: user=%d, year=%d, month=%d", user["id"], year, month
-    )
+    logger.debug("calendar_request", user_id=user["id"], year=year, month=month)
 
     from lifelog.database import pool
 
@@ -101,13 +108,17 @@ async def get_day_recordings(
     Optional query param: category (personal, work, not_meaningful).
     """
     logger.debug(
-        "Day recordings request: user=%d, date=%s, category=%s",
-        user["id"],
-        date,
-        category,
+        "day_recordings_request",
+        user_id=user["id"],
+        date=_sanitize(date) if date else None,
+        category=_sanitize(category) if category else None,
     )
     recordings = await get_recordings_by_date(user["id"], date, category=category)
-    logger.debug("Found %d recordings for %s", len(recordings), date)
+    logger.debug(
+        "recordings_found",
+        count=len(recordings),
+        date=_sanitize(date) if date else None,
+    )
     return {"recordings": [_normalize_recording(r) for r in recordings]}
 
 
@@ -117,11 +128,13 @@ async def get_recording_detail(
 ):
     """Get full recording details including speakers and segments."""
     logger.debug(
-        "Recording detail request: user=%d, recording=%d", user["id"], recording_id
+        "recording_detail_request", user_id=user["id"], recording_id=recording_id
     )
     recording = await get_recording(user["id"], recording_id)
     if not recording:
-        logger.warning("Recording %d not found for user %d", recording_id, user["id"])
+        logger.warning(
+            "recording_not_found", recording_id=recording_id, user_id=user["id"]
+        )
         raise HTTPException(status_code=404, detail="Recording not found")
     return _normalize_recording(recording)
 
@@ -142,7 +155,7 @@ def _detect_audio_media_type(audio_bytes: bytes) -> str:
 @router.get("/audio/{filename}")
 async def get_audio(filename: str, user: dict = Depends(validate_oidc_token)):
     """Stream decrypted audio file."""
-    logger.debug("Audio stream request: user=%d, file=%s", user["id"], filename)
+    logger.debug("audio_stream_request", user_id=user["id"], filename=filename)
     try:
         audio_bytes = audio_crypto.decrypt_audio(
             filename, user["encryption_secret"], bytes(user["key_salt"])
@@ -214,8 +227,8 @@ async def get_speaker_audio(
                 )
             except Exception:
                 logger.warning(
-                    "Skipping unavailable speaker playback file %s",
-                    filename,
+                    "speaker_playback_file_unavailable",
+                    filename=filename,
                     exc_info=True,
                 )
         audio = _concatenate_wav(audio_files) if audio_files else b""
@@ -238,7 +251,7 @@ async def get_speaker_audio(
 async def get_todos_route(user: dict = Depends(validate_oidc_token)):
     """Get all todos across all recordings."""
     todos = await get_todos(user["id"])
-    logger.debug("Todos request: user=%d, found=%d", user["id"], len(todos))
+    logger.debug("todos_request", user_id=user["id"], found=len(todos))
     return {"todos": todos}
 
 
@@ -318,7 +331,7 @@ async def get_decisions_route(
 ):
     """Get recent decisions across all recordings."""
     decisions = await get_decisions(user["id"], limit, include_archived)
-    logger.debug("Decisions request: user=%d, found=%d", user["id"], len(decisions))
+    logger.debug("decisions_request", user_id=user["id"], found=len(decisions))
     return {"decisions": decisions}
 
 
@@ -386,9 +399,7 @@ async def delete_decision_route(
 async def get_unknown_speakers_route(user: dict = Depends(validate_oidc_token)):
     """Get all recordings with unknown speakers for labeling."""
     recordings = await get_unknown_speakers(user["id"])
-    logger.debug(
-        "Unknown speakers request: user=%d, found=%d", user["id"], len(recordings)
-    )
+    logger.debug("unknown_speakers_request", user_id=user["id"], found=len(recordings))
     return {"recordings": recordings}
 
 
@@ -446,9 +457,7 @@ async def reprocess_recording_route(
     if not reset:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    logger.info(
-        "Recording %d requeued for reprocessing (session %d)", recording_id, session_id
-    )
+    logger.info("recording_requeued", recording_id=recording_id, session_id=session_id)
     return {"ok": True, "session_id": session_id}
 
 
@@ -468,7 +477,11 @@ async def update_category_route(
         raise HTTPException(status_code=404, detail="Recording not found")
 
     await update_recording_category(recording_id, category)
-    logger.info("Recording %d category updated to '%s'", recording_id, category)
+    logger.info(
+        "recording_category_updated",
+        recording_id=recording_id,
+        category=_sanitize(category),
+    )
     return {"ok": True}
 
 
