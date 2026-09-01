@@ -115,7 +115,18 @@ class ModelManager:
                 )
                 from pipeline import unload_models
 
-                unload_models(self._models)
+                try:
+                    unload_models(self._models)
+                except Exception as exc:
+                    logger.error(
+                        "unload_models raised %s — forcing restart to "
+                        "recover CUDA state: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    import os as _os
+
+                    _os._exit(1)
                 logger.info(
                     "Models unloaded — keys after=%d, cuda_allocated=%dMiB",
                     len(self._models),
