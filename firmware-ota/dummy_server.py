@@ -157,6 +157,10 @@ async def upload_audio(
     if SAVE_FILES:
         safe_utt_id = str(utterance_id).replace("/", "_").replace("..", "_")
         utt_dir = os.path.join(UPLOAD_DIR, f"user{user['id']}_utt{safe_utt_id}")
+        # Defensive: resolve and verify the path stays within UPLOAD_DIR
+        real_utt_dir = os.path.realpath(utt_dir)
+        if not real_utt_dir.startswith(os.path.realpath(UPLOAD_DIR) + os.sep):
+            raise ValueError("path escape attempt")
         os.makedirs(utt_dir, exist_ok=True)
         chunk_count = len([f for f in os.listdir(utt_dir) if f.startswith("chunk")])
         logger.info(
