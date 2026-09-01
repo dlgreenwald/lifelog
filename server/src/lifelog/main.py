@@ -2,10 +2,12 @@ import asyncio
 import json
 import logging
 import logging.config
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
@@ -17,18 +19,76 @@ from lifelog.rate_limit import limiter
 from lifelog.routes import dashboard, speakers, transcription, upload
 from lifelog.worker import hourly_reprocess_loop, worker_loop
 
-logger = logging.getLogger("lifelog")
-_worker_task = None
-_hourly_task = None
+# Configure structlog: bridge to existing stdlib dictConfig handler so output format is unchanged.
+# All server modules use `logger = structlog.get_logger()` instead of stdlib logging.
+def _configure_structlog() -> None:
+    """Configure structlog to flow through the existing stdlib dictConfig handler."""
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            structlog.stdlib.ProcessorFormatter(
+                processor=structlog.dev.ConsoleRenderer(colors=False),
+                foreign_pre_chain=[
+                    structlog.stdlib.filter_by_level,
+                    structlog.stdlib.add_logger_name,
+                    structlog.stdlib.add_log_level,
+                    structlog.stdlib.PositionalArgumentsFormatter(),
+                ],
+            ),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
 
 
 def _configure_logging() -> None:
-    """Load logging.json config."""
+    """Load logging.json config, then configure structlog to bridge to it."""
     config_path = Path(__file__).resolve().parent.parent.parent / "logging.json"
     if config_path.exists():
         with open(config_path) as f:
             log_config = json.load(f)
         logging.config.dictConfig(log_config)
+
+    # Bridge structlog to the stdlib handler that dictConfig set up.
+    # Re-configure with a processor that writes to the root logger's handler.
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.stdlib.ProcessorFormatter(
+                processor=structlog.processors.JSONRenderer(),
+                foreign_pre_chain=[
+                    structlog.stdlib.filter_by_level,
+                    structlog.stdlib.add_logger_name,
+                    structlog.stdlib.add_log_level,
+                    structlog.stdlib.PositionalArgumentsFormatter(),
+                ],
+            ),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+
+logger = structlog.get_logger()
+_worker_task = None
+_hourly_task = None
 
 
 @asynccontextmanager
