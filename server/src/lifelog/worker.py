@@ -249,6 +249,7 @@ async def _create_session_quick_jobs() -> None:
         except Exception:
             logger.exception("session_quick_job_error", session_id=session["id"])
 
+
 async def _apply_quick_transcripts() -> None:
     """Apply completed quick jobs: map combined diarized segments back to individual utterances."""
     jobs = await db.get_completed_quick_jobs()
