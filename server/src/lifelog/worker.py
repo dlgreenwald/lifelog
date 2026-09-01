@@ -601,7 +601,9 @@ async def _auto_enroll_speakers(user: dict, speaker_segments: list[dict]) -> Non
                 filename, user["encryption_secret"], bytes(user["key_salt"])
             )
         except Exception:
-            logger.warning("skipping_corrupt_audio_for_speaker", label=label, exc_info=True)
+            logger.warning(
+                "skipping_corrupt_audio_for_speaker", label=label, exc_info=True
+            )
             continue
         grouped.setdefault(label, []).append(audio)
 
@@ -655,7 +657,9 @@ async def _enroll_session_speakers(
                 all_speakers[label] = audio
             except Exception:
                 logger.warning(
-                    "skipping_corrupt_audio_for_partition_speaker", label=label, exc_info=True
+                    "skipping_corrupt_audio_for_partition_speaker",
+                    label=label,
+                    exc_info=True,
                 )
 
     for label, opus_audio in all_speakers.items():

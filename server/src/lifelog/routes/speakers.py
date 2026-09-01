@@ -135,7 +135,9 @@ async def rerun_identification(user: dict):
                             identified[0].get("name", raw) if identified else raw
                         )
                     except Exception:
-                        logger.warning("reidentify_segment_failed", raw=raw, exc_info=True)
+                        logger.warning(
+                            "reidentify_segment_failed", raw=raw, exc_info=True
+                        )
                 updated_segments.append(item)
             await update_recording_speaker_data(
                 recording["id"],

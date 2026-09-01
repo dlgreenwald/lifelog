@@ -121,7 +121,10 @@ async def get_job_audio(job_id: int):
                     audio = audio_crypto.decrypt_audio(fname, secret, salt)
                 except Exception:
                     logger.warning(
-                        "skipping_unavailable_audio", fname=fname, job_id=job_id, exc_info=True
+                        "skipping_unavailable_audio",
+                        fname=fname,
+                        job_id=job_id,
+                        exc_info=True,
                     )
                 timestamps.append(_iso(utterance["created_at"]))
             if not audio_segments:
@@ -162,7 +165,10 @@ async def get_job_audio(job_id: int):
             audio = audio_crypto.decrypt_audio(filename, secret, salt)
         except Exception:
             logger.warning(
-                "skipping_unavailable_audio", filename=filename, job_id=job_id, exc_info=True
+                "skipping_unavailable_audio",
+                filename=filename,
+                job_id=job_id,
+                exc_info=True,
             )
             continue
         audio_segments.append(base64.b64encode(audio).decode("ascii"))
