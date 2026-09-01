@@ -1,4 +1,5 @@
 """Unit tests for the quick-job windowing + the apply-loop span partitioning."""
+
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,6 +32,7 @@ def _make_pool(return_value=None):
 # Windowing tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_window_floor_is_last_completed_plus_one_microsecond():
     """A fresh quick job's window_start should sit 1µs past the most recent
@@ -42,15 +44,37 @@ async def test_window_floor_is_last_completed_plus_one_microsecond():
         _utt(3, datetime(2026, 9, 1, 15, 40, 0, tzinfo=UTC)),
     ]
     last_completed_at = datetime(2026, 9, 1, 15, 39, 30, 150_000, tzinfo=UTC)
-    expected_floor = (last_completed_at + timedelta(microseconds=1)).replace(tzinfo=None)
+    expected_floor = (last_completed_at + timedelta(microseconds=1)).replace(
+        tzinfo=None
+    )
 
     mock_create = AsyncMock(return_value=9999)
     with (
-        patch.object(lm_worker.db, "get_active_sessions_with_utterances", new=AsyncMock(return_value=[_session(116)])),
-        patch.object(lm_worker.db, "get_session_all_utterances", new=AsyncMock(return_value=untranscribed)),
-        patch.object(lm_worker.db, "get_pending_session_quick_job", new=AsyncMock(return_value=None)),
-        patch.object(lm_worker.db, "get_latest_completed_quick_job", new=AsyncMock(return_value={"id": 1854, "completed_at": last_completed_at})),
-        patch.object(lm_worker.db, "get_user_settings", new=AsyncMock(return_value={"language": "auto"})),
+        patch.object(
+            lm_worker.db,
+            "get_active_sessions_with_utterances",
+            new=AsyncMock(return_value=[_session(116)]),
+        ),
+        patch.object(
+            lm_worker.db,
+            "get_session_all_utterances",
+            new=AsyncMock(return_value=untranscribed),
+        ),
+        patch.object(
+            lm_worker.db,
+            "get_pending_session_quick_job",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            lm_worker.db,
+            "get_latest_completed_quick_job",
+            new=AsyncMock(return_value={"id": 1854, "completed_at": last_completed_at}),
+        ),
+        patch.object(
+            lm_worker.db,
+            "get_user_settings",
+            new=AsyncMock(return_value={"language": "auto"}),
+        ),
         patch.object(lm_worker.db, "create_session_quick_job", new=mock_create),
     ):
         await lm_worker._create_session_quick_jobs()
@@ -58,7 +82,9 @@ async def test_window_floor_is_last_completed_plus_one_microsecond():
     args = mock_create.await_args.args
     # signature: (session_id, utterance_ids, window_start, window_end, language)
     assert args[1] == [1, 2, 3], f"utterance_ids={args[1]!r}"
-    assert args[2] == expected_floor, f"window_start={args[2]!r} expected={expected_floor!r}"
+    assert args[2] == expected_floor, (
+        f"window_start={args[2]!r} expected={expected_floor!r}"
+    )
     assert args[2] > last_completed_at.replace(tzinfo=None)
 
 
@@ -81,14 +107,31 @@ async def test_window_floor_defaults_to_5_minutes_when_no_completed_history():
     # Stub pool so the real get_user_settings can run and return {"language": "auto"}
     fake_pool = _make_pool(return_value={"language": "auto"})
     with (
-        patch.object(lm_worker.db, "get_active_sessions_with_utterances", new=AsyncMock(return_value=[_session(116)])),
-        patch.object(lm_worker.db, "get_session_all_utterances", new=AsyncMock(return_value=untranscribed)),
-        patch.object(lm_worker.db, "get_pending_session_quick_job", new=AsyncMock(return_value=None)),
-        patch.object(lm_worker.db, "get_latest_completed_quick_job", new=AsyncMock(return_value=None)),
+        patch.object(
+            lm_worker.db,
+            "get_active_sessions_with_utterances",
+            new=AsyncMock(return_value=[_session(116)]),
+        ),
+        patch.object(
+            lm_worker.db,
+            "get_session_all_utterances",
+            new=AsyncMock(return_value=untranscribed),
+        ),
+        patch.object(
+            lm_worker.db,
+            "get_pending_session_quick_job",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            lm_worker.db,
+            "get_latest_completed_quick_job",
+            new=AsyncMock(return_value=None),
+        ),
         patch.object(lm_worker.db, "create_session_quick_job", new=mock_create),
         patch.object(lm_worker.settings, "quick_window_minutes", 5),
     ):
         import lifelog.database as lm_db
+
         original_pool = lm_db.pool
         lm_db.pool = fake_pool
         try:
@@ -105,6 +148,7 @@ async def test_window_floor_defaults_to_5_minutes_when_no_completed_history():
 # ---------------------------------------------------------------------------
 # Apply-loop tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_apply_partitions_segments_by_utterance_spans():
@@ -140,9 +184,17 @@ async def test_apply_partitions_segments_by_utterance_spans():
         written[utt_id] = payload["segments"]
 
     with (
-        patch.object(lm_worker.db, "get_completed_quick_jobs", new=AsyncMock(return_value=[job])),
-        patch.object(lm_worker.db, "get_session_utterances_in_range", new=AsyncMock(return_value=utterances)),
-        patch.object(lm_worker.db, "update_session_utterance_transcript", new=fake_write),
+        patch.object(
+            lm_worker.db, "get_completed_quick_jobs", new=AsyncMock(return_value=[job])
+        ),
+        patch.object(
+            lm_worker.db,
+            "get_session_utterances_in_range",
+            new=AsyncMock(return_value=utterances),
+        ),
+        patch.object(
+            lm_worker.db, "update_session_utterance_transcript", new=fake_write
+        ),
         patch.object(lm_worker.db, "mark_quick_job_applied", new=AsyncMock()),
     ):
         await lm_worker._apply_quick_transcripts()
@@ -174,7 +226,12 @@ async def test_apply_falls_back_to_legacy_time_partition_when_no_spans():
             # No utterance_spans — triggers legacy path
             "segments": [
                 {"start": 3.0, "end": 4.5, "text": "First.", "speaker": "SPEAKER_00"},
-                {"start": 14.0, "end": 16.0, "text": "Second.", "speaker": "SPEAKER_00"},
+                {
+                    "start": 14.0,
+                    "end": 16.0,
+                    "text": "Second.",
+                    "speaker": "SPEAKER_00",
+                },
             ],
         },
     }
@@ -184,9 +241,17 @@ async def test_apply_falls_back_to_legacy_time_partition_when_no_spans():
         written[utt_id] = payload["segments"]
 
     with (
-        patch.object(lm_worker.db, "get_completed_quick_jobs", new=AsyncMock(return_value=[job])),
-        patch.object(lm_worker.db, "get_session_utterances_in_range", new=AsyncMock(return_value=utterances)),
-        patch.object(lm_worker.db, "update_session_utterance_transcript", new=fake_write),
+        patch.object(
+            lm_worker.db, "get_completed_quick_jobs", new=AsyncMock(return_value=[job])
+        ),
+        patch.object(
+            lm_worker.db,
+            "get_session_utterances_in_range",
+            new=AsyncMock(return_value=utterances),
+        ),
+        patch.object(
+            lm_worker.db, "update_session_utterance_transcript", new=fake_write
+        ),
         patch.object(lm_worker.db, "mark_quick_job_applied", new=AsyncMock()),
     ):
         await lm_worker._apply_quick_transcripts()

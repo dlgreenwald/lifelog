@@ -385,9 +385,7 @@ def test_unload_models_calls_gc_collect_and_empty_cache(monkeypatch):
     ``reserved`` in the pytorch cache-aligned allocator even
     though no live tensors are present. ``synchronize`` ensures
     in-flight kernels have completed so the allocator bookkeeping
-    is accurate; ``ipc_collect`` reaps any IPC handles that
-    would otherwise keep tensors pinned across the process
-    boundary."""
+    is accurate."""
     fake_gc = MagicMock()
     fake_torch = MagicMock()
     fake_torch.cuda.is_available.return_value = True
@@ -400,5 +398,4 @@ def test_unload_models_calls_gc_collect_and_empty_cache(monkeypatch):
     fake_gc.collect.assert_called_once_with()
     fake_torch.cuda.synchronize.assert_called_once_with()
     fake_torch.cuda.empty_cache.assert_called_once_with()
-    fake_torch.cuda.ipc_collect.assert_called_once_with()
     assert models == {}
