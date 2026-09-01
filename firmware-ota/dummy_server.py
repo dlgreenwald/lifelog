@@ -155,13 +155,14 @@ async def upload_audio(
 
     # Utterance complete
     if SAVE_FILES:
-        utt_dir = os.path.join(UPLOAD_DIR, f"user{user['id']}_utt{utterance_id}")
-        chunk_count = len([f for f in os.listdir(utt_dir) if f.startswith("chunk")])  # noqa: [py/path-injection]
+        safe_utt_id = str(utterance_id).replace("/", "_").replace("..", "_")
+        utt_dir = os.path.join(UPLOAD_DIR, f"user{user['id']}_utt{safe_utt_id}")
+        os.makedirs(utt_dir, exist_ok=True)
+        chunk_count = len([f for f in os.listdir(utt_dir) if f.startswith("chunk")])
         logger.info(
             "UPLOAD COMPLETE: utt=%d → %d chunks in %s",
             utterance_id, chunk_count, utt_dir,
         )
-
     return JSONResponse(
         content={"status": "processed", "utterance_id": utterance_id},
         status_code=200,

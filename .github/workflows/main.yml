@@ -1,0 +1,23 @@
+# Stub to satisfy GitHub Advanced Security's reference to
+# .github/workflows/main.yml:security (pre-refactor config).
+# Actual analysis is in .github/workflows/codeql.yml — this file
+# exists only to prevent "configuration not found" errors.
+# Do not add real steps here; codeql.yml owns all real scanning.
+
+name: Main
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - name: Delegated to codeql.yml
+        run: echo "CodeQL analysis is managed by .github/workflows/codeql.yml"
