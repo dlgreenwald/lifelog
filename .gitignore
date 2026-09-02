@@ -149,8 +149,7 @@ logs/
 # Compile Commands
 firmware-ota/compile_commands.json
 
-# ---------- Misc ----------
-tmp/
+segments
 temp/
 *.bak
 *.tmp
