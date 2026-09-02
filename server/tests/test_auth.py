@@ -174,10 +174,8 @@ async def test_rejects_http_oidc_issuer():
     """OIDC discovery rejects non-HTTPS issuer URLs."""
     from lifelog.auth import _get_jwk_client
 
-    with patch("lifelog.auth.settings") as mock_settings:
-        mock_settings.oidc_issuer_url = "http://evil.example.com/issuer"
-        with pytest.raises(ValueError, match="HTTPS"):
-            _get_jwk_client()
+    with pytest.raises(ValueError, match="HTTPS"):
+        _get_jwk_client("http://evil.example.com/issuer")
 
 
 @pytest.mark.asyncio
@@ -187,18 +185,12 @@ async def test_rejects_http_jwks_uri():
 
     fake_discovery = {"jwks_uri": "http://evil.example.com/jwks"}
 
-    with (
-        patch("lifelog.auth.settings") as mock_settings,
-        patch("lifelog.auth.httpx.Client") as MockClient,
-    ):
-        mock_settings.oidc_issuer_url = "https://auth.test.com"
+    with patch("lifelog.auth.httpx.Client") as MockClient:
         mock_resp = MagicMock()
         mock_resp.json.return_value = fake_discovery
         mock_resp.raise_for_status = MagicMock()
-        MockClient.return_value.__enter__ = MagicMock(
-            return_value=MockClient.return_value
-        )
+        MockClient.return_value.__enter__ = MagicMock(return_value=MockClient.return_value)
         MockClient.return_value.__exit__ = MagicMock(return_value=False)
         MockClient.return_value.get.return_value = mock_resp
         with pytest.raises(ValueError, match="HTTPS"):
-            _get_jwk_client()
+            _get_jwk_client("https://auth.test.com")

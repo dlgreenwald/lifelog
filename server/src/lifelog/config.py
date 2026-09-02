@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # OIDC Configuration
     oidc_issuer_url: str = ""
     oidc_client_id: str = ""
-    oidc_redirect_uri: str = ""
+    oidc_simulator_client_id: str = ""
 
     # PostgreSQL Database
     postgres_host: str = "localhost"
