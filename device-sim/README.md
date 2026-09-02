@@ -136,7 +136,7 @@ Tests take ~3–4 minutes. Each test uploads 5–15 utterances and exercises:
 | `test_device_reboot_all_utterances_same_session` | All utterances in one session |
 | `test_auth_refresh_on_401` | Upload succeeds after one 401→retry round-trip |
 
-The transcription pipeline is **not** waited for in tests (`poll_until_done` skipped — takes 10–15 min for the full meeting). Full pipeline verification is done in `e2e/run_e2e.py`.
+The transcription pipeline **is** waited for in integration tests (`test_upload_5_utterances_transcribed`, `test_upload_15_utterances_creates_recording`, `test_transcribed_text_matches_ground_truth`). Tests run in ~8 minutes end-to-end.
 
 ## Architecture
 
