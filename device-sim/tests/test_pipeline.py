@@ -10,8 +10,8 @@ and speaker-id services. Tests are skipped if the server is unreachable.
 from __future__ import annotations
 
 import os
+import re
 import time
-from typing import Any
 
 import httpx
 import pytest
@@ -67,31 +67,43 @@ def _poll_until_status(
     return status
 
 
-def _get_recording_transcript(
-    server_url: str, token: str, session_id: int
-) -> list[dict[str, Any]]:
-    """Fetch the most recent recording for a session and return its transcript segments."""
-    # Get latest recording for this user
-    resp = httpx.get(
-        f"{server_url}/api/v1/dashboard/recordings",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=10,
-    )
-    if resp.status_code != 200:
-        return []
-    recordings = resp.json()
-    # Find recording for this session
-    for rec in recordings:
-        if rec.get("session_id") == session_id:
-            # Fetch full recording detail
-            detail_resp = httpx.get(
-                f"{server_url}/api/v1/dashboard/recording/{rec['id']}",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
-            if detail_resp.status_code == 200:
-                return detail_resp.json().get("transcript", {}).get("segments", [])
-    return []
+def _tokenize(text: str) -> list[str]:
+    """Lowercase, strip non-alphanumeric characters, split on whitespace."""
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return text.split()
+
+
+def _word_levenshtein(s: list[str], t: list[str]) -> int:
+    """Word-level Levenshtein edit distance."""
+    m, n = len(s), len(t)
+    dp: list[list[int]] = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m + 1):
+        dp[i][0] = i
+    for j in range(n + 1):
+        dp[0][j] = j
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            cost = 0 if s[i - 1] == t[j - 1] else 1
+            dp[i][j] = min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
+    return dp[m][n]
+
+
+def _word_accuracy(ground_truth: str, actual: str) -> float:
+    """Word-order-aware accuracy: 1 - (edit_distance / max(len_gt, len_actual)).
+
+    Returns 0.0 – 1.0. A score of 1.0 means identical word sequences.
+    Accounts for insertions, deletions, and substitutions.
+    """
+    gt_tokens = _tokenize(ground_truth)
+    ac_tokens = _tokenize(actual)
+    if not gt_tokens and not ac_tokens:
+        return 1.0
+    if not gt_tokens or not ac_tokens:
+        return 0.0
+    dist = _word_levenshtein(gt_tokens, ac_tokens)
+    max_len = max(len(gt_tokens), len(ac_tokens))
+    return max(0.0, 1.0 - (dist / max_len))
 
 
 class TestPipeline:
@@ -117,7 +129,6 @@ class TestPipeline:
             ids = sim.upload_all()
             assert len(ids) == 5, f"Expected 5 server IDs, got {len(ids)}"
 
-            # Poll until all utterances are done (or failed)
             status_map = _poll_until_status(
                 os.environ["DEVICE_SIM_SERVER_URL"],
                 auth.get_token(),
@@ -125,13 +136,10 @@ class TestPipeline:
                 timeout_s=300.0,
             )
 
-            # All should be done (not failed)
             assert all(s == "done" for s in status_map.values()), (
                 f"Some utterances did not complete successfully: {status_map}"
             )
 
-            # Verify transcripts are non-empty via dashboard API
-            # Get the session_id from the most recent session for this user
             resp = httpx.get(
                 f"{os.environ['DEVICE_SIM_SERVER_URL']}/api/v1/dashboard/recordings",
                 headers={"Authorization": f"Bearer {auth.get_token()}"},
@@ -139,11 +147,9 @@ class TestPipeline:
             )
             assert resp.status_code == 200, f"Failed to fetch recordings: {resp.text}"
 
-            # At least one recording should exist now
             recordings = resp.json()
             assert len(recordings) > 0, "Expected at least one recording after transcription"
 
-            # Verify the most recent recording has a non-empty transcript
             latest = recordings[-1]
             detail_resp = httpx.get(
                 f"{os.environ['DEVICE_SIM_SERVER_URL']}/api/v1/dashboard/recording/{latest['id']}",
@@ -153,11 +159,8 @@ class TestPipeline:
             assert detail_resp.status_code == 200
             recording = detail_resp.json()
             segments = recording.get("transcript", {}).get("segments", [])
-            assert len(segments) > 0, (
-                f"Expected non-empty transcript segments, got: {segments}"
-            )
+            assert len(segments) > 0, f"Expected non-empty transcript segments, got: {segments}"
 
-            # Each segment should have text and a speaker
             for seg in segments:
                 assert seg.get("text"), f"Segment missing text: {seg}"
                 assert seg.get("speaker"), f"Segment missing speaker: {seg}"
@@ -169,7 +172,7 @@ class TestPipeline:
     def test_upload_15_utterances_creates_recording(self, ami_data_dir: str) -> None:
         """Upload 15 utterances; verify a recording with summary is created."""
         if not _server_reachable(os.environ["DEVICE_SIM_SERVER_URL"]):
-            pytest.skip("Server not reachable — start with docker-compose up")
+            pytest.skip("Server not reachable")
 
         os.environ["MAX_UTTERANCES"] = "15"
         try:
@@ -183,7 +186,6 @@ class TestPipeline:
             ids = sim.upload_all()
             assert len(ids) == 15, f"Expected 15 IDs, got {len(ids)}"
 
-            # Poll with longer timeout for more utterances
             status_map = _poll_until_status(
                 os.environ["DEVICE_SIM_SERVER_URL"],
                 auth.get_token(),
@@ -195,7 +197,6 @@ class TestPipeline:
                 f"Some utterances did not complete: {status_map}"
             )
 
-            # Fetch recordings — should have at least one
             resp = httpx.get(
                 f"{os.environ['DEVICE_SIM_SERVER_URL']}/api/v1/dashboard/recordings",
                 headers={"Authorization": f"Bearer {auth.get_token()}"},
@@ -205,12 +206,10 @@ class TestPipeline:
             recordings = resp.json()
             assert len(recordings) > 0, "Expected at least one recording"
 
-            # Most recent recording should have a summary
             latest = recordings[-1]
             assert latest.get("summary"), f"Recording missing summary: {latest}"
             assert latest.get("category"), f"Recording missing category: {latest}"
 
-            # Transcript segments should exist and be non-empty
             detail = httpx.get(
                 f"{os.environ['DEVICE_SIM_SERVER_URL']}/api/v1/dashboard/recording/{latest['id']}",
                 headers={"Authorization": f"Bearer {auth.get_token()}"},
@@ -218,6 +217,102 @@ class TestPipeline:
             ).json()
             segments = detail.get("transcript", {}).get("segments", [])
             assert len(segments) > 0, "Expected non-empty transcript segments"
+
+        finally:
+            os.environ.pop("MAX_UTTERANCES", None)
+
+
+class TestTranscriptAccuracy:
+    """Verify transcribed text matches AMI ground truth within acceptable error bounds."""
+
+    @pytest.mark.integration
+    def test_transcribed_text_matches_ground_truth(self, ami_data_dir: str) -> None:
+        """Upload 5 utterances; compare each against AMI ground truth transcription.
+
+        Uses word-level Levenshtein edit distance to check that the transcribed
+        word sequence matches the reference word sequence. Accounts for:
+        - Insertions, deletions, and substitutions (not just missing words)
+        - Word order (a transposed phrase scores lower)
+        - Minor ASR errors (single-word substitutions don't destroy the score)
+
+        Require ≥ 50% word-sequence accuracy across non-empty utterances to catch
+        gross failures (silent audio, model unload, wrong language).
+        """
+        if not _server_reachable(os.environ["DEVICE_SIM_SERVER_URL"]):
+            pytest.skip("Server not reachable")
+
+        os.environ["MAX_UTTERANCES"] = "5"
+        try:
+            auth = DeviceAuthenticator()
+            sim = Simulator(
+                server_url=os.environ["DEVICE_SIM_SERVER_URL"],
+                meeting_id=os.environ.get("MEETING_ID", "EN2001a"),
+                authenticator=auth,
+            )
+            sim.prepare(ami_data_dir)
+
+            ground_truth = {u.index: u.transcript for u in sim.utterances}
+
+            ids = sim.upload_all()
+            assert len(ids) == 5
+
+            status_map = _poll_until_status(
+                os.environ["DEVICE_SIM_SERVER_URL"],
+                auth.get_token(),
+                ids,
+                timeout_s=300.0,
+            )
+            assert all(s == "done" for s in status_map.values()), str(status_map)
+
+            resp = httpx.get(
+                f"{os.environ['DEVICE_SIM_SERVER_URL']}/api/v1/dashboard/recordings",
+                headers={"Authorization": f"Bearer {auth.get_token()}"},
+                timeout=10,
+            )
+            assert resp.status_code == 200
+            recordings = resp.json()
+
+            # Find the most recent recording with transcript segments
+            recording = None
+            for rec in reversed(recordings):
+                detail_resp = httpx.get(
+                    f"{os.environ['DEVICE_SIM_SERVER_URL']}/api/v1/dashboard/recording/{rec['id']}",
+                    headers={"Authorization": f"Bearer {auth.get_token()}"},
+                    timeout=10,
+                )
+                detail = detail_resp.json()
+                segments = detail.get("transcript", {}).get("segments", [])
+                if segments:
+                    recording = detail
+                    break
+
+            assert recording is not None, "No recording found with transcript segments"
+            segments = recording.get("transcript", {}).get("segments", [])
+            actual_text = " ".join(seg.get("text", "") for seg in segments)
+
+            # Per-utterance word-sequence accuracy
+            results: list[tuple[int, str, float]] = []
+            for idx, gt_text in ground_truth.items():
+                stripped = gt_text.strip()
+                if not stripped or stripped in ("...", ".", "-"):
+                    continue
+                rate = _word_accuracy(gt_text, actual_text)
+                results.append((idx, gt_text, rate))
+
+            overall_rate = sum(r[2] for r in results) / len(results) if results else 0.0
+            assert overall_rate >= 0.50, (
+                f"Transcript accuracy {overall_rate:.0%} < 50% threshold. "
+                f"Per-utterance: {[(idx, f'{rate:.0%}') for idx, _, rate in results]}"
+            )
+
+            # Print per-utterance detail
+            for idx, gt_text, rate in results:
+                gt_tokens = _tokenize(gt_text)
+                ac_tokens = _tokenize(actual_text)
+                dist = _word_levenshtein(gt_tokens, ac_tokens)
+                print(f"\n  Utterance {idx}: {rate:.0%} accuracy | edit dist={dist} | GT: {gt_text[:60]}")
+                print(f"    GT tokens:      {' '.join(gt_tokens)[:80]}")
+                print(f"    Actual tokens:  {' '.join(ac_tokens)[:80]}")
 
         finally:
             os.environ.pop("MAX_UTTERANCES", None)
