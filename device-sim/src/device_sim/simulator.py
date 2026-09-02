@@ -84,60 +84,65 @@ class Simulator:
         return self.utterances
 
     def _upload_one(self, utt: UtteranceSlice) -> int | None:
-        """Upload a single utterance; returns the server-assigned utterance ID."""
+        """Upload a single utterance with retries for transient errors."""
         if not Path(utt.opus_path).exists():
             raise FileNotFoundError(f"Opus file not found: {utt.opus_path}")
 
         with Path(utt.opus_path).open("rb") as f:
             audio_bytes = f.read()
 
-        token = self.auth.get_token()
-        headers = {"Authorization": f"Bearer {token}"}
-
         filename = f"rec_{self.device_utterance_id:05d}.opus"
 
-        with httpx.Client(timeout=30.0) as client:
-            try:
-                resp = client.post(
-                    f"{self.server_url}/api/v1/upload",
-                    headers=headers,
-                    files={
-                        "file": (filename, audio_bytes, "application/octet-stream"),
-                    },
-                    data={
-                        "utterance_id": str(self.device_utterance_id),
-                        "chunk_index": "0",
-                        "is_final": "true",
-                    },
-                )
-            except httpx.RequestError as exc:
-                raise RuntimeError(f"Upload request failed: {exc}") from exc
+        # Retry transient errors (timeout, connect) with backoff
+        for attempt in range(3):
+            token = self.auth.get_token()
+            headers = {"Authorization": f"Bearer {token}"}
+            with httpx.Client(timeout=60.0) as client:
+                try:
+                    resp = client.post(
+                        f"{self.server_url}/api/v1/upload",
+                        headers=headers,
+                        files={
+                            "file": (filename, audio_bytes, "application/octet-stream"),
+                        },
+                        data={
+                            "utterance_id": str(self.device_utterance_id),
+                            "chunk_index": "0",
+                            "is_final": "true",
+                        },
+                    )
+                except (httpx.ReadTimeout, httpx.ConnectError, httpx.NetworkError) as exc:
+                    if attempt < 2:
+                        time.sleep(2 ** attempt)
+                        continue
+                    raise RuntimeError(f"Upload request failed after 3 attempts: {exc}") from exc
+                except httpx.RequestError as exc:
+                    raise RuntimeError(f"Upload request failed: {exc}") from exc
 
-            if resp.status_code == 401:
-                # Force refresh and retry once
-                self.auth.refresh()
-                token = self.auth.get_token()
-                headers = {"Authorization": f"Bearer {token}"}
-                resp = client.post(
-                    f"{self.server_url}/api/v1/upload",
-                    headers=headers,
-                    files={
-                        "file": (filename, audio_bytes, "application/octet-stream"),
-                    },
-                    data={
-                        "utterance_id": str(self.device_utterance_id),
-                        "chunk_index": "0",
-                        "is_final": "true",
-                    },
-                )
+                if resp.status_code == 401:
+                    self.auth.refresh()
+                    token = self.auth.get_token()
+                    headers = {"Authorization": f"Bearer {token}"}
+                    resp = client.post(
+                        f"{self.server_url}/api/v1/upload",
+                        headers=headers,
+                        files={
+                            "file": (filename, audio_bytes, "application/octet-stream"),
+                        },
+                        data={
+                            "utterance_id": str(self.device_utterance_id),
+                            "chunk_index": "0",
+                            "is_final": "true",
+                        },
+                    )
 
-            if resp.status_code != 200 and resp.status_code != 201:
-                raise RuntimeError(
-                    f"Upload failed with {resp.status_code}: {resp.text}",
-                )
+                if resp.status_code not in (200, 201):
+                    raise RuntimeError(
+                        f"Upload failed with {resp.status_code}: {resp.text}",
+                    )
 
-            payload = resp.json()
-            return payload.get("server_utt_id") or payload.get("utterance_id")
+                payload = resp.json()
+                return payload.get("server_utt_id") or payload.get("utterance_id")
 
         return None
 

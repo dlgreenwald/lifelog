@@ -26,10 +26,12 @@ class UtteranceSlice:
 
 
 NITE_NS = "{http://nite.sourceforge.net/}"
+PAD_MS = 300
 
 
 def _parse_info_xml(path: str) -> dict[int, str]:
     import xml.etree.ElementTree as ET
+
     mapping: dict[int, str] = {}
     tree = ET.parse(path)
     root = tree.getroot()
@@ -39,8 +41,13 @@ def _parse_info_xml(path: str) -> dict[int, str]:
     return mapping
 
 
-def _iter_segments(annotations_zip: zipfile.ZipFile, meeting_id: str) -> Iterator:
+def _iter_segments(
+    annotations_zip: zipfile.ZipFile,
+    meeting_id: str,
+    channel: int | None = None,
+) -> Iterator:
     import xml.etree.ElementTree as ET
+
     names = sorted(
         n for n in annotations_zip.namelist()
         if f"/{meeting_id}." in n and n.endswith(".segments.xml")
@@ -49,7 +56,9 @@ def _iter_segments(annotations_zip: zipfile.ZipFile, meeting_id: str) -> Iterato
         content = annotations_zip.read(name).decode("utf-8", errors="replace")
         root = ET.fromstring(content)
         for seg in root.findall(".//segment"):
-            channel = int(seg.attrib["channel"])
+            ch = int(seg.attrib["channel"])
+            if channel is not None and ch != channel:
+                continue
             start_s = float(seg.attrib["transcriber_start"])
             end_s = float(seg.attrib["transcriber_end"])
             word_refs: list[str] = []
@@ -62,11 +71,12 @@ def _iter_segments(annotations_zip: zipfile.ZipFile, meeting_id: str) -> Iterato
                             wid = id_part.rstrip(")").split("(")[-1]
                             if wid:
                                 word_refs.append(wid)
-            yield channel, start_s, end_s, word_refs
+            yield ch, start_s, end_s, word_refs
 
 
 def _get_words(annotations_zip: zipfile.ZipFile, meeting_id: str) -> dict[str, str]:
     import xml.etree.ElementTree as ET
+
     words: dict[str, str] = {}
     word_files = sorted(
         n for n in annotations_zip.namelist()
@@ -76,7 +86,6 @@ def _get_words(annotations_zip: zipfile.ZipFile, meeting_id: str) -> dict[str, s
         content = annotations_zip.read(name).decode("ISO-8859-1", errors="replace")
         root = ET.fromstring(content)
         for w_elem in root.findall(".//w"):
-            # w elements have plain tag but namespaced id attribute
             wid = w_elem.attrib.get(f"{NITE_NS}id", "")
             text = (w_elem.text or "").strip()
             if wid and text:
@@ -88,6 +97,7 @@ def _build_utterances(
     wav_path: str,
     annotation_zip_path: str,
     meeting_id: str,
+    headset_channel: int | None = None,
 ) -> list[tuple[int, str, float, float, str, int]]:
     info_path = str(Path(wav_path).parent / f"{meeting_id}.info.xml")
     speaker_map = _parse_info_xml(info_path) if Path(info_path).exists() else {}
@@ -96,10 +106,10 @@ def _build_utterances(
         words = _get_words(zf, meeting_id)
         all_segs: list[tuple[int, str, float, float, str]] = []
 
-        for channel, start_s, end_s, word_refs in _iter_segments(zf, meeting_id):
-            speaker = speaker_map.get(channel, f"CH{channel}")
+        for ch, start_s, end_s, word_refs in _iter_segments(zf, meeting_id, channel=headset_channel):
+            speaker = speaker_map.get(ch, f"CH{ch}")
             text = " ".join(words[ref] for ref in word_refs if ref in words)
-            all_segs.append((channel, speaker, start_s, end_s, text))
+            all_segs.append((ch, speaker, start_s, end_s, text))
 
     all_segs.sort(key=lambda x: x[2])
 
@@ -111,7 +121,7 @@ def _build_utterances(
     cur_text = ""
     utt_idx = 0
 
-    for _channel, speaker, start, end, transcript in all_segs:
+    for _ch, speaker, start, end, transcript in all_segs:
         gap = start - cur_end
         new_session = gap >= 2.0
         new_utt = new_session or (speaker != cur_speaker and cur_speaker != "")
@@ -154,22 +164,28 @@ def slice_meeting(
     if audio.channels != 1:
         audio = audio.set_channels(1)
 
-    utterances = _build_utterances(wav_path, annotation_zip_path, meeting_id)
+    headset_channel_str = os.environ.get("HEADSET_CHANNEL", "")
+    headset_channel: int | None = int(headset_channel_str) if headset_channel_str.isdigit() else None
+    utterances = _build_utterances(wav_path, annotation_zip_path, meeting_id, headset_channel=headset_channel)
 
     if max_utterances > 0:
         utterances = utterances[:max_utterances]
 
-    PAD_MS = 300
+    min_utt_dur = float(os.environ.get("MIN_UTTERANCE_DURATION", "20"))
     silence_insert_every = int(os.environ.get("SILENCE_INSERT_EVERY", "0"))
     silence_insert_prob = float(os.environ.get("SILENCE_INSERT_PROBABILITY", "0.5"))
 
     slices: list[UtteranceSlice] = []
     real_counter = 0
 
-    for idx, (_utt_idx, speaker, start_ms, end_ms, transcript, session_key) in enumerate(utterances):
+    for idx, (_utt_idx, speaker, start_s, end_s, transcript, session_key) in enumerate(utterances):
+        duration_s = end_s - start_s
+        if duration_s < min_utt_dur:
+            continue
+
         pad_ms = PAD_MS
-        start_pad = max(0, start_ms * 1000 - pad_ms)
-        end_pad = min(len(audio), end_ms * 1000 + pad_ms)
+        start_pad = max(0, start_s * 1000 - pad_ms)
+        end_pad = min(len(audio), end_s * 1000 + pad_ms)
         chunk = audio[start_pad:end_pad]
 
         out_wav = os.path.join(output_dir, f"utterance_{idx:04d}.wav")
@@ -179,8 +195,8 @@ def slice_meeting(
             index=idx,
             wav_path=out_wav,
             opus_path="",
-            start_s=start_ms,
-            end_s=end_ms,
+            start_s=start_s,
+            end_s=end_s,
             speaker_id=speaker,
             transcript=transcript,
             session_id=session_key,
@@ -198,8 +214,8 @@ def slice_meeting(
                 index=idx + 0.5,
                 wav_path=silence_wav,
                 opus_path="",
-                start_s=end_ms,
-                end_s=end_ms + dur_s,
+                start_s=end_s,
+                end_s=end_s + dur_s,
                 speaker_id="UNKNOWN",
                 transcript="",
                 session_id=session_key,

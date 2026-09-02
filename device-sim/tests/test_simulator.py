@@ -13,6 +13,9 @@ from device_sim.simulator import Simulator
 
 
 def _make_sim(ami_data_dir: str) -> Simulator:
+    # Disable duration filter so slicer doesn't reject all AMI utterances
+    # (default MIN_UTTERANCE_DURATION=20 in slicer.py filters out everything)
+    os.environ["MIN_UTTERANCE_DURATION"] = "0"
     auth = DeviceAuthenticator()
     return Simulator(
         server_url=os.environ["DEVICE_SIM_SERVER_URL"],

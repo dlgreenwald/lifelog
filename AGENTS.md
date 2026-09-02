@@ -388,6 +388,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - Firmware targets `seeed_xiao_esp32s3` board with `partitions_ota.csv` (dual 3MB app slots + 1.9MB model)
 - Docker images use CUDA runtime for GPU services; dashboard uses `node:24-alpine` → `nginx:alpine`
 - GPU services require NVIDIA runtime with CUDA
+- Transcription worker: **`ASR_COMPUTE_TYPE=int8`** is **required on 16 GiB GPU cards** (RTX 4060/5070, RTX 5060 Ti). At float16 the combined load of WhisperX large-v3 + pyannote diarization exceeds 16 GiB when Ollama or other processes share the card. int8 drops memory usage to ~4000–5000 MiB, leaving headroom for concurrent speaker-id inference. Set via `ASR_COMPUTE_TYPE=int8` environment variable in `docker-compose.yml`.
 - SSL certs are generated at compose level (command overrides), not baked into Dockerfiles
 
 ## Testing & QA
