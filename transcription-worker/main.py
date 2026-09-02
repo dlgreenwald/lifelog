@@ -278,13 +278,13 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
         )
         response.raise_for_status()
     except Exception:
-        logger.exception("transcription_failed", job_id=job_id)
+        logger.exception("transcription_failed job_id=%d", job_id)
         try:
             await client.post(
                 f"{SERVER_URL}/internal/transcription/fail/{job_id}", json={}
             )
         except Exception:
-            logger.exception("failed_to_mark_job_failed", job_id=job_id)
+            logger.exception("failed_to_mark_job_failed job_id=%d", job_id)
         raise
     finally:
         model_manager.end_job()

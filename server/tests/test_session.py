@@ -572,6 +572,7 @@ class TestHourlyReprocessing:
             mock_db.get_user_settings = AsyncMock(
                 return_value={"language": "auto", "llm_context": ""}
             )
+            mock_db.check_and_end_inactive_session = AsyncMock(return_value=False)
             await _finalize_completed_sessions()
         saved = mock_db.save_session_recording.call_args.kwargs["speaker_segments"]
         assert saved == [
@@ -711,3 +712,110 @@ class TestPartitionSegments:
         from lifelog.worker import _partition_segments
 
         assert _partition_segments([]) == []
+
+
+class TestInactivityTimeout:
+    """Tests for 5-minute inactivity timeout that ends sessions after last transcribed speech."""
+
+    @pytest.mark.asyncio
+    async def test_apply_quick_transcripts_ends_session_on_inactivity(self):
+        """When last text-bearing utterance is > 5 min ago, session is ended after quick job is applied."""
+        from lifelog.worker import _apply_quick_transcripts
+
+        session_id = 7
+        job_id = 42
+        utterance_id = 99
+        # Job with result covering the utterance
+        job = {
+            "id": job_id,
+            "session_id": session_id,
+            "chunk_index": 0,
+            "status": "done",
+            "job_type": "quick",
+            "result": {
+                "session_id": session_id,
+                "utterance_ids": [utterance_id],
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 1.0,
+                        "text": "hello world",
+                        "speaker": "SPEAKER_00",
+                    }
+                ],
+            },
+        }
+        utterances = [
+            {
+                "utterance_id": utterance_id,
+                "created_at": datetime(2025, 6, 1, 10, 29, 0, tzinfo=UTC),
+            }
+        ]
+        with patch("lifelog.worker.db") as mock_db:
+            mock_db.get_completed_quick_jobs = AsyncMock(return_value=[job])
+            mock_db.get_session_all_utterances = AsyncMock(return_value=utterances)
+            mock_db.update_session_utterance_transcript = AsyncMock()
+            # Simulate: last text-bearing utterance is > 5 min ago → check returns True
+            mock_db.check_and_end_inactive_session = AsyncMock(return_value=True)
+            mock_db.mark_quick_job_applied = AsyncMock()
+            await _apply_quick_transcripts()
+
+        # check_and_end_inactive_session was called
+        mock_db.check_and_end_inactive_session.assert_awaited_once_with(session_id)
+        # end_session was called (check returned True), so reprocess was called
+        mock_db.mark_quick_job_applied.assert_awaited_once_with(job_id)
+
+    @pytest.mark.asyncio
+    async def test_apply_quick_transcripts_does_not_end_session_when_active(self):
+        """When last text-bearing utterance is < 5 min ago, session continues normally."""
+        from lifelog.worker import _apply_quick_transcripts
+
+        session_id = 7
+        job_id = 42
+        utterance_id = 99
+        job = {
+            "id": job_id,
+            "session_id": session_id,
+            "chunk_index": 0,
+            "status": "done",
+            "job_type": "quick",
+            "result": {
+                "session_id": session_id,
+                "utterance_ids": [utterance_id],
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 1.0,
+                        "text": "hello world",
+                        "speaker": "SPEAKER_00",
+                    }
+                ],
+            },
+        }
+        utterances = [
+            {
+                "utterance_id": utterance_id,
+                "created_at": datetime(2025, 6, 1, 10, 29, 0, tzinfo=UTC),
+            }
+        ]
+        with (
+            patch("lifelog.worker.db") as mock_db,
+            patch(
+                "lifelog.worker._reprocess_session", new_callable=AsyncMock
+            ) as mock_reprocess,
+        ):
+            mock_db.get_completed_quick_jobs = AsyncMock(return_value=[job])
+            mock_db.get_session_all_utterances = AsyncMock(return_value=utterances)
+            mock_db.update_session_utterance_transcript = AsyncMock()
+            # Session is still active (last text was recent)
+            mock_db.check_and_end_inactive_session = AsyncMock(return_value=False)
+            mock_db.mark_quick_job_applied = AsyncMock()
+
+            await _apply_quick_transcripts()
+
+        # check_and_end_inactive_session was called but returned False
+        mock_db.check_and_end_inactive_session.assert_awaited_once_with(session_id)
+        # reprocess was NOT called
+        mock_reprocess.assert_not_called()
+        # mark_quick_job_applied was still called
+        mock_db.mark_quick_job_applied.assert_awaited_once_with(job_id)

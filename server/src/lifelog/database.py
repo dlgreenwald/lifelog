@@ -805,6 +805,19 @@ async def end_session(session_id: int):
         )
 
 
+async def check_and_end_inactive_session(session_id: int) -> bool:
+    """End session if last utterance with text is older than session_gap_minutes. Returns True if ended."""
+    last_time = await get_last_utterance_with_text_time(session_id)
+    if last_time is None:
+        return False
+    now = datetime.now(UTC).replace(tzinfo=None)
+    gap_minutes = (now - last_time.replace(tzinfo=None)).total_seconds() / 60
+    if gap_minutes > settings.session_gap_minutes:
+        await end_session(session_id)
+        return True
+    return False
+
+
 async def get_idle_active_sessions(max_idle_minutes: float) -> list[dict]:
     """Find active sessions whose last activity is older than max_idle_minutes.
 
@@ -980,6 +993,24 @@ async def get_last_utterance_time(session_id: int) -> datetime | None:
             FROM session_utterances
             WHERE session_id = $1
             ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            session_id,
+        )
+        return row["created_at"] if row else None
+
+
+async def get_last_utterance_with_text_time(session_id: int) -> datetime | None:
+    """Return the created_at of the last session_utterance with non-empty transcript segments."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT su.created_at
+            FROM session_utterances su
+            WHERE su.session_id = $1
+              AND jsonb_path_exists(su.transcript, '$.segments[0]')
+              AND jsonb_array_length(su.transcript->'segments') > 0
+            ORDER BY su.created_at DESC
             LIMIT 1
             """,
             session_id,

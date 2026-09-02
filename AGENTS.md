@@ -30,7 +30,13 @@
 - Squash merge (no merge commits, no rebase merges)
 - Delete branch after merge
 
-**Long-lived branches are prohibited.** If a branch lives more than a few days, it's too big — break it into smaller PRs. The only exception is `release/*` branches for versioned releases (not applicable until needed).
+## ⚠️ Docker & Environment Safety
+
+**NEVER destroy Docker volumes.** `docker-compose down -v` or `docker volume rm` permanently destroys persisted data (postgres data, audio files). Use `docker-compose down` (without `-v`) to stop services while preserving volumes. If volume cleanup is genuinely needed, ask first.
+
+**NEVER create or modify `.env` files without explicit instruction.** The `.env` contains secrets (database passwords, OIDC credentials, HF tokens). If an `.env` does not exist and is required for a task, ask the user to provide the values rather than generating defaults.
+
+## ⚠️ Branch Rule
 
 ## ⚠️ Capture → Issue → PR Rule
 

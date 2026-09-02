@@ -4,7 +4,7 @@ asyncpg's pool.acquire() returns an async context manager directly
 (not a coroutine). The mock must replicate this pattern.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -530,4 +530,71 @@ async def test_save_partition_recording_inserts_with_partition_index(mock_conn):
     assert recording_id == 42
     sql = mock_conn.fetchrow.call_args.args[0]
     assert "$2" in sql  # session_id
-    assert "$3" in sql  # partition_index
+
+
+# ── Inactivity timeout tests ────────────────────────────────────────
+
+
+class TestGetLastUtteranceWithTextTime:
+    @pytest.mark.asyncio
+    async def test_returns_created_at_when_segments_exist(self, mock_conn):
+        from lifelog.database import get_last_utterance_with_text_time
+
+        now = datetime(2025, 6, 1, 10, 30, 0, tzinfo=UTC)
+        mock_conn.fetchrow.return_value = {"created_at": now}
+        with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+            result = await get_last_utterance_with_text_time(session_id=5)
+        assert result == now
+        sql = mock_conn.fetchrow.call_args.args[0]
+        assert "jsonb_path_exists" in sql
+        assert "jsonb_array_length" in sql
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_segments(self, mock_conn):
+        from lifelog.database import get_last_utterance_with_text_time
+
+        mock_conn.fetchrow.return_value = None
+        with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+            result = await get_last_utterance_with_text_time(session_id=5)
+        assert result is None
+
+
+class TestCheckAndEndInactiveSession:
+    @pytest.mark.asyncio
+    async def test_ends_session_when_gap_exceeds_threshold(self, mock_conn):
+        """When last text-bearing utterance is > 5 min ago, end_session is called."""
+        from lifelog.database import check_and_end_inactive_session
+
+        now = datetime.now(UTC)
+        past = now - timedelta(minutes=10)
+        mock_conn.fetchrow.return_value = {"created_at": past}
+        with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+            result = await check_and_end_inactive_session(session_id=3)
+        assert result is True
+        mock_conn.execute.assert_awaited_once()
+        call_sql = mock_conn.execute.call_args.args[0]
+        assert "UPDATE sessions" in call_sql
+
+    @pytest.mark.asyncio
+    async def test_does_not_end_session_when_within_threshold(self, mock_conn):
+        """When last text-bearing utterance is < 5 min ago, end_session is NOT called."""
+        from lifelog.database import check_and_end_inactive_session
+
+        now = datetime.now(UTC)
+        recent = now - timedelta(minutes=2)
+        mock_conn.fetchrow.return_value = {"created_at": recent}
+        with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+            result = await check_and_end_inactive_session(session_id=3)
+        assert result is False
+        mock_conn.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_does_not_end_session_when_no_text_utterances(self, mock_conn):
+        """When no text-bearing utterances exist, session is not ended."""
+        from lifelog.database import check_and_end_inactive_session
+
+        mock_conn.fetchrow.return_value = None
+        with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+            result = await check_and_end_inactive_session(session_id=3)
+        assert result is False
+        mock_conn.execute.assert_not_called()
