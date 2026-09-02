@@ -29,16 +29,12 @@ def unload_models(models: dict) -> None:
     After all GPU holders are gone, ``torch.cuda.empty_cache()``
     actually returns the freed memory to the driver.
 
-    Sequence matters because the WhisperX ``FasterWhisperPipeline``,
-    the pyannote ``DiarizationPipeline`` and the
-    ``CTranslate2 WhisperModel`` allocate intermediate GPU state
-    (output buffers, encoder scratch) on every transcription call;
-    these tensors are dropped when their Python refs are released
-    but Python's cyclic GC does not always run promptly. We
-    therefore:
-
-    1. Drop every key that mutually references a GPU holder, so the
-       model objects themselves go unreachable.
+    Sequence:
+    1. ``models.clear()`` — empty the dict so ``ModelManager.load()``'s
+       ``if not self._models`` guard correctly detects "needs reload"
+       after an unload (a prior version used ``pop()`` on individual keys,
+       which left the dict non-empty and caused ``load()`` to skip reload,
+       triggering ``KeyError: 'asr'`` on the next job).
     2. ``gc.collect()`` so cyclic reference chains inside the
        whisperx + pyannote pipelines run their ``__del__``.
     3. ``torch.cuda.synchronize()`` so in-flight kernels finish and
@@ -49,21 +45,11 @@ def unload_models(models: dict) -> None:
        across the process boundary.
     """
     import gc
-
     import torch
 
-    for key in ("asr", "align_model", "diarize", "_align_cache"):
-        models.pop(key, None)
-    # ``align_cache`` (no underscore) is the return-side key from
-    # ``load_models``; it is a plain dict and does not hold GPU but
-    # dropping it keeps the model-manager dict in lock-step with
-    # what ``load_models`` returns.
-    models.pop("align_cache", None)
-    # ``metadata`` is small (a Python labels dict) and does not hold
-    # GPU memory, but it is meaningless without ``align_model``;
-    # drop it so transient reloads are forced to re-pull it from
-    # ``whisperx.load_align_model``.
-    models.pop("metadata", None)
+    # Clear the entire dict so ModelManager.load()'s `if not self._models`
+    # guard correctly detects "needs reload" after an unload.
+    models.clear()
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.synchronize()
