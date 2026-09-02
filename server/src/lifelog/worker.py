@@ -416,6 +416,17 @@ async def _apply_quick_transcripts() -> None:
                     utt["utterance_id"],
                     {"segments": utterance_segments.get(utt["utterance_id"], [])},
                 )
+            # After applying quick transcript, check for 5-min inactivity
+            ended = await db.check_and_end_inactive_session(session_id)
+            if ended:
+                logger.info("session_ended_on_inactivity", session_id=session_id)
+                try:
+                    await _reprocess_session({"id": session_id})
+                except Exception:
+                    logger.exception(
+                        "inactivity_session_queue_error", session_id=session_id
+                    )
+
             await db.mark_quick_job_applied(job["id"])
             logger.info(
                 "quick_job_applied",
@@ -781,6 +792,19 @@ async def _finalize_completed_sessions() -> None:
     """
     sessions = await db.get_sessions_for_reprocessing()
     for session in sessions:
+        # Check 5-min inactivity timeout before finalizing
+        ended = await db.check_and_end_inactive_session(session["id"])
+        if ended:
+            logger.info(
+                "session_ended_on_inactivity_before_finalize", session_id=session["id"]
+            )
+            try:
+                await _reprocess_session(session)
+            except Exception:
+                logger.exception(
+                    "inactivity_finalize_session_queue_error", session_id=session["id"]
+                )
+            continue
         try:
             jobs = await db.get_transcription_jobs(session["id"])
             full_jobs = [

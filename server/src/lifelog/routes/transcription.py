@@ -233,38 +233,47 @@ async def get_job_audio(job_id: int):
             "utterances": [],
             "utterance_ids": [],
         }
-    metadata = []
-    for utterance in utterances:
-        filename = utterance.get("audio_filename")
-        if not filename:
-            continue
-        try:
-            audio = audio_crypto.decrypt_audio(filename, secret, salt)
-        except Exception:
-            logger.warning(
-                "audio_unavailable_for_job",
-                filename=filename,
-                job_id=job_id,
-                exc_info=True,
-            )
-            continue
-        audio_segments.append(base64.b64encode(audio).decode("ascii"))
-        created_at = utterance["created_at"]
-        timestamps.append(_iso(created_at))
-        metadata.append(
-            {
-                "utterance_id": utterance["utterance_id"],
-                "audio_filename": filename,
-                "created_at": _iso(created_at),
-            }
+    else:
+        # Full job: fetch session utterances in range
+        utterances = await db.get_session_utterances_in_range(
+            job["session_id"],
+            job["window_start"],
+            job["window_end"],
         )
-    if not audio_segments:
-        raise HTTPException(status_code=404, detail="No usable audio for job")
-    return {
-        "audio_segments": audio_segments,
-        "timestamps": timestamps,
-        "utterances": metadata,
-    }
+        audio_segments = []
+        timestamps = []
+        metadata = []
+        for utterance in utterances:
+            filename = utterance.get("audio_filename")
+            if not filename:
+                continue
+            try:
+                audio = audio_crypto.decrypt_audio(filename, secret, salt)
+            except Exception:
+                logger.warning(
+                    "audio_unavailable_for_job",
+                    filename=filename,
+                    job_id=job_id,
+                    exc_info=True,
+                )
+                continue
+            audio_segments.append(base64.b64encode(audio).decode("ascii"))
+            created_at = utterance["created_at"]
+            timestamps.append(_iso(created_at))
+            metadata.append(
+                {
+                    "utterance_id": utterance["utterance_id"],
+                    "audio_filename": filename,
+                    "created_at": _iso(created_at),
+                }
+            )
+        if not audio_segments:
+            raise HTTPException(status_code=404, detail="No usable audio for job")
+        return {
+            "audio_segments": audio_segments,
+            "timestamps": timestamps,
+            "utterances": metadata,
+        }
 
 
 @router.post("/stage/{job_id}")
