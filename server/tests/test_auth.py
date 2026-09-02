@@ -189,7 +189,9 @@ async def test_rejects_http_jwks_uri():
         mock_resp = MagicMock()
         mock_resp.json.return_value = fake_discovery
         mock_resp.raise_for_status = MagicMock()
-        MockClient.return_value.__enter__ = MagicMock(return_value=MockClient.return_value)
+        MockClient.return_value.__enter__ = MagicMock(
+            return_value=MockClient.return_value
+        )
         MockClient.return_value.__exit__ = MagicMock(return_value=False)
         MockClient.return_value.get.return_value = mock_resp
         with pytest.raises(ValueError, match="HTTPS"):

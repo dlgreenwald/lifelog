@@ -97,7 +97,11 @@ async def validate_bearer_token(token: str) -> dict:
             )
         return user
     except pyjwt.ExpiredSignatureError:
-        logger.warning("Token expired: sub=%s exp=%s", payload.get("sub", "?"), payload.get("exp", "?"))
+        logger.warning(
+            "Token expired: sub=%s exp=%s",
+            payload.get("sub", "?"),
+            payload.get("exp", "?"),
+        )
         raise HTTPException(status_code=401, detail="Token expired")
     except pyjwt.InvalidAudienceError:
         logger.warning(
@@ -128,7 +132,9 @@ async def validate_oidc_token(
     issuer: str = payload.get("iss", "") or ""
 
     try:
-        signing_key = _get_jwk_client(issuer).get_signing_key_from_jwt(token.credentials)
+        signing_key = _get_jwk_client(issuer).get_signing_key_from_jwt(
+            token.credentials
+        )
         payload = pyjwt.decode(
             token.credentials,
             signing_key.key,
@@ -147,7 +153,11 @@ async def validate_oidc_token(
             )
         return user
     except pyjwt.ExpiredSignatureError:
-        logger.warning("Token expired: sub=%s exp=%s", payload.get("sub", "?"), payload.get("exp", "?"))
+        logger.warning(
+            "Token expired: sub=%s exp=%s",
+            payload.get("sub", "?"),
+            payload.get("exp", "?"),
+        )
         raise HTTPException(status_code=401, detail="Token expired")
     except pyjwt.InvalidAudienceError:
         logger.warning(

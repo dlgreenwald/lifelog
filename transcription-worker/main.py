@@ -34,16 +34,19 @@ def _cuda_allocated_mib() -> int:
     back to 0 if CUDA is not available."""
     try:
         import torch
+
         if torch.cuda.is_available():
             return int(torch.cuda.memory_allocated() / 1024 / 1024)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Could not get CUDA memory: %s", e)
     return 0
 
 
 class Settings(BaseSettings):
     idle_unload_seconds: int = 300  # 0 disables unloading; matches speaker-id default
-    warm_keepalive_seconds: int = 60  # additional time to wait after idle_unload before unloading
+    warm_keepalive_seconds: int = (
+        60  # additional time to wait after idle_unload before unloading
+    )
     idle_process_restart_seconds: int = 900  # 0 disables; exit-after-unload safety net
 
     model_config = SettingsConfigDict(env_file=".env")
