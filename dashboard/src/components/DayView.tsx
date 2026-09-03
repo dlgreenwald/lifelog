@@ -16,8 +16,16 @@ interface DayViewProps {
 }
 
 function getRecordingTimeRange(rec: Recording): { startMin: number; endMin: number } {
-  const recDate = parseISO(rec.timestamp);
-  const startMin = Math.max(0, recDate.getHours() * 60 + recDate.getMinutes());
+  // Use audio_range_start for position when available (actual audio time, not upload time).
+  // Fall back to timestamp if audio_range_start is not set.
+  let startMin = 0;
+  if (rec.audio_range_start) {
+    const s = parseISO(rec.audio_range_start);
+    startMin = Math.max(0, s.getHours() * 60 + s.getMinutes());
+  } else {
+    const recDate = parseISO(rec.timestamp);
+    startMin = Math.max(0, recDate.getHours() * 60 + recDate.getMinutes());
+  }
 
   let durationMinutes = 30;
   if (rec.audio_range_start && rec.audio_range_end) {
@@ -46,58 +54,98 @@ const GUTTER = 3;
 
 /**
  * Assigns overlapping recordings to side-by-side columns (lanes).
- * Single recording takes full width; 2+ overlapping recordings are lane-allocated.
- * Overlap is determined by the SAME calculation as visual height (min 30, max 120).
+ * Uses Union-Find to track collision chains — when a recording collides
+ * with any member of a chain, the ENTIRE chain is updated to the new size.
+ *
+ * Collision = prev's visual block overlaps current's visual block:
+ *   prev.startMin < currentVisualEnd && current.startMin < prevVisualEnd
+ *
+ * All recordings in the same collision chain share:
+ *   - numCols = chain size (max size ever reached)
+ *   - Lane positions assigned by start time order
  */
 function computeLayout(recordings: Recording[], dayHeightPx: number, containerWidth: number): RecordingLayout[] {
   if (recordings.length === 0 || containerWidth <= 0) return [];
 
-  // Single recording: take full width
-  if (recordings.length === 1) {
-    const rec = recordings[0];
-    const { startMin, endMin } = getRecordingTimeRange(rec);
-    const heightMin = Math.max(30, endMin - startMin);
-    return [{
-      rec,
-      top: (startMin / 1440) * dayHeightPx,
-      height: (heightMin / 1440) * dayHeightPx,
-      left: GUTTER,
-      width: containerWidth - GUTTER * 2,
-    }];
-  }
-
-  // Compute time ranges — heightMin is used for both visual rendering AND overlap detection
+  // Compute time ranges
   const withRanges = recordings.map(rec => {
     const { startMin, endMin } = getRecordingTimeRange(rec);
     const heightMin = Math.max(30, endMin - startMin);
-    return { rec, startMin, heightMin };
+    return { rec, startMin, endMin, heightMin };
   });
 
   // Sort by start time
   withRanges.sort((a, b) => a.startMin - b.startMin);
 
-  // Lane algorithm: track visual end time of last recording in each lane
-  const lanes: Array<{ endMin: number }> = [];
+  // Union-Find to track collision chains
+  class UF {
+    parent: number[];
+    rank: number[];
+    constructor(n: number) {
+      this.parent = Array.from({ length: n }, (_, i) => i);
+      this.rank = Array(n).fill(0);
+    }
+    find(x: number): number {
+      if (this.parent[x] !== x) this.parent[x] = this.find(this.parent[x]);
+      return this.parent[x];
+    }
+    union(x: number, y: number): void {
+      const px = this.find(x), py = this.find(y);
+      if (px === py) return;
+      if (this.rank[px] < this.rank[py]) this.parent[px] = py;
+      else if (this.rank[px] > this.rank[py]) this.parent[py] = px;
+      else { this.parent[py] = px; this.rank[px]++; }
+    }
+    getMembers(x: number): number[] {
+      const root = this.find(x);
+      return this.parent
+        .map((_, i) => this.find(i) === root ? i : -1)
+        .filter(i => i >= 0);
+    }
+  }
 
-  return withRanges.map(({ rec, startMin, heightMin }) => {
-    // A recording occupies its lane from startMin to startMin + heightMin
-    // Find first lane where this recording doesn't overlap: lane end must be strictly before this recording starts
-    let laneIdx = lanes.findIndex(l => l.endMin < startMin);
-    if (laneIdx === -1) {
-      laneIdx = lanes.length;
-      lanes.push({ endMin: startMin + heightMin });
-    } else {
-      lanes[laneIdx].endMin = startMin + heightMin;
+  const uf = new UF(withRanges.length);
+  const numColsForRec: number[] = withRanges.map(() => 1);
+  const laneForRec: number[] = withRanges.map(() => 0);
+
+  withRanges.forEach((current, currentIdx) => {
+    const currVisualEnd = current.startMin + current.heightMin;
+    const colliding: number[] = [];
+
+    for (let i = 0; i < currentIdx; i++) {
+      const prev = withRanges[i];
+      const prevVisualEnd = prev.startMin + prev.heightMin;
+      if (prev.startMin < currVisualEnd && current.startMin < prevVisualEnd) {
+        colliding.push(i);
+        uf.union(currentIdx, i); // Merge collision chains
+      }
     }
 
-    const numCols = lanes.length;
+    if (colliding.length === 0) {
+      numColsForRec[currentIdx] = 1;
+      laneForRec[currentIdx] = 0;
+    } else {
+      // All recordings in the merged chain share the same numCols
+      const chain = uf.getMembers(currentIdx);
+      chain.forEach(idx => { numColsForRec[idx] = Math.max(numColsForRec[idx], chain.length); });
+      numColsForRec[currentIdx] = chain.length;
+
+      // Assign lane: sort chain by startMin, assign sequentially
+      chain.sort((a, b) => withRanges[a].startMin - withRanges[b].startMin);
+      chain.forEach((idx, pos) => { laneForRec[idx] = pos; });
+    }
+  });
+
+  // Build layout entries
+  return withRanges.map((wr, i) => {
+    const numCols = numColsForRec[i];
+    const laneIdx = laneForRec[i];
     const colWidth = (containerWidth - GUTTER * 2) / numCols;
     const left = laneIdx * colWidth + GUTTER;
-
     return {
-      rec,
-      top: (startMin / 1440) * dayHeightPx,
-      height: (heightMin / 1440) * dayHeightPx,
+      rec: wr.rec,
+      top: (wr.startMin / 1440) * dayHeightPx,
+      height: (wr.heightMin / 1440) * dayHeightPx,
       left,
       width: colWidth - GUTTER * 2,
     };
