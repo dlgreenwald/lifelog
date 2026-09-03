@@ -826,6 +826,7 @@ header nav a:hover {
   border-radius: 4px;
   padding: 2px 6px;
   cursor: pointer;
+  overflow: hidden;
   border-left: 3px solid #27ae60;
   z-index: 1;
   box-sizing: border-box;
@@ -849,6 +850,7 @@ header nav a:hover {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  overflow: hidden;
 }
 
 .recording-block-time {
