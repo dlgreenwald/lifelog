@@ -899,6 +899,26 @@ header nav a:hover {
   justify-content: center;
   box-sizing: border-box;
 }
+
+/* Category colors for recording blocks */
+.recording-block.category-work {
+  background: #d4edda;
+  border-color: rgba(39, 174, 96, 0.4);
+  border-left-color: #27ae60;
+}
+
+.recording-block.category-home {
+  background: #e3f2fd;
+  border-color: rgba(33, 150, 243, 0.4);
+  border-left-color: #2196f3;
+}
+
+.recording-block.category-other {
+  background: #fff3e0;
+  border-color: rgba(255, 152, 0, 0.4);
+  border-left-color: #ff9800;
+}
+
 .recording-block-content {
   display: flex;
   flex-direction: column;

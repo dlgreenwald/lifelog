@@ -251,10 +251,11 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
           if (!layout) return null;
           const { top, height, left, width } = layout;
           const isLive = rec.is_live === true;
+          const categoryClass = rec.category === 'work' ? 'category-work' : rec.category === 'personal' ? 'category-home' : rec.category === 'not_meaningful' ? 'category-other' : '';
           return (
             <div
               key={rec.id}
-              className={`recording-block ${isLive ? 'recording-block-live' : ''}`}
+              className={`recording-block ${isLive ? 'recording-block-live' : ''} ${categoryClass}`.trim()}
               style={{ top: `${top}px`, height: `${height}px`, left: `${left}px`, width: `${width}px` }}
               onClick={() => onRecordingClick(rec.id)}
               role="button"
