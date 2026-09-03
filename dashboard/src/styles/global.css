@@ -531,9 +531,15 @@ header nav a:hover {
   opacity: 0.6;
 }
 
-.todo-checkbox {
-  margin-right: 8px;
-  cursor: pointer;
+/* Mobile touch targets - increase checkbox size for touch */
+@media (max-width: 767px) {
+  .todo-table-container .shrink-0 {
+    width: 44px !important;
+    height: 44px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
 }
 
 .todo-task {
@@ -775,6 +781,13 @@ header nav a:hover {
   position: relative;
 }
 
+/* Responsive: reduce sidebar on smaller screens */
+@media (max-width: 1024px) {
+  .calendar-sidebar-wrap {
+    flex: 0 0 220px;
+  }
+}
+
 .calendar-sidebar {
   padding: 0.5rem;
   position: relative;
@@ -859,13 +872,12 @@ header nav a:hover {
   left: 4px;
   top: -12px;
   font-size: 0.7rem;
-  font-weight: 500;
-  color: #555;
+  font-weight: 600;
+  color: #333;
   background: white;
   padding: 0 2px;
   z-index: 1;
 }
-
 .hour-label-left { left: 4px; right: auto; }
 .hour-label-right { left: auto; right: 4px; }
 .hour-grid-line { margin: 0; background-color: #ccc; height: 1px; }
@@ -991,15 +1003,16 @@ header nav a:hover {
 }
 
 .day-view-header {
-  padding: 4px 8px;
-  font-size: 0.8rem;
+  padding: 4px 4px;
+  font-size: 0.7rem;
   font-weight: 600;
   color: #333;
   background: #f8f8f8;
   border-bottom: 2px solid #27ae60;
   text-align: center;
-  white-space: nowrap;
+  white-space: normal;
   flex-shrink: 0;
+  line-height: 1.2;
 }
 .sidebar-divider { height: 100%; margin: 0; }
 body { position: relative; } /* required for iOS Safari drawer overlay */
@@ -1016,3 +1029,7 @@ main {
 .settings-section { margin-bottom: 1.5rem; }
 .settings-section h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
 .settings-section p { margin: 0 0 0.5rem; color: #666; font-size: 0.85rem; }
+/* Drawer (mobile) overrides - lighten scrim */
+.drawer-overlay {
+  background-color: rgba(0, 0, 0, 0.4) !important;
+}
