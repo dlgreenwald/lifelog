@@ -571,10 +571,32 @@ header nav a:hover {
 
 .day-todos {
   margin-top: 16px;
-  padding: 16px;
-  background: white;
-  border-radius: 8px;
-  border-left: 4px solid #e67e22;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.day-todos h3 {
+  margin-bottom: 8px;
+  color: #2c3e50;
+  flex-shrink: 0;
+}
+
+.todo-table-container {
+  flex: 1;
+  overflow-y: auto;
+  border-radius: 4px;
+  border: 1px solid #e5e7eb;
+}
+
+.day-todos .completed td {
+  text-decoration: line-through;
+  color: #9ca3af;
+}
+
+.day-todos .line-through {
+  text-decoration: line-through;
 }
 
 .day-todos h3 {
@@ -749,28 +771,49 @@ header nav a:hover {
   position: relative;
   overflow: hidden; /* clip absolutely-positioned children that would otherwise expand the container */
 }
-.has-recording-dot {
-  position: relative;
-}
-.has-recording-dot::after {
+.has-recording-dot::before,
+.has-todo-dot::before,
+.has-recording-dot::after,
+.has-todo-dot::after {
   content: '';
   position: absolute;
   bottom: 2px;
-  left: 50%;
-  transform: translateX(-50%);
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #27ae60;
+  pointer-events: none;
 }
-/* Override rdp-range gradient backgrounds with solid accent color.
-   Without this, range_start/end use linear-gradient(to fade into transparent),
-   which looks gray when both are set on a single-day selection. */
-.rdp-range_start > .rdp-day_button,
-.rdp-range_end > .rdp-day_button {
+/* Green dot (using ::before so both dots can coexist on same element) */
+.has-recording-dot::before {
+  left: calc(50% - 6px);
+  background: #27ae60;
+  z-index: 2;
+}
+/* Red dot (::after) */
+.has-todo-dot::after {
+  left: calc(50% + 2px);
+  background: #e74c3c;
+  z-index: 2;
+}
+/* When both dots on same element, ensure stacking */
+.has-recording-dot.has-todo-dot::before {
+  z-index: 3;
+}
+.has-recording-dot.has-todo-dot::after {
+  z-index: 2;
+}
+/* Override rdp-range gradient backgrounds with solid accent color */
+.rdp-range_start,
+.rdp-range_end {
+  background: var(--rdp-accent-background-color) !important;
+}
+.rdp-range_start .rdp-day_button,
+.rdp-range_end .rdp-day_button {
   background-color: var(--rdp-accent-background-color) !important;
 }
-
+.rdp-range_middle {
+  background-color: var(--rdp-accent-background-color) !important;
+}
 
 .active-recording-panel {
   margin-top: 1rem;

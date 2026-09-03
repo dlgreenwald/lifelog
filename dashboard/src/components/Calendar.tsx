@@ -1,12 +1,19 @@
 import "react-day-picker/style.css";
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { format, parseISO, startOfISOWeek, endOfISOWeek, addDays, addWeeks } from 'date-fns';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Calendar as ShadcnCalendar } from '@/components/ui/calendar';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Drawer, DrawerClose, DrawerContent, DrawerFooter, DrawerTrigger } from '@/components/ui/drawer';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableRow,
+} from '@/components/ui/table';
 import type { DateRange } from 'react-day-picker';
 import { api } from '../api/client';
 import DayView from './DayView';
@@ -26,19 +33,62 @@ function getLastWeekRange(): DateRange {
 export default function Calendar() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [selected, setSelected] = useState<DateRange | undefined>(getThisWeekRange());
+  // Initialize selected from URL params or default to this week
+  const getInitialSelected = (): DateRange => {
+    const from = searchParams.get('from');
+    const to = searchParams.get('to');
+    if (from && to) {
+      const fromDate = parseISO(from);
+      const toDate = parseISO(to);
+      if (!isNaN(fromDate.getTime()) && !isNaN(toDate.getTime())) {
+        return { from: fromDate, to: toDate };
+      }
+    }
+    return getThisWeekRange();
+  };
+  const [selected, setSelectedState] = useState<DateRange | undefined>(getInitialSelected);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+
+  // Sync selected state with URL
+  const setSelected = useCallback((range: DateRange | undefined) => {
+    setSelectedState(range);
+    if (range?.from && range?.to) {
+      const params = new URLSearchParams();
+      params.set('from', format(range.from, 'yyyy-MM-dd'));
+      params.set('to', format(range.to, 'yyyy-MM-dd'));
+      setSearchParams(params, { replace: true });
+    }
+  }, [setSearchParams]);
+
+  // Sync state with URL on back/forward navigation
+  useEffect(() => {
+    const from = searchParams.get('from');
+    const to = searchParams.get('to');
+    if (from && to) {
+      const fromDate = parseISO(from);
+      const toDate = parseISO(to);
+      if (!isNaN(fromDate.getTime()) && !isNaN(toDate.getTime())) {
+        setSelectedState({ from: fromDate, to: toDate });
+      }
+    }
+  }, [searchParams]);
 
   const [recordingsByDate, setRecordingsByDate] = useState<Map<string, Recording[]>>(new Map());
   const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
   const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]);
   const [loading, setLoading] = useState(false);
-  const [dayTodos, setDayTodos] = useState<Todo[]>([]);
-  const [currentMonth, setCurrentMonth] = useState(() => new Date());
+  const [todosByDate, setTodosByDate] = useState<{ date: string; todos: Todo[] }[]>([]);
+  const [incompleteTodoDates, setIncompleteTodoDates] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'work' | 'personal' | 'not_meaningful'>('all');
+  const [currentMonth, setCurrentMonth] = useState(() => new Date());
 
+  // Active recording polling
+  const loadActive = useCallback(() => {
+    api.getActiveRecording().then(setActiveRecording).catch(() => setActiveRecording(null));
+  }, []);
   // Shared scroll manager: all day-view scroll els registered here
   const scrollElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   // Track which column the user last scrolled, to ignore synthetic scroll events from sync
@@ -86,6 +136,29 @@ export default function Calendar() {
     });
   }, [currentMonth]);
 
+  // Fetch incomplete todos for the entire visible month (for dot indicators)
+  useEffect(() => {
+    const year = currentMonth.getFullYear();
+    const month = currentMonth.getMonth() + 1;
+    // Get all days in the month for dot indicators
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const dates = Array.from({ length: daysInMonth }, (_, i) => {
+      const d = new Date(year, month - 1, i + 1);
+      return format(d, 'yyyy-MM-dd');
+    });
+    Promise.all(dates.map(date => api.getTodosForDate(date)))
+      .then(results => {
+        const incomplete = new Set<string>();
+        dates.forEach((date, i) => {
+          const todos: Todo[] = results[i].todos ?? [];
+          if (todos.some((t: Todo) => !t.completed)) {
+            incomplete.add(date);
+          }
+        });
+        setIncompleteTodoDates(incomplete);
+      });
+  }, [currentMonth]);
+
   // Fetch recordings for all selected dates in parallel
   useEffect(() => {
     Promise.all(selectedDates.map(date => api.getRecordings(date, categoryFilter === 'all' ? undefined : categoryFilter)))
@@ -98,21 +171,22 @@ export default function Calendar() {
         setLoading(false);
       })
   }, [selectedDates, categoryFilter]);
-  // Load todos for the first selected date
+
+  // Load todos for all selected dates
   useEffect(() => {
     if (selectedDates.length === 0) return;
-    api.getTodosForDate(selectedDates[0]).then((data: { todos: Todo[] }) => {
-      setDayTodos(data.todos);
-    }).catch(() => setDayTodos([]));
+    Promise.all(selectedDates.map(date => api.getTodosForDate(date)))
+      .then(results => {
+        const grouped = selectedDates.map((date, i) => ({
+          date,
+          todos: results[i].todos ?? [],
+        })).filter(g => g.todos.length > 0);
+        setTodosByDate(grouped);
+      })
+      .catch(() => { setTodosByDate([]); });
   }, [selectedDates]);
-
   // Active recording polling
-  const loadActive = useCallback(() => {
-    api.getActiveRecording().then(setActiveRecording).catch(() => setActiveRecording(null));
-  }, []);
-
   useEffect(() => { loadActive(); }, [loadActive]);
-
   useEffect(() => {
     const interval = setInterval(loadActive, 5000);
     return () => clearInterval(interval);
@@ -123,6 +197,11 @@ export default function Calendar() {
     [calendarDays]
   );
 
+  // Track dates with incomplete todos for dot indicator
+  const todoDates = useMemo(() =>
+    incompleteTodoDates,
+    [incompleteTodoDates]
+  );
   // react-day-picker v10 calls onSelect with 4 args
   function handleSelect(
     range: DateRange | undefined,
@@ -188,23 +267,19 @@ export default function Calendar() {
       }
     }
   }
-
   function handleToggleTodo(todo: Todo) {
     const newCompleted = !todo.completed;
     api.completeTodo(todo.id, newCompleted).then(() => {
-      setDayTodos(prev =>
-        prev.map(t =>
-          t.id === todo.id
-            ? { ...t, completed: newCompleted, completed_at: newCompleted ? new Date().toISOString() : null }
-            : t
-        )
+      setTodosByDate(prev =>
+        prev.map(group => ({
+          ...group,
+          todos: group.todos.map(t =>
+            t.id === todo.id
+              ? { ...t, completed: newCompleted, completed_at: newCompleted ? new Date().toISOString() : null }
+              : t
+          ),
+        }))
       );
-    });
-  }
-
-  function handleDeleteTodo(todoId: number) {
-    api.deleteTodo(todoId).then(() => {
-      setDayTodos(prev => prev.filter(t => t.id !== todoId));
     });
   }
 
@@ -216,9 +291,14 @@ export default function Calendar() {
         onSelect={handleSelect}
         numberOfMonths={1}
         onMonthChange={setCurrentMonth}
-        modifiers={{ booked: (date) => bookedDates.has(format(date, 'yyyy-MM-dd')) }}
-        modifiersClassNames={{ booked: 'has-recording-dot' }}
-        className="calendar-component"
+        modifiers={{
+          booked: (date) => bookedDates.has(format(date, 'yyyy-MM-dd')),
+          todo: (date) => todoDates.has(format(date, 'yyyy-MM-dd')),
+        }}
+        modifiersClassNames={{
+          booked: 'has-recording-dot',
+          todo: 'has-todo-dot',
+        }}
       />
 
       {activeRecording && (
@@ -232,36 +312,36 @@ export default function Calendar() {
           />
         </div>
       )}
-
-      {dayTodos.length > 0 && (
+      {todosByDate.length > 0 && (
         <div className="day-todos">
-          <h3>TODOs for {selectedDates[0]}</h3>
-          <ul>
-            {dayTodos.map(todo => (
-              <li
-                key={todo.id}
-                className={`priority-${todo.priority} ${todo.completed ? 'completed' : ''}`}
-              >
-                <input
-                  type="checkbox"
-                  className="todo-checkbox"
-                  checked={todo.completed}
-                  onChange={() => handleToggleTodo(todo)}
-                />
-                <span className="todo-task">{todo.task}</span>
-                <span> - {todo.owner}</span>
-                {todo.due && <span> (due: {todo.due})</span>}
-                <span className="priority-badge">{todo.priority}</span>
-                <button
-                  className="todo-delete"
-                  onClick={() => handleDeleteTodo(todo.id)}
-                  aria-label={`Delete todo: ${todo.task}`}
-                >
-                  ×
-                </button>
-              </li>
-            ))}
-          </ul>
+          {todosByDate.map(({ date, todos }) => (
+            <div key={date} className="todo-date-group">
+              <h3>{format(parseISO(date), 'EEEE, MMM d')}</h3>
+              <div className="todo-table-container">
+                <Table>
+                  <TableBody>
+                    {todos.map(todo => (
+                      <TableRow
+                        key={todo.id}
+                        className={todo.completed ? 'completed' : ''}
+                      >
+                        <TableCell className="w-8">
+                          <Checkbox
+                            id={`todo-${todo.id}-checkbox`}
+                            checked={todo.completed}
+                            onCheckedChange={() => handleToggleTodo(todo)}
+                          />
+                        </TableCell>
+                        <TableCell className={todo.completed ? 'line-through text-muted-foreground' : 'font-medium'}>
+                          {todo.task}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
