@@ -490,12 +490,11 @@ Every code change MUST be followed by running the relevant test suite before yie
 
 Before merging any change:
 
+0. **Build**: Run the component's `build.sh` (or `pio test -e test` for firmware) — this catches lint errors, format drift, pip-audit CVEs, and test failures before they reach CI. Never commit if `build.sh` reports any failures.
 1. **Lint**: `ruff check src/ tests/` passes on all Python services (0 errors)
 2. **Type check**: `npx tsc --noEmit` passes on dashboard (0 errors)
 3. **Tests**: All ~345 tests pass across all 6 components
 4. **No regressions**: Existing functionality not broken
-
-### Ruff configuration
 
 Python services use these ruff rules (in `pyproject.toml`):
 
