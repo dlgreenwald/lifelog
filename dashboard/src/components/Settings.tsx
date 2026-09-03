@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { ModeToggle } from '@/components/mode-toggle';
 import type { UserSettings } from '../types';
 
 const LANGUAGES: Record<string, string> = {
@@ -157,6 +158,11 @@ export default function Settings() {
     <div className="settings-page">
       <h2>Settings</h2>
 
+      <div className="settings-section">
+        <h3>Appearance</h3>
+        <p>Toggle between light, dark, and system color theme.</p>
+        <ModeToggle />
+      </div>
       <div className="settings-section">
         <label htmlFor="language-select">
           <h3>Transcription Language</h3>

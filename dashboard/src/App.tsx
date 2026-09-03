@@ -9,6 +9,7 @@ import TodoList from './components/TodoList';
 import DecisionsList from './components/DecisionsList';
 import SpeakerLabel from './components/SpeakerLabel';
 import Settings from './components/Settings';
+import { ThemeProvider } from './components/theme-provider';
 import { setAuthProvider } from './api/client';
 import { useEffect } from 'react';
 
@@ -51,10 +52,12 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
-    </BrowserRouter>
+    <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
+      <BrowserRouter>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </BrowserRouter>
+    </ThemeProvider>
   );
 }
