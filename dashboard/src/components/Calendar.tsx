@@ -37,6 +37,7 @@ export default function Calendar() {
   const [loading, setLoading] = useState(false);
   const [dayTodos, setDayTodos] = useState<Todo[]>([]);
   const [currentMonth, setCurrentMonth] = useState(() => new Date());
+  const [categoryFilter, setCategoryFilter] = useState<'all' | 'work' | 'personal' | 'not_meaningful'>('all');
 
   // Shared scroll manager: all day-view scroll els registered here
   const scrollElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -87,9 +88,7 @@ export default function Calendar() {
 
   // Fetch recordings for all selected dates in parallel
   useEffect(() => {
-    if (selectedDates.length === 0) return;
-    setLoading(true);
-    Promise.all(selectedDates.map(date => api.getRecordings(date)))
+    Promise.all(selectedDates.map(date => api.getRecordings(date, categoryFilter === 'all' ? undefined : categoryFilter)))
       .then(results => {
         const map = new Map<string, Recording[]>();
         selectedDates.forEach((date, i) => {
@@ -98,9 +97,7 @@ export default function Calendar() {
         setRecordingsByDate(map);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
-  }, [selectedDates]);
-
+  }, [selectedDates, categoryFilter]);
   // Load todos for the first selected date
   useEffect(() => {
     if (selectedDates.length === 0) return;
@@ -274,15 +271,18 @@ export default function Calendar() {
     <div className="calendar-view">
       {/* Preset quick-select buttons */}
       <div className="calendar-presets">
-        <Button variant="outline" size="sm" onClick={() => handlePreset('today')}>Today</Button>
-        <Button variant="outline" size="sm" onClick={() => handlePreset('yesterday')}>Yesterday</Button>
-        <Button variant="outline" size="sm" onClick={() => handlePreset('this-week')}>This Week</Button>
-        <Button variant="outline" size="sm" onClick={() => handlePreset('last-week')}>Last Week</Button>
-      </div>
-
-      {/* Debug: show selected range */}
-      <div style={{ padding: '4px 8px', background: '#ffa', fontSize: '0.75rem' }}>
-        selected: {selected?.from ? format(selected.from, 'yyyy-MM-dd') : 'none'}→{selected?.to ? format(selected.to, 'yyyy-MM-dd') : 'none'} | dates: {selectedDates.join(', ')}
+        <div className="flex gap-1">
+          <Button variant="outline" size="sm" onClick={() => handlePreset('today')}>Today</Button>
+          <Button variant="outline" size="sm" onClick={() => handlePreset('yesterday')}>Yesterday</Button>
+          <Button variant="outline" size="sm" onClick={() => handlePreset('this-week')}>This Week</Button>
+          <Button variant="outline" size="sm" onClick={() => handlePreset('last-week')}>Last Week</Button>
+        </div>
+        <div className="flex gap-1">
+          <Button variant={categoryFilter === 'all' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('all')}>Both</Button>
+          <Button variant={categoryFilter === 'work' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('work')}>Work</Button>
+          <Button variant={categoryFilter === 'personal' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('personal')}>Home</Button>
+          <Button variant={categoryFilter === 'not_meaningful' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('not_meaningful')}>Other</Button>
+        </div>
       </div>
 
       {isMobile ? (

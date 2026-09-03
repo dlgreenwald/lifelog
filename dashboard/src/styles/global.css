@@ -732,6 +732,7 @@ header nav a:hover {
 /* === Calendar + Day View === */
 .calendar-presets {
   display: flex;
+  justify-content: space-between;
   gap: 0.5rem;
   margin-bottom: 1rem;
 }
