@@ -81,8 +81,8 @@ function computeLayout(recordings: Recording[], dayHeightPx: number, containerWi
 
   return withRanges.map(({ rec, startMin, heightMin }) => {
     // A recording occupies its lane from startMin to startMin + heightMin
-    // Find first lane where this recording doesn't overlap the lane's visual end
-    let laneIdx = lanes.findIndex(l => l.endMin <= startMin);
+    // Find first lane where this recording doesn't overlap: lane end must be strictly before this recording starts
+    let laneIdx = lanes.findIndex(l => l.endMin < startMin);
     if (laneIdx === -1) {
       laneIdx = lanes.length;
       lanes.push({ endMin: startMin + heightMin });
