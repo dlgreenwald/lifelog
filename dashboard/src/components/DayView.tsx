@@ -154,7 +154,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
                   </span>
                   {rec.summary && (
                     <span className="recording-block-summary">
-                      {rec.summary.substring(0, 60)}{rec.summary.length > 60 ? '…' : ''}
+                      {rec.summary.substring(0, 200)}{rec.summary.length > 200 ? '…' : ''}
                     </span>
                   )}
                 </div>
