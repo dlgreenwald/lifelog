@@ -795,20 +795,11 @@ header nav a:hover {
   scrollbar-width: thin;
 }
 
-.day-view-rightmost::-webkit-scrollbar { display: block; }
-
-.day-view.weekend { background: #f0f0f0; }
-
-.day-view-hours {
-  position: relative;
-  height: 960px; /* 24 hours × 40 px = fits in ~900px viewport without scrolling */
-}
-
 .day-view-hour-row {
   position: relative;
-  height: 40px;
+  /* Each row = 1/24th of the full 24-hour height (--day-height-px, set by DayView) */
+  height: calc(var(--day-height-px, 960px) / 24);
 }
-
 /* Hour labels: inline within the hour row */
 .hour-label {
   position: absolute;
