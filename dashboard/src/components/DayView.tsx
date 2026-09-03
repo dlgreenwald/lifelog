@@ -47,7 +47,7 @@ const GUTTER = 3;
 /**
  * Assigns overlapping recordings to side-by-side columns (lanes).
  * Single recording takes full width; 2+ overlapping recordings are lane-allocated.
- * Overlap is determined by actual audio duration, NOT the 30-min minimum height.
+ * Overlap is determined by the SAME calculation as visual height (min 30, max 120).
  */
 function computeLayout(recordings: Recording[], dayHeightPx: number, containerWidth: number): RecordingLayout[] {
   if (recordings.length === 0 || containerWidth <= 0) return [];
@@ -66,31 +66,28 @@ function computeLayout(recordings: Recording[], dayHeightPx: number, containerWi
     }];
   }
 
-  // Compute actual time ranges for all recordings
+  // Compute time ranges — heightMin is used for both visual rendering AND overlap detection
   const withRanges = recordings.map(rec => {
     const { startMin, endMin } = getRecordingTimeRange(rec);
-    // Height: padded to min 30min so short recordings are visible
     const heightMin = Math.max(30, Math.min(endMin - startMin, 120));
-    // Actual audio end (for overlap detection): use real duration, capped at heightMin
-    const actualDuration = Math.min(endMin - startMin, 120);
-    const actualEndMin = startMin + actualDuration;
-    return { rec, startMin, actualEndMin, heightMin };
+    return { rec, startMin, heightMin };
   });
 
   // Sort by start time
   withRanges.sort((a, b) => a.startMin - b.startMin);
 
-  // Lane algorithm: track actual audio end time of last recording in each lane
+  // Lane algorithm: track visual end time of last recording in each lane
   const lanes: Array<{ endMin: number }> = [];
 
-  return withRanges.map(({ rec, startMin, actualEndMin, heightMin }) => {
-    // Find first lane where this recording doesn't overlap the lane's last recording's actual end
+  return withRanges.map(({ rec, startMin, heightMin }) => {
+    // A recording occupies its lane from startMin to startMin + heightMin
+    // Find first lane where this recording doesn't overlap the lane's visual end
     let laneIdx = lanes.findIndex(l => l.endMin <= startMin);
     if (laneIdx === -1) {
       laneIdx = lanes.length;
-      lanes.push({ endMin: actualEndMin });
+      lanes.push({ endMin: startMin + heightMin });
     } else {
-      lanes[laneIdx].endMin = actualEndMin;
+      lanes[laneIdx].endMin = startMin + heightMin;
     }
 
     const numCols = lanes.length;
