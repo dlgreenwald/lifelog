@@ -860,7 +860,9 @@ header nav a:hover {
 .recording-block-summary {
   font-size: 0.65rem;
   color: #555;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .live-recording-content {
