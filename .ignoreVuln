@@ -21,3 +21,11 @@
 # entry when lightning>=2.6.6 is on PyPI and pyannote.audio resolves
 # to it.
 PYSEC-2026-3624
+
+# nltk (transitive via whisperx / transcription-worker)
+# Path traversal in model-artifact APIs (CVE-2026-81726 / PYSEC-2026-3740).
+# Affects NLTK <= 3.10.3. No fixed release on PyPI yet (3.10.3 is latest
+# as of 2026-09-02). Attack requires attacker-controlled resource name in
+# nltk.data.load/find — LifeLog loads only trusted bundled data. Drop this
+# entry when nltk>=3.10.4 is released and resolves the vulnerability.
+PYSEC-2026-3740

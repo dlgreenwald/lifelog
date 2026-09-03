@@ -1,3 +1,7 @@
+"""OIDC JWT validation — supports tokens from multiple issuers/clients."""
+
+from __future__ import annotations
+
 import logging
 
 import httpx
@@ -11,16 +15,16 @@ logger = logging.getLogger("lifelog.auth")
 
 security = HTTPBearer()
 
-# JWKS client — fetches and caches the OIDC provider's signing keys
-_jwk_client = None
+# JWKS clients keyed by issuer URL — one per OIDC provider
+_jwk_clients: dict[str, pyjwt.PyJWKClient] = {}
 
 
-def _get_jwk_client():
-    global _jwk_client
-    if _jwk_client is not None:
-        return _jwk_client
+def _get_jwk_client(issuer: str) -> pyjwt.PyJWKClient:
+    """Return a JWKS client for the given issuer, cached per-issuer."""
+    issuer = issuer.rstrip("/")
+    if issuer in _jwk_clients:
+        return _jwk_clients[issuer]
 
-    issuer = settings.oidc_issuer_url.rstrip("/")
     if not issuer.startswith("https://"):
         raise ValueError("OIDC issuer URL must use HTTPS")
 
@@ -34,8 +38,24 @@ def _get_jwk_client():
     if not jwks_url.startswith("https://"):
         raise ValueError("JWKS URI must use HTTPS")
 
-    _jwk_client = pyjwt.PyJWKClient(jwks_url)
-    return _jwk_client
+    _jwk_clients[issuer] = pyjwt.PyJWKClient(jwks_url)
+    return _jwk_clients[issuer]
+
+
+def _valid_audiences() -> list[str]:
+    """All client IDs whose tokens are accepted as valid audiences."""
+    result = [settings.oidc_client_id]
+    if settings.oidc_simulator_client_id:
+        result.append(settings.oidc_simulator_client_id)
+    return result
+
+
+def _token_payload(token: str) -> dict:
+    """Decode JWT payload without signature verification (for logging/errors)."""
+    try:
+        return pyjwt.decode(token, options={"verify_signature": False})
+    except pyjwt.InvalidTokenError:
+        return {}
 
 
 async def validate_api_key(x_api_key: str = Header(...)) -> dict:
@@ -55,20 +75,17 @@ async def validate_bearer_token(token: str) -> dict:
     """
     from lifelog.database import get_user_by_oidc_sub
 
-    # Decode payload without verification for logging in error handlers
-    try:
-        payload = pyjwt.decode(token, options={"verify_signature": False})
-    except pyjwt.InvalidTokenError:
-        payload = {}
+    payload = _token_payload(token)
+    issuer: str = payload.get("iss", "") or ""
 
     try:
-        signing_key = _get_jwk_client().get_signing_key_from_jwt(token)
+        signing_key = _get_jwk_client(issuer).get_signing_key_from_jwt(token)
         payload = pyjwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256", "ES256"],
-            audience=settings.oidc_client_id,
-            issuer=settings.oidc_issuer_url,
+            audience=_valid_audiences(),
+            issuer=issuer,
         )
         user = await get_user_by_oidc_sub(payload["sub"])
         if not user:
@@ -111,20 +128,19 @@ async def validate_oidc_token(
     """Validate OIDC JWT token using JWKS public key."""
     from lifelog.database import get_user_by_oidc_sub
 
-    # Decode payload without verification for logging in error handlers
-    try:
-        payload = pyjwt.decode(token.credentials, options={"verify_signature": False})
-    except pyjwt.InvalidTokenError:
-        payload = {}
+    payload = _token_payload(token.credentials)
+    issuer: str = payload.get("iss", "") or ""
 
     try:
-        signing_key = _get_jwk_client().get_signing_key_from_jwt(token.credentials)
+        signing_key = _get_jwk_client(issuer).get_signing_key_from_jwt(
+            token.credentials
+        )
         payload = pyjwt.decode(
             token.credentials,
             signing_key.key,
             algorithms=["RS256", "ES256"],
-            audience=settings.oidc_client_id,
-            issuer=settings.oidc_issuer_url,
+            audience=_valid_audiences(),
+            issuer=issuer,
         )
         user = await get_user_by_oidc_sub(payload["sub"])
         if not user:

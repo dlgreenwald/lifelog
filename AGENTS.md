@@ -114,7 +114,7 @@ lifelog/
 │   ├── src/               main.cpp, audio.cpp, i2s_fe.cpp, writer.cpp, upload.cpp, oauth2_client.cpp + headers (audio.h, i2s_fe.h, writer.h, upload.h, oauth2_client.h, settings.h, config.h, afe_stubs.h)
 │   ├── lib/               lifelog_core, oauth2_device_flow, taskman
 │   └── test/              Unity native tests (78 tests)
-├── e2e/                   End-to-end test suite (Piper TTS → upload → verify)
+├── device-sim/          Device simulator + integration tests
 ├── scripts/               generate-certs.sh (TLS cert generation)
 ├── docker-compose.yml     Orchestrates all services
 └── AGENTS.md              This file
@@ -313,7 +313,6 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `dashboard/src/components/Settings.tsx` | User settings UI for language preference and LLM context |
 | `scripts/generate-certs.sh` | TLS cert generation for all services |
 | `server/entrypoint.sh` | Docker entrypoint — runs alembic migrations before starting server |
-| `e2e/run_e2e.py` | End-to-end test suite — generates audio, uploads, verifies pipeline |
 | `firmware-ota/src/main.cpp` | OTA firmware: WiFi, OTA, PDM mic, SD card, runtime log levels |
 | `firmware-ota/src/audio.cpp` | Ring buffer + producer (audioInit, sdTake/sdGive) |
 | `firmware-ota/src/i2s_fe.cpp` | I2S PDM driver, AFE init, feed/fetch tasks, processAfeResult |
@@ -388,6 +387,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - Firmware targets `seeed_xiao_esp32s3` board with `partitions_ota.csv` (dual 3MB app slots + 1.9MB model)
 - Docker images use CUDA runtime for GPU services; dashboard uses `node:24-alpine` → `nginx:alpine`
 - GPU services require NVIDIA runtime with CUDA
+- Transcription worker: **`ASR_COMPUTE_TYPE=int8`** is **required on 16 GiB GPU cards** (RTX 4060/5070, RTX 5060 Ti). At float16 the combined load of WhisperX large-v3 + pyannote diarization exceeds 16 GiB when Ollama or other processes share the card. int8 drops memory usage to ~4000–5000 MiB, leaving headroom for concurrent speaker-id inference. Set via `ASR_COMPUTE_TYPE=int8` environment variable in `docker-compose.yml`.
 - SSL certs are generated at compose level (command overrides), not baked into Dockerfiles
 
 ## Testing & QA

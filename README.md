@@ -280,7 +280,7 @@ lifelog/
 ├── speaker-id/         ECAPA-TDNN microservice (Python)
 ├── dashboard/          React SPA (TypeScript)
 ├── diarization/        Legacy pyannote.audio microservice (Python)
-├── e2e/                End-to-end test suite
+├── device-sim/        Device simulator for integration testing
 ├── scripts/            TLS cert generation
 ├── docker-compose.yml  Service orchestration
 ├── ARCHITECTURE.md     Full architecture documentation

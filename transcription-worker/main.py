@@ -31,29 +31,23 @@ _poll_task: asyncio.Task | None = None
 
 def _cuda_allocated_mib() -> int:
     """Return CUDA allocated bytes in MiB for watchdog diagnostics. Falls
-    back to 0 if torch / CUDA is unavailable or whatever else happens;
-    the watchdog must never crash on a metric query."""
+    back to 0 if CUDA is not available."""
     try:
         import torch
 
         if torch.cuda.is_available():
-            return int(torch.cuda.memory_allocated()) // (1024 * 1024)
-        return 0
-    except Exception as _exc:
-        logger.debug("cuda_allocated probe unavailable: %s", _exc)
-        return 0
+            return int(torch.cuda.memory_allocated() / 1024 / 1024)
+    except Exception as e:
+        logger.debug("Could not get CUDA memory: %s", e)
+    return 0
 
 
 class Settings(BaseSettings):
     idle_unload_seconds: int = 300  # 0 disables unloading; matches speaker-id default
-    warm_keepalive_seconds: int = 60  # safety margin after activity
-    # When >0, the worker raises SystemExit after this many seconds
-    # of full idleness (no active jobs, models unloaded). Docker
-    # Compose's ``restart: unless-stopped`` policy resurrects the
-    # container so the CTranslate2 + pyannote GPU pinning that the
-    # in-process ``unload_models`` cannot free is reclaimed on a
-    # clean cold start. ``0`` disables this path entirely.
-    idle_process_restart_seconds: int = 0
+    warm_keepalive_seconds: int = (
+        60  # additional time to wait after idle_unload before unloading
+    )
+    idle_process_restart_seconds: int = 900  # 0 disables; exit-after-unload safety net
 
     model_config = SettingsConfigDict(env_file=".env")
 
@@ -64,7 +58,11 @@ settings = Settings()
 class ModelManager:
     def __init__(self):
         self._models: dict = {}
-        self._lock = threading.Lock()
+        # RLock so that begin_job (which holds the lock) can safely
+        # nest inside load() / get_models() / shutdown() which also use
+        # the same lock — preventing the watchdog from unloading while
+        # a job is loading models.
+        self._lock = threading.RLock()
         self._last_activity = time.time()
         self._active_jobs = 0  # count of jobs currently being processed
         self._watchdog_thread: threading.Thread | None = None
@@ -91,9 +89,13 @@ class ModelManager:
     def _check_idle(self):
         if settings.idle_unload_seconds == 0:
             return
-        if self._active_jobs > 0:
-            return  # never unload mid-job
         with self._lock:
+            # Re-check _active_jobs under lock — begin_job() now
+            # increments under the same lock, so this is authoritative
+            # and prevents the race where a job arrives between the
+            # out-of-lock check above and the lock acquisition here.
+            if self._active_jobs > 0:
+                return
             idle = time.time() - self._last_activity
             threshold = settings.idle_unload_seconds + settings.warm_keepalive_seconds
             if idle < threshold:
@@ -180,10 +182,16 @@ class ModelManager:
         self._last_activity = time.time()
 
     def begin_job(self):
-        self._active_jobs += 1
+        # Hold the lock so the watchdog's re-check inside _check_idle
+        # (also under the same lock) sees _active_jobs > 0 and skips
+        # the unload.  The lock is reentrant (RLock) so nested
+        # acquisition from load() / get_models() / shutdown() is safe.
+        with self._lock:
+            self._active_jobs += 1
 
     def end_job(self):
-        self._active_jobs -= 1
+        with self._lock:
+            self._active_jobs -= 1
 
     def shutdown(self):
         self._stop_event.set()
@@ -206,7 +214,7 @@ app = FastAPI(title="LifeLog transcription worker")
 async def health():
     return {
         "status": "ok",
-        "models_loaded": model_manager.get_models() != {},
+        "models_loaded": bool(model_manager.get_models()),
         "last_activity": model_manager._last_activity,
     }
 
