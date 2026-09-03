@@ -898,7 +898,8 @@ async def _finalize_completed_sessions() -> None:
                             await db.save_todos(
                                 recording_id, session["user_id"], valid
                             )
-                    except Exception:
+                    except Exception:  # noqa: BLE001
+                        # LLM results are best-effort; log and continue
                         logger.warning("todos_save_failed", recording_id=recording_id)
                 if llm_result.get("decisions"):
                     try:
@@ -910,7 +911,8 @@ async def _finalize_completed_sessions() -> None:
                             await db.save_decisions(
                                 recording_id, session["user_id"], valid
                             )
-                    except Exception:
+                    except Exception:  # noqa: BLE001
+                        # LLM results are best-effort; log and continue
                         logger.warning(
                             "decisions_save_failed", recording_id=recording_id
                         )
@@ -963,14 +965,16 @@ async def _finalize_completed_sessions() -> None:
                         valid = [t for t in llm_0["todos"] if isinstance(t, dict) and t.get("text")]
                         if valid:
                             await db.save_todos(recording_id, session["user_id"], valid)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
+                        # LLM results are best-effort; log and continue
                         logger.warning("todos_save_failed", recording_id=recording_id)
                 if llm_0.get("decisions"):
                     try:
                         valid = [d for d in llm_0["decisions"] if isinstance(d, dict) and d.get("text")]
                         if valid:
                             await db.save_decisions(recording_id, session["user_id"], valid)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
+                        # LLM results are best-effort; log and continue
                         logger.warning("decisions_save_failed", recording_id=recording_id)
                 await db.mark_session_processed(session["id"])
                 await _auto_enroll_speakers(user, persisted_0)
