@@ -20,4 +20,8 @@
 # which LifeLog does not load from any untrusted path. Drop this
 # entry when lightning>=2.6.6 is on PyPI and pyannote.audio resolves
 # to it.
+# nltk (transcription-worker, transitive via pyannote.audio)
+# Fix requires nltk>=3.10.4; latest on PyPI is 3.10.3 as of 2026-09-02.
+# Drop this entry when nltk>=3.10.4 is available.
+PYSEC-2026-3740
 PYSEC-2026-3624
