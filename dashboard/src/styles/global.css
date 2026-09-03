@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 * {
   margin: 0;
   padding: 0;
@@ -11,12 +15,22 @@ body {
   line-height: 1.6;
 }
 
-.app {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 20px;
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  background: #f5f5f5;
+  color: #333;
+  line-height: 1.6;
+  height: 100vh;
+  overflow: hidden;
+  margin: 0;
 }
 
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
 header {
   background: #2c3e50;
   color: white;
@@ -54,7 +68,28 @@ header nav a:hover {
   padding: 20px;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
+
+.calendar-body {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+}
+
+.calendar-sidebar-wrap {
+  display: flex;
+  flex-direction: row;
+  flex: 0 0 20%;
+  min-width: 0;
+}
+
+
 
 .calendar-header {
   display: flex;
@@ -693,3 +728,237 @@ header nav a:hover {
 .speaker-labels button:hover { background: #357abd; }
 .labeled-list .segment { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem; border-bottom: 1px solid #eee; }
 .labeled-list .segment.labeled { opacity: 0.7; }
+
+/* === Calendar + Day View === */
+.calendar-presets {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.calendar-sidebar-wrap {
+  display: flex;
+  flex: 0 0 280px;
+  min-width: 0;
+  position: relative;
+}
+
+.calendar-sidebar {
+  padding: 0.5rem;
+  position: relative;
+  overflow: hidden; /* clip absolutely-positioned children that would otherwise expand the container */
+}
+.has-recording-dot {
+  position: relative;
+}
+.has-recording-dot::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #27ae60;
+}
+/* Override rdp-range gradient backgrounds with solid accent color.
+   Without this, range_start/end use linear-gradient(to fade into transparent),
+   which looks gray when both are set on a single-day selection. */
+.rdp-range_start > .rdp-day_button,
+.rdp-range_end > .rdp-day_button {
+  background-color: var(--rdp-accent-background-color) !important;
+}
+
+
+.active-recording-panel {
+  margin-top: 1rem;
+  padding: 0.5rem;
+  background: #fff3cd;
+  border-radius: 4px;
+}
+
+/* === Day View === */
+.day-view {
+  flex: 1;
+  position: relative;
+  overflow-y: auto;
+  border-right: 1px solid #eee;
+  /* Hide scrollbar on all columns except rightmost */
+  scrollbar-width: none;
+}
+
+.day-view::-webkit-scrollbar { display: none; }
+
+/* Only the rightmost day-view shows its scrollbar */
+.day-view-rightmost {
+  scrollbar-width: thin;
+}
+
+.day-view-rightmost::-webkit-scrollbar { display: block; }
+
+.day-view.weekend { background: #f0f0f0; }
+
+.day-view-hours {
+  position: relative;
+  height: 960px; /* 24 hours × 40 px = fits in ~900px viewport without scrolling */
+}
+
+.day-view-hour-row {
+  position: relative;
+  height: 40px;
+}
+
+/* Hour labels: inline within the hour row */
+.hour-label {
+  position: absolute;
+  left: 4px;
+  top: -12px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: #555;
+  background: white;
+  padding: 0 2px;
+  z-index: 1;
+}
+
+.hour-label-left { left: 4px; right: auto; }
+.hour-label-right { left: auto; right: 4px; }
+.hour-grid-line { margin: 0; background-color: #ccc; height: 1px; }
+
+/* Recording blocks */
+.recording-block {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  background: #d4edda;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  overflow: hidden;
+  border-left: 3px solid #27ae60;
+  z-index: 1;
+  box-sizing: border-box;
+}
+
+.recording-block:hover { opacity: 0.85; }
+
+.recording-block-live {
+  background: #fff3cd;
+  border-left-color: #f39c12;
+  /* re-assert position after display:flex in base rule */
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+.recording-block-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.recording-block-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.recording-block-time {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #333;
+}
+
+.recording-block-summary {
+  font-size: 0.65rem;
+  color: #555;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-recording-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.live-recording-text {
+  font-size: 10px;
+}
+
+.live-recording-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: rgba(255, 243, 205, 0.7);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 2;
+  border-left: 3px solid #f39c12;
+}
+
+
+/* === Day view column with header === */
+.day-views-scroll {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  overflow: visible;
+  min-width: 0;
+}
+
+.day-views-row {
+  display: flex;
+  gap: 0;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.day-view-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.day-view-header {
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #333;
+  background: #f8f8f8;
+  border-bottom: 2px solid #27ae60;
+  text-align: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.sidebar-divider { height: 100%; margin: 0; }
+body { position: relative; } /* required for iOS Safari drawer overlay */
+
+
+main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+/* === Settings === */
+.settings-section { margin-bottom: 1.5rem; }
+.settings-section h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
+.settings-section p { margin: 0 0 0.5rem; color: #666; font-size: 0.85rem; }
