@@ -34,6 +34,7 @@ def _cuda_allocated_mib() -> int:
     back to 0 if CUDA is not available."""
     try:
         import torch
+
         if torch.cuda.is_available():
             return int(torch.cuda.memory_allocated() / 1024 / 1024)
     except Exception as e:
