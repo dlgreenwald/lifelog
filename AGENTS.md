@@ -7,6 +7,12 @@
 **NEVER commit changes without explicit user instruction.** Always ask before running `git commit`. The user decides when changes are ready to commit. **REMIND the user to commit** when a task appears to be working and changes are stable — don't let working changes sit uncommitted.
 
 **Squash merge only.** When merging a PR, always use squash merge. This keeps `main` history linear and each commit atomic. Delete the feature branch after merge.
+## ⚠️ Pull Request Check Rule
+
+After **creating or updating** a PR (via `git push`), ALWAYS run `gh pr checks <number>` and verify all CI checks are passing before reporting completion. If a check fails, fix it in the same session — do not leave a PR with failing checks. Common failures:
+- **server build**: ruff lint errors (`BLE001` blind exception catches), ruff format drift, pip-audit CVEs
+- **CodeQL**: path-injection alerts in test utilities — dismiss via `gh api -XPATCH repos/<owner>/<repo>/code-scanning/alerts/<id> -f dismissed_reason="used in tests" -f state="dismissed"`
+- **npm audit**: production dependency CVEs — resolve by updating the affected package or accepting the risk in `.ignoreVuln`
 
 ## ⚠️ Branch Rule
 
