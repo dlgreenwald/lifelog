@@ -172,7 +172,7 @@ def test_register_omegaconf_safe_globals_refuses_to_retry_outside_cache():
     _reset_for_safe_load_test()
     # CodeQL py/insecure-temporary-file: use NamedTemporaryFile rather than
     # the deprecated `tempfile.mktemp` (predictable filename, race condition).
-    _tf = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+    _tf = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)  # noqa: SIM115
     _tf.close()
     outside = _tf.name
     sentinel = torch.load  # type: ignore[assignment]

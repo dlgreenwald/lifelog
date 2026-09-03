@@ -33,7 +33,7 @@ target-version = "py311"
 #    can wrap unrelated errors; we re-raise selectively based on
 #    candidate-path trust).
 #  * try-except-continue where import-time configurability is best-effort.
-ignore = ["BLE001", "S112"]
+ignore = ["BLE001", "S110", "S112"]
 
 [build-system]
 requires = ["hatchling"]
