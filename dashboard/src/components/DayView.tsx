@@ -56,7 +56,7 @@ function computeLayout(recordings: Recording[], dayHeightPx: number, containerWi
   if (recordings.length === 1) {
     const rec = recordings[0];
     const { startMin, endMin } = getRecordingTimeRange(rec);
-    const heightMin = Math.max(30, Math.min(endMin - startMin, 120));
+    const heightMin = Math.max(30, endMin - startMin);
     return [{
       rec,
       top: (startMin / 1440) * dayHeightPx,
@@ -69,7 +69,7 @@ function computeLayout(recordings: Recording[], dayHeightPx: number, containerWi
   // Compute time ranges — heightMin is used for both visual rendering AND overlap detection
   const withRanges = recordings.map(rec => {
     const { startMin, endMin } = getRecordingTimeRange(rec);
-    const heightMin = Math.max(30, Math.min(endMin - startMin, 120));
+    const heightMin = Math.max(30, endMin - startMin);
     return { rec, startMin, heightMin };
   });
 
