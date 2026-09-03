@@ -46,13 +46,15 @@ function isWeekend(dateStr: string): boolean {
 }
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
-
 const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLabelPosition, onDayScroll, onMount, isRightmost }) => {
+  // Guards scroll-to-8am to only fire on mount/date-change, not on resize-triggered re-renders
+  const scrollInitRef = useRef(false);
+  // Tracks previous date to detect when a new date is selected (vs resize-triggered re-render)
+  const prevDateRef = useRef<string | undefined>(undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Use state so a re-render happens once we have the measured height.
-  // useLayoutEffect runs synchronously before paint — no flash of wrong position.
   const [availableHeight, setAvailableHeight] = useState(0);
+
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -69,15 +71,18 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
       hourEl.style.height = `${fullDayHeight}px`;
     }
 
-    // Show 8am at top of visible window (8/12 of the way through the day)
-    if (measured > 0) {
-      el.scrollTop = (8 / 12) * measured;
+    // Show 8am at top only on initial mount or date change (not on resize re-renders)
+    if (prevDateRef.current !== date) {
+      scrollInitRef.current = false;
+      prevDateRef.current = date;
     }
-
-    setAvailableHeight(measured);
+    if (!scrollInitRef.current && measured > 0) {
+      el.scrollTop = (8 / 12) * measured;
+      scrollInitRef.current = true;
+    }
   }, [date]);
 
-  // Track height changes (e.g. window resize)
+  // Track height changes (e.g. window resize) — update CSS and re-render recordings
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -92,6 +97,8 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
         hourEl.style.setProperty('--day-height-px', `${fullDayHeight}px`);
         hourEl.style.height = `${fullDayHeight}px`;
       }
+      // Trigger re-render so recording positions update with the new dayHeightPx
+      setAvailableHeight(measured);
     });
 
     observer.observe(el);
