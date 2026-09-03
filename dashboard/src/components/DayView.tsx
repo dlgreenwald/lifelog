@@ -15,9 +15,9 @@ interface DayViewProps {
   isRightmost?: boolean;
 }
 
-function getRecordingPosition(rec: Recording, dayHeightPx: number): { top: number; height: number } {
+function getRecordingTimeRange(rec: Recording): { startMin: number; endMin: number } {
   const recDate = parseISO(rec.timestamp);
-  const startMinutes = Math.max(0, recDate.getHours() * 60 + recDate.getMinutes());
+  const startMin = Math.max(0, recDate.getHours() * 60 + recDate.getMinutes());
 
   let durationMinutes = 30;
   if (rec.audio_range_start && rec.audio_range_end) {
@@ -30,13 +30,76 @@ function getRecordingPosition(rec: Recording, dayHeightPx: number): { top: numbe
     }
   }
 
-  const topMinutes = Math.min(startMinutes, 24 * 60 - 1);
-  const heightMinutes = Math.max(30, Math.min(durationMinutes, 120));
+  const endMin = Math.min(startMin + durationMinutes, 24 * 60 - 1);
+  return { startMin, endMin };
+}
 
-  return {
-    top: (topMinutes / 1440) * dayHeightPx,
-    height: (heightMinutes / 1440) * dayHeightPx,
-  };
+interface RecordingLayout {
+  rec: Recording;
+  top: number;
+  height: number;
+  left: number;
+  width: number;
+}
+
+const GUTTER = 3;
+
+/**
+ * Assigns overlapping recordings to side-by-side columns (lanes).
+ * Single recording takes full width; 2+ overlapping recordings are lane-allocated.
+ */
+function computeLayout(recordings: Recording[], dayHeightPx: number, containerWidth: number): RecordingLayout[] {
+  if (recordings.length === 0 || containerWidth <= 0) return [];
+
+  // Single recording: take full width
+  if (recordings.length === 1) {
+    const rec = recordings[0];
+    const { startMin, endMin } = getRecordingTimeRange(rec);
+    const heightMin = Math.max(30, Math.min(endMin - startMin, 120));
+    return [{
+      rec,
+      top: (startMin / 1440) * dayHeightPx,
+      height: (heightMin / 1440) * dayHeightPx,
+      left: GUTTER,
+      width: containerWidth - GUTTER * 2,
+    }];
+  }
+
+  // Compute time ranges for all recordings
+  const withRanges = recordings.map(rec => {
+    const { startMin, endMin } = getRecordingTimeRange(rec);
+    const heightMin = Math.max(30, Math.min(endMin - startMin, 120));
+    return { rec, startMin, endMin, heightMin };
+  });
+
+  // Sort by start time
+  withRanges.sort((a, b) => a.startMin - b.startMin);
+
+  // Lane algorithm: track end time of last recording in each lane
+  const lanes: Array<{ endMin: number }> = [];
+
+  return withRanges.map(({ rec, startMin, endMin, heightMin }) => {
+    // Find first lane that doesn't overlap the lane's last recording
+    let laneIdx = lanes.findIndex(l => l.endMin <= startMin);
+    if (laneIdx === -1) {
+      laneIdx = lanes.length;
+      lanes.push({ endMin });
+    } else {
+      lanes[laneIdx].endMin = endMin;
+    }
+
+    const numCols = lanes.length;
+    const colWidth = (containerWidth - GUTTER * 2) / numCols;
+    const left = laneIdx * colWidth + GUTTER;
+
+    return {
+      rec,
+      top: (startMin / 1440) * dayHeightPx,
+      height: (heightMin / 1440) * dayHeightPx,
+      left,
+      width: colWidth - GUTTER * 2,
+    };
+  });
 }
 
 function isWeekend(dateStr: string): boolean {
@@ -46,15 +109,13 @@ function isWeekend(dateStr: string): boolean {
 }
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
+
 const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLabelPosition, onDayScroll, onMount, isRightmost }) => {
-  // Guards scroll-to-8am to only fire on mount/date-change, not on resize-triggered re-renders
-  const scrollInitRef = useRef(false);
-  // Tracks previous date to detect when a new date is selected (vs resize-triggered re-render)
-  const prevDateRef = useRef<string | undefined>(undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollInitRef = useRef(false);
+  const prevDateRef = useRef<string | undefined>(undefined);
 
   const [availableHeight, setAvailableHeight] = useState(0);
-
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -71,7 +132,6 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
       hourEl.style.height = `${fullDayHeight}px`;
     }
 
-    // Show 8am at top only on initial mount or date change (not on resize re-renders)
     if (prevDateRef.current !== date) {
       scrollInitRef.current = false;
       prevDateRef.current = date;
@@ -80,9 +140,10 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
       el.scrollTop = (8 / 12) * measured;
       scrollInitRef.current = true;
     }
+
+    setAvailableHeight(measured);
   }, [date]);
 
-  // Track height changes (e.g. window resize) — update CSS and re-render recordings
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -97,7 +158,6 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
         hourEl.style.setProperty('--day-height-px', `${fullDayHeight}px`);
         hourEl.style.height = `${fullDayHeight}px`;
       }
-      // Trigger re-render so recording positions update with the new dayHeightPx
       setAvailableHeight(measured);
     });
 
@@ -113,6 +173,10 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
 
   const weekend = isWeekend(date);
   const dayHeightPx = availableHeight * 2;
+  const containerWidth = scrollRef.current?.clientWidth ?? 0;
+
+  const layouts = computeLayout(recordings, dayHeightPx, containerWidth);
+  const layoutById = new Map(layouts.map(l => [String(l.rec.id), l]));
 
   return (
     <div className={`day-view ${weekend ? 'weekend' : ''} ${isRightmost ? 'day-view-rightmost' : ''}`} ref={scrollRef} onScroll={handleScroll}>
@@ -128,15 +192,16 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
           </div>
         ))}
 
-        {/* Recording blocks — absolute positioned within .day-view-hours */}
         {recordings.map(rec => {
-          const { top, height } = getRecordingPosition(rec, dayHeightPx);
+          const layout = layoutById.get(String(rec.id));
+          if (!layout) return null;
+          const { top, height, left, width } = layout;
           const isLive = rec.is_live === true;
           return (
             <div
               key={rec.id}
               className={`recording-block ${isLive ? 'recording-block-live' : ''}`}
-              style={{ top: `${top}px`, height: `${height}px` }}
+              style={{ top: `${top}px`, height: `${height}px`, left: `${left}px`, width: `${width}px` }}
               onClick={() => onRecordingClick(rec.id)}
               role="button"
               tabIndex={0}
