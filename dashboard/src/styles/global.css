@@ -858,13 +858,10 @@ header nav a:hover {
   font-weight: 600;
   color: #333;
 }
-
 .recording-block-summary {
   font-size: 0.65rem;
   color: #555;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
 }
 
 .live-recording-content {

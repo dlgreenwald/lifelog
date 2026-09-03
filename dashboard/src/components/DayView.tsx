@@ -31,7 +31,7 @@ function getRecordingPosition(rec: Recording, dayHeightPx: number): { top: numbe
   }
 
   const topMinutes = Math.min(startMinutes, 24 * 60 - 1);
-  const heightMinutes = Math.max(5, Math.min(durationMinutes, 120));
+  const heightMinutes = Math.max(30, Math.min(durationMinutes, 120));
 
   return {
     top: (topMinutes / 1440) * dayHeightPx,
