@@ -116,6 +116,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
   const prevDateRef = useRef<string | undefined>(undefined);
 
   const [availableHeight, setAvailableHeight] = useState(0);
+  const [containerWidth, setContainerWidth] = useState(0);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -124,6 +125,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
     if (onMount) onMount(date, el);
 
     const measured = el.clientHeight;
+    const measuredWidth = el.clientWidth;
     const fullDayHeight = measured * 2;
 
     const hourEl = el.querySelector<HTMLElement>('.day-view-hours');
@@ -142,6 +144,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
     }
 
     setAvailableHeight(measured);
+    setContainerWidth(measuredWidth);
   }, [date]);
 
   useEffect(() => {
@@ -150,6 +153,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
 
     const observer = new ResizeObserver(([entry]) => {
       const measured = Math.round(entry.contentRect.height);
+      const measuredWidth = Math.round(entry.contentRect.width);
       if (measured === 0) return;
 
       const fullDayHeight = measured * 2;
@@ -159,6 +163,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
         hourEl.style.height = `${fullDayHeight}px`;
       }
       setAvailableHeight(measured);
+      if (measuredWidth > 0) setContainerWidth(measuredWidth);
     });
 
     observer.observe(el);
@@ -173,7 +178,6 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
 
   const weekend = isWeekend(date);
   const dayHeightPx = availableHeight * 2;
-  const containerWidth = scrollRef.current?.clientWidth ?? 0;
 
   const layouts = computeLayout(recordings, dayHeightPx, containerWidth);
   const layoutById = new Map(layouts.map(l => [String(l.rec.id), l]));
