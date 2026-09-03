@@ -1,4 +1,4 @@
-import { useEffect, useRef, type FC } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FC } from 'react';
 import { format, parseISO } from 'date-fns';
 import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
@@ -49,52 +49,48 @@ const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
 const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLabelPosition, onDayScroll, onMount, isRightmost }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Tracks the current dayHeightAvailable (12-hour visible window)
-  const availableHeightRef = useRef(0);
 
-  const handleScroll = () => {
-    if (scrollRef.current && onDayScroll) {
-      onDayScroll(date, scrollRef.current);
-    }
-  };
+  // Use state so a re-render happens once we have the measured height.
+  // useLayoutEffect runs synchronously before paint — no flash of wrong position.
+  const [availableHeight, setAvailableHeight] = useState(0);
 
-  // Scroll to 8am on mount and whenever date changes; register el with parent
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
 
     if (onMount) onMount(date, el);
 
-    const availableHeight = el.clientHeight;
-    availableHeightRef.current = availableHeight;
+    const measured = el.clientHeight;
+    const fullDayHeight = measured * 2;
 
     const hourEl = el.querySelector<HTMLElement>('.day-view-hours');
     if (hourEl) {
-      // Full 24-hour height = 2× the visible 12-hour window
-      hourEl.style.setProperty('--day-height-px', `${availableHeight * 2}px`);
-      hourEl.style.height = `${availableHeight * 2}px`;
+      hourEl.style.setProperty('--day-height-px', `${fullDayHeight}px`);
+      hourEl.style.height = `${fullDayHeight}px`;
     }
 
     // Show 8am at top of visible window (8/12 of the way through the day)
-    if (availableHeight > 0) {
-      el.scrollTop = (8 / 12) * availableHeight;
+    if (measured > 0) {
+      el.scrollTop = (8 / 12) * measured;
     }
+
+    setAvailableHeight(measured);
   }, [date]);
 
-  // Track available height changes (e.g. window resize) so recording positions stay accurate
+  // Track height changes (e.g. window resize)
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
 
     const observer = new ResizeObserver(([entry]) => {
-      const availableHeight = Math.round(entry.contentRect.height);
-      if (availableHeight === availableHeightRef.current || availableHeight === 0) return;
-      availableHeightRef.current = availableHeight;
+      const measured = Math.round(entry.contentRect.height);
+      if (measured === 0) return;
 
+      const fullDayHeight = measured * 2;
       const hourEl = el.querySelector<HTMLElement>('.day-view-hours');
       if (hourEl) {
-        hourEl.style.setProperty('--day-height-px', `${availableHeight * 2}px`);
-        hourEl.style.height = `${availableHeight * 2}px`;
+        hourEl.style.setProperty('--day-height-px', `${fullDayHeight}px`);
+        hourEl.style.height = `${fullDayHeight}px`;
       }
     });
 
@@ -102,7 +98,14 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
     return () => observer.disconnect();
   }, []);
 
+  const handleScroll = () => {
+    if (scrollRef.current && onDayScroll) {
+      onDayScroll(date, scrollRef.current);
+    }
+  };
+
   const weekend = isWeekend(date);
+  const dayHeightPx = availableHeight * 2;
 
   return (
     <div className={`day-view ${weekend ? 'weekend' : ''} ${isRightmost ? 'day-view-rightmost' : ''}`} ref={scrollRef} onScroll={handleScroll}>
@@ -120,7 +123,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
 
         {/* Recording blocks — absolute positioned within .day-view-hours */}
         {recordings.map(rec => {
-          const { top, height } = getRecordingPosition(rec, availableHeightRef.current * 2);
+          const { top, height } = getRecordingPosition(rec, dayHeightPx);
           const isLive = rec.is_live === true;
           return (
             <div
