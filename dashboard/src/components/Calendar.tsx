@@ -6,7 +6,7 @@ import { Calendar as ShadcnCalendar } from '@/components/ui/calendar';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { Separator } from '@/components/ui/separator';
-import { Drawer, DrawerClose, DrawerContent, DrawerFooter, DrawerTrigger } from '@/components/ui/drawer';
+
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
@@ -83,6 +83,7 @@ export default function Calendar() {
   const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
   const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]);
   const [loading, setLoading] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [todosByDate, setTodosByDate] = useState<{ date: string; todos: Todo[] }[]>([]);
   const [incompleteTodoDates, setIncompleteTodoDates] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'work' | 'personal' | 'not_meaningful'>('all');
@@ -399,31 +400,19 @@ export default function Calendar() {
               </div>
             )}
           </div>
-          {/* Drawer with calendar for date selection - trigger hidden on mobile since bottom bar handles it */}
-          <Drawer>
-            <DrawerTrigger asChild>
-              <Button variant="outline" className="m-2 calendar-drawer-trigger hidden-mobile">Open Calendar</Button>
-            </DrawerTrigger>
-            <DrawerContent className="bg-white">
-              <div className="p-4">{calendarInDrawer}</div>
-              <DrawerFooter>
-                <DrawerClose asChild>
-                  <Button variant="outline">Close</Button>
-                </DrawerClose>
-              </DrawerFooter>
-            </DrawerContent>
-          </Drawer>
+          {/* Backdrop - click to close */}
+          {calendarOpen && (
+            <div className="mobile-calendar-backdrop" onClick={() => setCalendarOpen(false)} />
+          )}
+          {/* Slide-up calendar panel - appears above footer */}
+          <div className={`mobile-calendar-panel ${calendarOpen ? 'open' : ''}`}>
+            <div className="mobile-calendar-panel-content">
+              {calendarInDrawer}
+            </div>
+          </div>
           {/* Bottom navigation bar for mobile */}
           <nav className="mobile-nav-bar">
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => {
-              // If already on calendar page, trigger drawer open
-              const trigger = document.querySelector('.calendar-drawer-trigger') as HTMLButtonElement;
-              if (trigger) {
-                trigger.click();
-              } else {
-                navigate('/');
-              }
-            }}>
+            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => setCalendarOpen(!calendarOpen)}>
               <FontAwesomeIcon icon={faCalendar} />
               <span>Calendar</span>
             </Button>
