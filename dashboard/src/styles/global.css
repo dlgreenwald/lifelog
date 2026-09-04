@@ -88,7 +88,7 @@ header nav a:hover {
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
-    height: calc(100vh - 56px); /* Leave room for header and bottom nav */
+    height: calc(100vh - 56px - env(safe-area-inset-bottom)); /* Leave room for header and fixed bottom nav */
   }
   .calendar-body-mobile .day-views-scroll {
     flex: 1;
@@ -107,14 +107,22 @@ header nav a:hover {
   .calendar-body-mobile .calendar-drawer-trigger {
     display: none;
   }
+  body {
+    padding-bottom: 56px;
+  }
 }
-
-/* Mobile bottom navigation bar - match header styling */
+/* Mobile bottom navigation bar - fixed at bottom, full width */
 .mobile-nav-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
   display: flex;
   justify-content: space-around;
   align-items: center;
   padding: 8px 4px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
   background: #2c3e50;
   color: white;
   flex-shrink: 0;
