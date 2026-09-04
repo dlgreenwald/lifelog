@@ -740,19 +740,36 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
             return;
         }
 
-        if (resp.statusCode != 200) {
-#ifndef OAUTH2_TESTING
-            const char* error = resp.body["error"] | "unknown";
+        // Check for OAuth error responses — only non-200 statuses carry OAuth error codes.
+        // Status 200 with no error field means success (handled below).
+        const char* error = resp.body["error"] | "";
+        if (resp.statusCode >= 400 && (
+            strcmp(error, "invalid_grant") == 0 ||
+            strcmp(error, "token_revoked") == 0 ||
+            strcmp(error, "token_expired") == 0 ||
+            strcmp(error, "invalid_token") == 0)) {
             const char* errorDesc = resp.body["error_description"] | "";
-            ESP_LOGW(TAG, "Token refresh HTTP error: status=%d error=%s description=%s",
-                     resp.statusCode, error, errorDesc);
+            snprintf(_lastError, sizeof(_lastError), "%s: %s", error, errorDesc);
+#ifndef OAUTH2_TESTING
+            ESP_LOGW(TAG, "Fatal refresh error %s — clearing tokens: %s", error, errorDesc);
 #endif
-            strlcpy(_lastError, "Token refresh failed", sizeof(_lastError));
             _hasTokens = false;
             setState(AUTH_ERROR);
             return;
         }
 
+        // Any other non-200 response is transient — retry once per minute.
+        if (resp.statusCode != 200) {
+#ifndef OAUTH2_TESTING
+            const char* errorDesc = resp.body["error_description"] | "";
+            ESP_LOGW(TAG, "Token refresh HTTP %d, error=%s description=%s — retrying in 60s",
+                     resp.statusCode, error, errorDesc);
+#endif
+            _refreshRetryMs = 60000;
+            return;
+        }
+
+        // ── Token update (status 200, no error field) ──────────────
         const char* accessToken = resp.body["access_token"] | "";
         const char* newRefreshToken = resp.body["refresh_token"] | "";
         int expiresIn = resp.body["expires_in"] | 0;

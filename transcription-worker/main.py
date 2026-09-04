@@ -193,6 +193,20 @@ class ModelManager:
         with self._lock:
             self._active_jobs -= 1
 
+    def clear_align_cache(self):
+        """Drop per-language alignment models to free GPU memory.
+
+        The _align_cache dict holds wav2vec2 alignment models loaded lazily
+        for each detected non-default language.  These are loaded onto the GPU
+        and accumulate without bound across jobs.  Clearing the cache after
+        each job prevents memory growth while leaving the primary ASR and
+        diarization models untouched, so subsequent jobs do not need a full
+        model reload.
+        """
+        with self._lock:
+            cache = self._models.get("_align_cache")
+            if cache:
+                cache.clear()
     def shutdown(self):
         self._stop_event.set()
         if self._watchdog_thread:
@@ -296,7 +310,6 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
         raise
     finally:
         model_manager.end_job()
-
 
 async def poll_once(client: httpx.AsyncClient) -> bool:
     response = await client.post(f"{SERVER_URL}/internal/transcription/claim")
