@@ -1,7 +1,7 @@
 const EASTERN = 'America/New_York';
 
 /** Parse UTC timestamp — naive ISO strings (no Z/offset) are assumed UTC. */
-function toUTCDate(iso: string): Date {
+export function toUTCDate(iso: string): Date {
   // PostgreSQL naive datetimes: "2026-08-22T00:27:21.498044" (no Z)
   // JS new Date() would treat these as local time — wrong.
   // Append Z to force UTC parsing.
