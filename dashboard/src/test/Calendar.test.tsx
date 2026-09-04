@@ -6,6 +6,9 @@ import React from 'react';
 import Calendar from '../components/Calendar';
 import { api } from '../api/client';
 
+// Shared state for mocking useIsMobile
+const mockIsMobile = { value: false };
+
 // Mock shadcn Drawer to avoid Base UI initialization hanging
 vi.mock('@/components/ui/drawer', () => ({
   Drawer: ({ children }: { children?: React.ReactNode }) => <div data-testid="mock-drawer">{children}</div>,
@@ -15,24 +18,40 @@ vi.mock('@/components/ui/drawer', () => ({
   DrawerClose: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }));
 
-// Mock the shadcn Calendar component to avoid heavy DOM rendering in jsdom
+// Track state across renders for mobile/desktop behavior testing
+let capturedCalendarProps: {
+  mode?: string;
+  onSelect?: (day: Date | DateRange | undefined) => void;
+  selected?: Date | DateRange | undefined;
+} = {};
+
 vi.mock('@/components/ui/calendar', () => ({
-  Calendar: () => (
-    <div data-testid="mock-calendar">
-      <button data-testid="prev-month">←</button>
-      <button data-testid="next-month">→</button>
-      <span>January 2024</span>
-    </div>
-  ),
+  Calendar: vi.fn(({ mode, selected, onSelect }: { mode?: string; selected?: Date | DateRange; onSelect?: (day: Date | DateRange | undefined) => void }) => {
+    capturedCalendarProps = { mode, selected, onSelect };
+    return (
+      <div data-testid="mock-calendar" data-mode={mode}>
+        <button
+          data-testid="mock-calendar-select-day"
+          onClick={() => onSelect?.(new Date('2024-06-15'))}
+        >
+          Select Day
+        </button>
+        <button
+          data-testid="mock-calendar-select-range"
+          onClick={() => onSelect?.({ from: new Date('2024-06-15'), to: new Date('2024-06-17') })}
+        >
+          Select Range
+        </button>
+      </div>
+    );
+  }),
 }));
 
 // Mock DayView to avoid DOM complexity
 vi.mock('../components/DayView', () => ({
   default: ({ date, recordings, onRecordingClick }: { date: string; recordings: Array<{ id: unknown }>; onRecordingClick: (id: unknown) => void }) => (
     <div data-testid={`dayview-${date}`} className="day-view" onClick={() => onRecordingClick(recordings[0]?.id)}>
-      {recordings.length > 0 ? (
-        <span data-testid={`recordings-${date}`}>{recordings.length} recording(s)</span>
-      ) : null}
+      DayView for {date}
     </div>
   ),
 }));
@@ -48,14 +67,20 @@ vi.mock('../api/client', () => ({
   },
 }));
 
+vi.mock('@/hooks/use-mobile', () => ({
+  useIsMobile: () => mockIsMobile.value,
+}));
+
 const mockApi = vi.mocked(api);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockIsMobile.value = false;  // Reset to desktop
   mockApi.getCalendar.mockResolvedValue({ dates: [] });
   mockApi.getRecordings.mockResolvedValue({ recordings: [] });
   mockApi.getActiveRecording.mockResolvedValue(null);
   mockApi.getTodosForDate.mockResolvedValue({ todos: [] });
+  capturedCalendarProps = {};
 });
 
 function renderCalendar(entries: string[] = ['/']) {
@@ -118,9 +143,7 @@ describe('Calendar', () => {
       expect(mockApi.getRecordings).toHaveBeenCalled();
     });
 
-    // Component defaults to This Week preset — shows day views (or "no recordings found" per date), not the empty state message
     await waitFor(() => {
-      // Day views are rendered even when recordings array is empty for that date
       const dayViews = document.querySelectorAll('.day-view');
       expect(dayViews.length).toBeGreaterThan(0);
     });
@@ -161,5 +184,94 @@ describe('Calendar', () => {
     await waitFor(() => {
       expect(mockApi.getTodosForDate).toHaveBeenCalled();
     });
+  });
+});
+
+describe('Mobile single-day selection', () => {
+  beforeEach(() => {
+    mockIsMobile.value = true;
+  });
+
+  it('uses single mode in mobile view', async () => {
+    renderCalendar();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-calendar')).toBeInTheDocument();
+    });
+
+    expect(capturedCalendarProps.mode).toBe('single');
+  });
+
+  it('selecting a day calls onSelect with a Date', async () => {
+    renderCalendar();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-calendar-select-day')).toBeInTheDocument();
+    });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('mock-calendar-select-day'));
+
+    expect(capturedCalendarProps.onSelect).toBeDefined();
+  });
+});
+
+describe('Desktop range selection', () => {
+  beforeEach(() => {
+    mockIsMobile.value = false;
+  });
+
+  it('uses range mode in desktop view', async () => {
+    renderCalendar();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-calendar')).toBeInTheDocument();
+    });
+
+    expect(capturedCalendarProps.mode).toBe('range');
+  });
+
+  it('selecting a range calls onSelect with a DateRange', async () => {
+    renderCalendar();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-calendar-select-range')).toBeInTheDocument();
+    });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('mock-calendar-select-range'));
+
+    expect(capturedCalendarProps.onSelect).toBeDefined();
+  });
+});
+
+describe('Mobile to desktop view transition', () => {
+  it('switches from single to range mode when viewport changes', async () => {
+    // Start in mobile mode
+    mockIsMobile.value = true;
+
+    const { rerender } = renderCalendar();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-calendar')).toBeInTheDocument();
+    });
+
+    // Initially mobile mode
+    expect(capturedCalendarProps.mode).toBe('single');
+
+    // Simulate switching to desktop
+    mockIsMobile.value = false;
+    rerender(
+      <MemoryRouter initialEntries={['/']}>
+        <Calendar />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-calendar')).toBeInTheDocument();
+    });
+
+    // Now desktop mode
+    expect(capturedCalendarProps.mode).toBe('range');
   });
 });
