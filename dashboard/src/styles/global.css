@@ -377,6 +377,9 @@ header nav a:hover {
 }
 
 .recording-detail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   background: white;
   padding: 20px;
   border-radius: 8px;
