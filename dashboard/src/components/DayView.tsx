@@ -28,6 +28,14 @@ function getRecordingTimeRange(rec: Recording): { startMin: number; endMin: numb
     startMin = Math.max(0, recDate.getHours() * 60 + recDate.getMinutes());
   }
 
+  // For live recordings, use current time as the end so the block grows in real-time.
+  if (rec.is_live) {
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const endMin = Math.min(nowMin, 24 * 60 - 1);
+    return { startMin, endMin };
+  }
+
   let durationMinutes = 30;
   if (rec.audio_range_start && rec.audio_range_end) {
     const s = toUTCDate(rec.audio_range_start);
