@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import React from 'react';
 import Calendar from '../components/Calendar';
+import type { DateRange } from 'react-day-picker';
 import { api } from '../api/client';
 
 // Shared state for mocking useIsMobile
