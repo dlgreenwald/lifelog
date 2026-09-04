@@ -4,6 +4,7 @@ import { format, parseISO, startOfISOWeek, endOfISOWeek, addDays, addWeeks } fro
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Calendar as ShadcnCalendar } from '@/components/ui/calendar';
 import { Button } from '@/components/ui/button';
+import { ButtonGroup } from '@/components/ui/button-group';
 import { Separator } from '@/components/ui/separator';
 import { Drawer, DrawerClose, DrawerContent, DrawerFooter, DrawerTrigger } from '@/components/ui/drawer';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -339,18 +340,24 @@ export default function Calendar() {
     <div className="calendar-view">
       {/* Preset quick-select buttons */}
       <div className="calendar-presets">
-        <div className="flex gap-1">
-          <Button variant="outline" size="sm" onClick={() => handlePreset('today')}>Today</Button>
+        <ButtonGroup orientation="horizontal">
           <Button variant="outline" size="sm" onClick={() => handlePreset('yesterday')}>Yesterday</Button>
-          <Button variant="outline" size="sm" onClick={() => handlePreset('this-week')}>This Week</Button>
-          <Button variant="outline" size="sm" onClick={() => handlePreset('last-week')}>Last Week</Button>
-        </div>
-        <div className="flex gap-1">
+          <Button variant="outline" size="sm" onClick={() => handlePreset('today')}>Today</Button>
+          {!isMobile && (
+            <>
+              <Button variant="outline" size="sm" onClick={() => handlePreset('this-week')}>This Week</Button>
+              <Button variant="outline" size="sm" onClick={() => handlePreset('last-week')}>Last Week</Button>
+            </>
+          )}
+        </ButtonGroup>
+        <ButtonGroup orientation="horizontal">
           <Button variant={categoryFilter === 'all' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('all')}>Both</Button>
           <Button variant={categoryFilter === 'work' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('work')}>Work</Button>
           <Button variant={categoryFilter === 'personal' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('personal')}>Home</Button>
-          <Button variant={categoryFilter === 'not_meaningful' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('not_meaningful')}>Other</Button>
-        </div>
+          {!isMobile && (
+            <Button variant={categoryFilter === 'not_meaningful' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('not_meaningful')}>Other</Button>
+          )}
+        </ButtonGroup>
       </div>
 
       {isMobile ? (
@@ -390,12 +397,12 @@ export default function Calendar() {
               </div>
             )}
           </div>
-          {/* Drawer with calendar for date selection */}
+          {/* Drawer with calendar for date selection - trigger hidden on mobile since bottom bar handles it */}
           <Drawer>
             <DrawerTrigger asChild>
-              <Button variant="outline" className="m-2">Open Calendar</Button>
+              <Button variant="outline" className="m-2 calendar-drawer-trigger hidden-mobile">Open Calendar</Button>
             </DrawerTrigger>
-            <DrawerContent>
+            <DrawerContent className="bg-white">
               <div className="p-4">{calendarInDrawer}</div>
               <DrawerFooter>
                 <DrawerClose asChild>
@@ -404,6 +411,17 @@ export default function Calendar() {
               </DrawerFooter>
             </DrawerContent>
           </Drawer>
+          {/* Bottom bar with calendar button */}
+          <div className="mobile-bottom-bar">
+            <Button variant="ghost" size="sm" className="mobile-calendar-btn" onClick={() => {
+              const trigger = document.querySelector('.calendar-drawer-trigger') as HTMLButtonElement;
+              trigger?.click();
+            }}>
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 448 512" fill="currentColor">
+                <path d="M128 0c17.7 0 32 14.3 32 32V64H288V32c0-17.7 14.3-32 32-32s32 14.3 32 32V64h64c35.3 0 64 28.7 64 64v224c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V224 128c0-35.3 28.7-64 64-64h64V32c0-17.7 14.3-32 32-32zM64 224H384V448c0 8.8-7.2 16-16 16H80c-8.8 0-16-7.2-16-16V224zm112-16h64v48c0 8.8 7.2 16 16 16s16-7.2 16-16V208h64c8.8 0 16 7.2 16 16v48c0 8.8-7.2 16-16 16H288c-8.8 0-16-7.2-16-16V224 208c0-8.8 7.2-16 16-16zM144 48h64v64H144V48z"/>
+              </svg>
+            </Button>
+          </div>
         </div>
       ) : (
         <div className="calendar-body">
