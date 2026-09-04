@@ -415,7 +415,15 @@ export default function Calendar() {
           </Drawer>
           {/* Bottom navigation bar for mobile */}
           <nav className="mobile-nav-bar">
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/')}>
+            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => {
+              // If already on calendar page, trigger drawer open
+              const trigger = document.querySelector('.calendar-drawer-trigger') as HTMLButtonElement;
+              if (trigger) {
+                trigger.click();
+              } else {
+                navigate('/');
+              }
+            }}>
               <FontAwesomeIcon icon={faCalendar} />
               <span>Calendar</span>
             </Button>
