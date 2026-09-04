@@ -202,40 +202,6 @@ export default function Calendar() {
     incompleteTodoDates,
     [incompleteTodoDates]
   );
-  // react-day-picker v10 calls onSelect with 4 args
-  function handleSelect(
-    range: DateRange | undefined,
-    _triggerDate: Date,
-    _modifiers: unknown,
-    _e: React.MouseEvent | React.KeyboardEvent
-  ) {
-    if (!range) { setSelected(undefined); return; }
-    let { from, to } = range;
-    if (!from) { setSelected(undefined); return; }
-    const prevFrom = selectedRef.current?.from;
-    const prevTo = selectedRef.current?.to;
-    if (prevFrom instanceof Date && prevTo instanceof Date) {
-      const dayDiff = (prevFrom.getTime() - from.getTime()) / 86_400_000;
-      const fromEqualsPrevFrom = from.getTime() === prevFrom.getTime();
-      if (fromEqualsPrevFrom && to && to < prevTo) {
-        // Clicked a date within the old range (from = prevFrom, to is between prevFrom and prevTo)
-        // e.g. Aug31-Sep6 clicked on Sep1 → range=Aug31-Sep1, from=prevFrom, to<prevTo
-        // → Reset to to so the user gets a fresh single-day from the clicked date
-        from = to;
-        to = to;
-      } else if (dayDiff > 3) {
-        // Clicked more than 3 days before the previous from: fresh start
-        to = from;
-      }
-    }
-    if (to) {
-      const maxTo = addDays(from, 6);
-      if (to > maxTo) { to = maxTo; }
-    }
-    const next = { from, to };
-    setSelected(next);
-    selectedRef.current = next;
-  }
 
   function handlePreset(preset: 'today' | 'yesterday' | 'this-week' | 'last-week') {
     const today = new Date();
@@ -283,12 +249,34 @@ export default function Calendar() {
     });
   }
 
+  // Calendar only (for mobile drawer)
+  const calendarInDrawer = (
+    <div className="calendar-sidebar">
+      <ShadcnCalendar
+        mode="range"
+        selected={selected}
+        onSelect={setSelected}
+        numberOfMonths={1}
+        onMonthChange={setCurrentMonth}
+        modifiers={{
+          booked: (date) => bookedDates.has(format(date, 'yyyy-MM-dd')),
+          todo: (date) => todoDates.has(format(date, 'yyyy-MM-dd')),
+        }}
+        modifiersClassNames={{
+          booked: 'has-recording-dot',
+          todo: 'has-todo-dot',
+        }}
+      />
+    </div>
+  );
+
+  // Full sidebar content (calendar + todos - for desktop)
   const sidebarContent = (
     <div className="calendar-sidebar">
       <ShadcnCalendar
         mode="range"
         selected={selected}
-        onSelect={handleSelect}
+        onSelect={setSelected}
         numberOfMonths={1}
         onMonthChange={setCurrentMonth}
         modifiers={{
@@ -366,19 +354,57 @@ export default function Calendar() {
       </div>
 
       {isMobile ? (
-        <Drawer>
-          <DrawerTrigger asChild>
-            <Button variant="outline">Open Calendar</Button>
-          </DrawerTrigger>
-          <DrawerContent>
-            <div className="p-4">{sidebarContent}</div>
-            <DrawerFooter>
-              <DrawerClose asChild>
-                <Button variant="outline">Close</Button>
-              </DrawerClose>
-            </DrawerFooter>
-          </DrawerContent>
-        </Drawer>
+        <div className="calendar-body calendar-body-mobile">
+          {/* Day view stack - always visible on mobile */}
+          <div className="day-views-scroll" style={{ flex: 1 }}>
+            {loading ? (
+              <p>Loading...</p>
+            ) : selectedDates.length === 0 ? (
+              <p>Select a date range to view recordings</p>
+            ) : (
+              <div className="day-views-row">
+                {[...selectedDates].sort().map((date, i) => {
+                  const isLeftmost = i === 0;
+                  const isRightmost = i === selectedDates.length - 1;
+                  const hourLabelPosition: 'left' | 'right' | 'none' =
+                    selectedDates.length === 1
+                      ? 'left'
+                      : (isLeftmost ? 'left' : isRightmost ? 'right' : 'none');
+                  return (
+                    <div key={date} className="day-view-column">
+                      <div className="day-view-header">
+                        {format(parseISO(date), 'EEE, MMM d')}
+                      </div>
+                      <DayView
+                        date={date}
+                        recordings={recordingsByDate.get(date) ?? []}
+                        onRecordingClick={(id) => navigate(`/recording/${id}`)}
+                        hourLabelPosition={hourLabelPosition}
+                        onMount={handleDayViewMount}
+                        onDayScroll={handleDayViewScroll}
+                        isRightmost={isRightmost}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          {/* Drawer with calendar for date selection */}
+          <Drawer>
+            <DrawerTrigger asChild>
+              <Button variant="outline" className="m-2">Open Calendar</Button>
+            </DrawerTrigger>
+            <DrawerContent>
+              <div className="p-4">{calendarInDrawer}</div>
+              <DrawerFooter>
+                <DrawerClose asChild>
+                  <Button variant="outline">Close</Button>
+                </DrawerClose>
+              </DrawerFooter>
+            </DrawerContent>
+          </Drawer>
+        </div>
       ) : (
         <div className="calendar-body">
           <div className="calendar-sidebar-wrap">

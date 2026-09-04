@@ -82,6 +82,24 @@ header nav a:hover {
   min-height: 0;
 }
 
+/* Mobile: day view takes full width, calendar in drawer */
+@media (max-width: 767px) {
+  .calendar-body-mobile {
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .calendar-body-mobile .day-views-scroll {
+    flex: 1;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .calendar-body-mobile .day-view-column {
+    min-width: 280px;
+    max-width: 280px;
+  }
+}
+
 .calendar-sidebar-wrap {
   display: flex;
   flex-direction: row;
