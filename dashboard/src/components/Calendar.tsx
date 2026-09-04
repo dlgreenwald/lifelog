@@ -177,12 +177,14 @@ export default function Calendar() {
 
   // Fetch recordings for all selected dates in parallel
   useEffect(() => {
+    console.log('[Calendar] fetch effect running, selectedDates:', selectedDates, 'categoryFilter:', categoryFilter);
     Promise.all(selectedDates.map(date => api.getRecordings(date, categoryFilter === 'all' ? undefined : categoryFilter)))
       .then(results => {
         const map = new Map<string, Recording[]>();
         selectedDates.forEach((date, i) => {
           map.set(date, results[i].recordings ?? []);
         });
+        console.log('[Calendar] setting recordingsByDate with', map.size, 'dates, first date recordings:', map.values().next().value?.length);
         setRecordingsByDate(map);
         setLoading(false);
       });
