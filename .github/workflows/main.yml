@@ -1,33 +1,5 @@
-# GitHub Advanced Security: this workflow provides the "security" job that the
-# CodeQL configuration references (.github/workflows/main.yml:security).
+# This workflow is kept for GitHub Advanced Security configuration reference.
+# Actual CodeQL analysis runs in codeql.yml.
+#
 # All PR component builds run in ci.yml (path-filtered).
 # All service publish pipelines run in main-*.yml (on push to main).
-
-name: Main
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-permissions:
-  security-events: write
-  contents: read
-
-jobs:
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: python, javascript
-          queries: security-extended
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
-        with:
-          category: "/language:main"
