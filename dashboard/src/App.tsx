@@ -9,19 +9,21 @@ import TodoList from './components/TodoList';
 import DecisionsList from './components/DecisionsList';
 import SpeakerLabel from './components/SpeakerLabel';
 import Settings from './components/Settings';
+import { ThemeProvider } from './components/theme-provider';
 import { setAuthProvider } from './api/client';
 import { useEffect } from 'react';
+import { useIsMobile } from './hooks/use-mobile';
 
 function AppRoutes() {
   const { user, getAccessToken, userManager } = useAuth();
-
+  const isMobile = useIsMobile();
   useEffect(() => {
     setAuthProvider(getAccessToken, userManager);
   }, [getAccessToken, userManager]);
 
   return (
     <div className="app">
-      {user && (
+      {user && !isMobile && (
         <header>
           <h1>LifeLog</h1>
           <nav>
@@ -51,10 +53,12 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
-    </BrowserRouter>
+    <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
+      <BrowserRouter>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </BrowserRouter>
+    </ThemeProvider>
   );
 }

@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 * {
   margin: 0;
   padding: 0;
@@ -11,12 +15,22 @@ body {
   line-height: 1.6;
 }
 
-.app {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 20px;
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  background: #f5f5f5;
+  color: #333;
+  line-height: 1.6;
+  height: 100vh;
+  overflow: hidden;
+  margin: 0;
 }
 
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
 header {
   background: #2c3e50;
   color: white;
@@ -54,7 +68,148 @@ header nav a:hover {
   padding: 20px;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
+
+.calendar-body {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Mobile: day view takes full width, calendar in drawer */
+@media (max-width: 767px) {
+  .calendar-body-mobile {
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    height: calc(100vh - 56px - env(safe-area-inset-bottom)); /* Leave room for header and fixed bottom nav */
+  }
+  .calendar-body-mobile .day-views-scroll {
+    flex: 1;
+    overflow-x: auto;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .calendar-body-mobile .day-view-column {
+    min-width: 100vw;
+    max-width: 100vw;
+    flex-shrink: 0;
+  }
+  .calendar-body-mobile .day-view {
+    height: 100%;
+  }
+  .calendar-body-mobile .calendar-drawer-trigger {
+    display: none;
+  }
+  body {
+    padding-bottom: 56px;
+  }
+}
+/* Mobile bottom navigation bar - fixed at bottom, full width */
+.mobile-nav-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  padding: 8px 4px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  background: #2c3e50;
+  color: white;
+  flex-shrink: 0;
+  height: 56px;
+}
+
+.mobile-nav-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: white !important;
+  background: transparent !important;
+  font-size: 0.65rem;
+  padding: 4px 8px;
+  min-width: 56px;
+  height: 48px;
+}
+
+.mobile-nav-btn:hover,
+.mobile-nav-btn:focus {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+.mobile-nav-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+
+/* Mobile calendar backdrop - click to close */
+.mobile-calendar-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 39;
+}
+
+/* Mobile calendar slide-up panel - sits above footer */
+.mobile-calendar-panel {
+  position: fixed;
+  bottom: 56px;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  transform: translateY(100%);
+  transition: transform 0.3s ease-out;
+  background: white;
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
+  max-height: calc(100vh - 56px - env(safe-area-inset-bottom));
+  overflow: hidden;
+}
+.mobile-calendar-panel.open {
+  transform: translateY(0);
+}
+.mobile-calendar-panel-content {
+  padding: 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+/* Mobile calendar panel - fill width with responsive day sizes */
+@media (max-width: 767px) {
+  .mobile-calendar-panel [data-slot="calendar"] {
+    --rdp-day-width: calc((100vw - 32px) / 7) !important;
+    --rdp-day-height: calc((100vw - 32px) / 7) !important;
+    --rdp-day_button-width: calc((100vw - 32px) / 7) !important;
+    --rdp-day_button-height: calc((100vw - 32px) / 7) !important;
+    padding: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+  }
+}
+.calendar-sidebar-wrap {
+  display: flex;
+  flex-direction: row;
+  flex: 0 0 20%;
+  min-width: 0;
+}
+
+
 
 .calendar-header {
   display: flex;
@@ -496,9 +651,15 @@ header nav a:hover {
   opacity: 0.6;
 }
 
-.todo-checkbox {
-  margin-right: 8px;
-  cursor: pointer;
+/* Mobile touch targets - increase checkbox size for touch */
+@media (max-width: 767px) {
+  .todo-table-container .shrink-0 {
+    width: 44px !important;
+    height: 44px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
 }
 
 .todo-task {
@@ -535,28 +696,59 @@ header nav a:hover {
 }
 
 .day-todos {
-  margin-top: 16px;
-  padding: 16px;
-  background: white;
-  border-radius: 8px;
-  border-left: 4px solid #e67e22;
-}
-
-.day-todos h3 {
-  margin-bottom: 8px;
-  color: #2c3e50;
-}
-
-.day-todos ul {
-  list-style: none;
-}
-
-.day-todos li {
-  padding: 8px;
-  border-bottom: 1px solid #ecf0f1;
+  margin-top: 4px;
+  flex: 1;
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  min-height: 0;
+}
+.day-todos h3 {
+  margin-bottom: 6px;
+  color: #1a252f;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+.todo-table-container {
+  flex: 1;
+  overflow-y: auto;
+  border-radius: 4px;
+  border: 1px solid #e5e7eb;
+}
+
+.todo-table-container table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.todo-table-container td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #ecf0f1;
+  vertical-align: top;
+}
+
+.todo-table-container td:first-child {
+  padding-right: 0;
+  width: 32px;
+}
+
+.todo-table-container td:not(:first-child) {
+  padding-left: 8px;
+}
+
+.todo-table-container tr:last-child td {
+  border-bottom: none;
+}
+
+.day-todos .completed td {
+  text-decoration: line-through;
+  color: #9ca3af;
+}
+
+.day-todos .line-through {
+  text-decoration: line-through;
 }
 
 .day-todos li.priority-high {
@@ -693,3 +885,271 @@ header nav a:hover {
 .speaker-labels button:hover { background: #357abd; }
 .labeled-list .segment { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem; border-bottom: 1px solid #eee; }
 .labeled-list .segment.labeled { opacity: 0.7; }
+
+/* === Calendar + Day View === */
+.calendar-presets {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.calendar-sidebar-wrap {
+  display: flex;
+  flex: 0 0 280px;
+  min-width: 0;
+  position: relative;
+}
+
+/* Responsive: reduce sidebar on smaller screens */
+@media (max-width: 1024px) {
+  .calendar-sidebar-wrap {
+    flex: 0 0 220px;
+  }
+}
+
+.calendar-sidebar {
+  padding: 0.5rem;
+  position: relative;
+  overflow: hidden; /* clip absolutely-positioned children that would otherwise expand the container */
+}
+.has-recording-dot::before,
+.has-todo-dot::before,
+.has-recording-dot::after,
+.has-todo-dot::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  pointer-events: none;
+}
+/* Green dot (using ::before so both dots can coexist on same element) */
+.has-recording-dot::before {
+  left: calc(50% - 6px);
+  background: #27ae60;
+  z-index: 2;
+}
+/* Red dot (::after) */
+.has-todo-dot::after {
+  left: calc(50% + 2px);
+  background: #e74c3c;
+  z-index: 2;
+}
+/* When both dots on same element, ensure stacking */
+.has-recording-dot.has-todo-dot::before {
+  z-index: 3;
+}
+.has-recording-dot.has-todo-dot::after {
+  z-index: 2;
+}
+/* Override rdp-range gradient backgrounds with solid accent color */
+.rdp-range_start,
+.rdp-range_end {
+  background: var(--rdp-accent-background-color) !important;
+}
+.rdp-range_start .rdp-day_button,
+.rdp-range_end .rdp-day_button {
+  background-color: var(--rdp-accent-background-color) !important;
+}
+.rdp-range_middle {
+  background-color: var(--rdp-accent-background-color) !important;
+}
+
+.active-recording-panel {
+  margin-top: 1rem;
+  padding: 0.5rem;
+  background: #fff3cd;
+  border-radius: 4px;
+}
+
+/* === Day View === */
+.day-view {
+  flex: 1;
+  position: relative;
+  overflow-y: auto;
+  border-right: 1px solid #eee;
+  /* Hide scrollbar on all columns except rightmost */
+  scrollbar-width: none;
+}
+
+.day-view::-webkit-scrollbar { display: none; }
+
+/* Only the rightmost day-view shows its scrollbar */
+.day-view-rightmost {
+  scrollbar-width: thin;
+}
+
+.day-view-hour-row {
+  position: relative;
+  /* Each row = 1/24th of the full 24-hour height (--day-height-px, set by DayView) */
+  height: calc(var(--day-height-px, 960px) / 24);
+}
+/* Hour labels: inline within the hour row */
+.hour-label {
+  position: absolute;
+  left: 4px;
+  top: -12px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #333;
+  background: white;
+  padding: 0 2px;
+  z-index: 1;
+}
+.hour-label-left { left: 4px; right: auto; }
+.hour-label-right { left: auto; right: 4px; }
+.hour-grid-line { margin: 0; background-color: #ccc; height: 1px; }
+
+/* Recording blocks */
+.recording-block {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  background: #d4edda;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  overflow: hidden;
+  border: 1px solid rgba(39, 174, 96, 0.4);
+  border-left: 3px solid #27ae60;
+  z-index: 1;
+}
+
+.recording-block:hover { opacity: 0.85; }
+
+.recording-block-live {
+  background: #fff3cd;
+  border-left-color: #f39c12;
+  /* re-assert position after display:flex in base rule */
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+/* Category colors for recording blocks */
+.recording-block.category-work {
+  background: #d4edda;
+  border-color: rgba(39, 174, 96, 0.4);
+  border-left-color: #27ae60;
+}
+
+.recording-block.category-home {
+  background: #e3f2fd;
+  border-color: rgba(33, 150, 243, 0.4);
+  border-left-color: #2196f3;
+}
+
+.recording-block.category-other {
+  background: #fff3e0;
+  border-color: rgba(255, 152, 0, 0.4);
+  border-left-color: #ff9800;
+}
+
+.recording-block-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.recording-block-time {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #333;
+}
+.recording-block-summary {
+  font-size: 0.65rem;
+  color: #555;
+  word-break: break-word;
+}
+
+.live-recording-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.live-recording-text {
+  font-size: 10px;
+}
+
+.live-recording-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: rgba(255, 243, 205, 0.7);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 2;
+  border-left: 3px solid #f39c12;
+}
+
+
+/* === Day view column with header === */
+.day-views-scroll {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  overflow: visible;
+  min-width: 0;
+}
+
+.day-views-row {
+  display: flex;
+  gap: 0;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.day-view-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.day-view-header {
+  padding: 4px 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #333;
+  background: #f8f8f8;
+  border-bottom: 2px solid #27ae60;
+  text-align: center;
+  white-space: normal;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+.sidebar-divider { height: 100%; margin: 0; }
+body { position: relative; } /* required for iOS Safari drawer overlay */
+
+
+main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+/* === Settings === */
+.settings-section { margin-bottom: 1.5rem; }
+.settings-section h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
+.settings-section p { margin: 0 0 0.5rem; color: #666; font-size: 0.85rem; }
+/* Drawer (mobile) overrides - lighten scrim */
+.drawer-overlay {
+  background-color: rgba(0, 0, 0, 0.4) !important;
+}

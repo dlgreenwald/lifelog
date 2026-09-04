@@ -262,13 +262,12 @@ cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 14 tests
 cd transcription-worker && python -m pytest -q           # 10 tests
 
 # Dashboard
-cd dashboard && npx vitest run                            # 91 tests
+cd dashboard && npx vitest run                            # 89 tests
 
 # Firmware (native tests, no hardware required)
 cd firmware-ota && pio test -e test                       # 69 tests
-```
+**Total: ~324 tests** across 6 components.
 
-**Total: ~326 tests** across 6 components.
 
 ## Project Structure
 
