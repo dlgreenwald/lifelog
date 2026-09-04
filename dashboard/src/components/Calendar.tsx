@@ -52,6 +52,10 @@ export default function Calendar() {
     return getThisWeekRange();
   };
   const [selected, setSelectedState] = useState<DateRange | undefined>(getInitialSelected);
+  // Separate state for mobile single-day selection
+  const [selectedDay, setSelectedDay] = useState<Date | undefined>(
+    getInitialSelected()?.from
+  );
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
 
@@ -78,6 +82,14 @@ export default function Calendar() {
       }
     }
   }, [searchParams]);
+
+  // Sync mobile single-day selection with range when switching views
+  useEffect(() => {
+    if (!isMobile && selected?.from) {
+      // Switching to desktop - sync selectedDay to range's from
+      setSelectedDay(selected.from);
+    }
+  }, [isMobile, selected?.from]);
 
   const [recordingsByDate, setRecordingsByDate] = useState<Map<string, Recording[]>>(new Map());
   const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
@@ -254,7 +266,43 @@ export default function Calendar() {
   }
 
   // Calendar only (for mobile drawer)
-  const calendarInDrawer = (
+  // In mobile, use single day selection; in desktop, use range selection
+  const handleMobileSelect = (day: Date | undefined) => {
+    if (day) {
+      setSelectedDay(day);
+      setSelectedState({ from: day, to: day });
+    }
+  };
+
+  // Mobile calendar - single day selection
+  const mobileCalendar = (
+    <div className="calendar-sidebar">
+      <ShadcnCalendar
+        mode="single"
+        selected={selectedDay}
+        onSelect={handleMobileSelect}
+        numberOfMonths={1}
+        onMonthChange={setCurrentMonth}
+        modifiers={{
+          booked: (date) => bookedDates.has(format(date, 'yyyy-MM-dd')),
+          todo: (date) => todoDates.has(format(date, 'yyyy-MM-dd')),
+        }}
+        modifiersClassNames={{
+          booked: 'has-recording-dot',
+          todo: 'has-todo-dot',
+        }}
+        className="w-full h-full"
+        classNames={{
+          months: 'flex w-full flex-col flex-1',
+          month: 'w-full flex flex-col',
+          week: 'flex w-full',
+        }}
+      />
+    </div>
+  );
+
+  // Desktop calendar - range selection
+  const desktopCalendar = (
     <div className="calendar-sidebar">
       <ShadcnCalendar
         mode="range"
@@ -279,6 +327,8 @@ export default function Calendar() {
       />
     </div>
   );
+
+  const calendarInDrawer = isMobile ? mobileCalendar : desktopCalendar;
 
   // Full sidebar content (calendar + todos - for desktop)
   const sidebarContent = (
