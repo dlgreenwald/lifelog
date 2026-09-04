@@ -183,6 +183,7 @@ export default function Calendar() {
         selectedDates.forEach((date, i) => {
           map.set(date, results[i].recordings ?? []);
         });
+        setRecordingsByDate(map);
         setLoading(false);
       });
   }, [selectedDates, categoryFilter]);
