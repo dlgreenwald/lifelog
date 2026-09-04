@@ -15,8 +15,7 @@ from lifelog.pipeline.llm import summarize
 
 logger = structlog.get_logger()
 POLL_INTERVAL = 60.0
-_ALLOWED_AUDIO_LABELS = lambda name: name not in {"Unknown", ""}
-_MICROSECOND = timedelta(microseconds=1)
+MAX_RETRY_COUNT = 3
 
 
 async def claim_utterance(user_id: int, utterance_id: int) -> bool:
@@ -472,12 +471,6 @@ async def _reprocess_session(session: dict):
     ):
         job = existing_by_chunk.get(chunk_index)
         if job is not None:
-            if job.get("status") == "failed":
-                logger.error(
-                    "terminal_failed_transcription_job",
-                    session_id=session_id,
-                    chunk_index=chunk_index,
-                )
             continue
         settings = await db.get_user_settings(session["user_id"])
         language = settings.get("language", "auto")
@@ -813,13 +806,76 @@ async def _finalize_completed_sessions() -> None:
                 job for job in jobs if (job.get("job_type") or "full") == "full"
             ]
             if not full_jobs:
+                logger.info(
+                    "finalize_no_full_jobs",
+                    session_id=session["id"],
+                    total_jobs=len(jobs),
+                    job_types=[job.get("job_type") for job in jobs],
+                )
                 continue
-            if any(
-                job.get("status") in {"pending", "processing", "failed"}
-                for job in full_jobs
-            ):
+            pending_or_processing = [
+                job for job in full_jobs if job.get("status") in {"pending", "processing"}
+            ]
+            if pending_or_processing:
+                logger.info(
+                    "finalize_waiting_for_jobs",
+                    session_id=session["id"],
+                    waiting_count=len(pending_or_processing),
+                    pending_ids=[j["id"] for j in pending_or_processing],
+                )
                 continue
-            if not all(job.get("status") == "done" for job in full_jobs):
+            if failed_jobs:
+                retry_count = session.get("retry_count") or 0
+                if retry_count < MAX_RETRY_COUNT:
+                    await db.reset_session_for_reprocessing(session["id"])
+                    session["retry_count"] = retry_count + 1
+                    logger.info(
+                        "session_transcription_failed_retry_scheduled",
+                        session_id=session["id"],
+                        retry_count=retry_count + 1,
+                        max_retries=MAX_RETRY_COUNT,
+                    )
+                    try:
+                        await _reprocess_session(session)
+                    except Exception:
+                        logger.exception(
+                            "session_reprocess_on_retry_error", session_id=session["id"]
+                        )
+                    await db.mark_session_processed(session["id"])
+                    continue
+                # Terminal failure — save an error recording with the failure reason
+                error_messages = "; ".join(
+                    f"chunk {job.get('chunk_index')}: {job.get('error', 'unknown')}"
+                    for job in failed_jobs
+                    if job.get("error")
+                ) or "Transcription failed after maximum retries."
+                logger.warning(
+                    "session_transcription_terminal_failure",
+                    session_id=session["id"],
+                    error=error_messages,
+                )
+                user = await get_user_secret(session["user_id"])
+                session_start = session["started_at"]
+                if session_start is None:
+                    session_start = datetime.now(tz=UTC)
+                await db.save_session_recording(
+                    session["user_id"],
+                    session["id"],
+                    {"segments": []},
+                    [],
+                    {
+                        "summary": "Transcription failed — see notes.",
+                        "todos": [],
+                        "calendar": {},
+                        "notes": error_messages,
+                        "conversation_changes": [],
+                    },
+                    "",
+                    speaker_segments=[],
+                    session_timestamp=session_start,
+                    category="transcription_failed",
+                )
+                await db.mark_session_processed(session["id"])
                 continue
             first = min(job["window_start"] for job in full_jobs)
             transcript_segments = []
@@ -887,6 +943,7 @@ async def _finalize_completed_sessions() -> None:
                     speaker_segments=persisted,
                     session_timestamp=session_start,
                     category=llm_result.get("category", "not_meaningful"),
+                    created_at=session_start,
                 )
                 if llm_result.get("todos"):
                     try:
@@ -916,6 +973,14 @@ async def _finalize_completed_sessions() -> None:
                         logger.warning(
                             "decisions_save_failed", recording_id=recording_id
                         )
+                logger.info(
+                    "session_finalized",
+                    session_id=session["id"],
+                    recording_id=recording_id,
+                    category=llm_result.get("category"),
+                    segment_count=len(persisted),
+                    partition_count=1,
+                )
                 await db.mark_session_processed(session["id"])
                 await _auto_enroll_speakers(user, persisted)
                 current = await db.get_recording(user["id"], recording_id)
@@ -947,8 +1012,6 @@ async def _finalize_completed_sessions() -> None:
                 # First partition gets the existing session-level summary + todos/decisions
                 partition_0 = partitions[0]
                 persisted_0 = _persist_partition_segments(partition_0, user)
-                named_0 = _named_from_persisted(persisted_0)
-                llm_0 = _normalise_summary(summarize(named_0, llm_context=llm_context))
                 recording_id = await db.save_session_recording(
                     session["user_id"],
                     session["id"],
@@ -959,6 +1022,7 @@ async def _finalize_completed_sessions() -> None:
                     speaker_segments=persisted_0,
                     session_timestamp=session_start,
                     category=llm_0.get("category", "not_meaningful"),
+                    created_at=session_start,
                 )
                 if llm_0.get("todos"):
                     try:
@@ -988,6 +1052,14 @@ async def _finalize_completed_sessions() -> None:
                         logger.warning(
                             "decisions_save_failed", recording_id=recording_id
                         )
+                logger.info(
+                    "session_finalized",
+                    session_id=session["id"],
+                    recording_id=recording_id,
+                    category=llm_0.get("category"),
+                    segment_count=len(persisted_0),
+                    partition_count=len(partitions),
+                )
                 await db.mark_session_processed(session["id"])
                 await _auto_enroll_speakers(user, persisted_0)
                 all_persisted = [persisted_0]
@@ -1026,6 +1098,11 @@ async def _finalize_completed_sessions() -> None:
                             rebased,
                             audio_range_start,
                             audio_range_end,
+                        )
+                        logger.info(
+                            "partition_recording_saved",
+                            session_id=session["id"],
+                            partition_idx=idx,
                         )
                     except Exception:
                         logger.exception(

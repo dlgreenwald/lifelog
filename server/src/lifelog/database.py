@@ -863,16 +863,21 @@ async def reset_session_for_reprocessing(session_id: int) -> bool:
     re-inserting partitions that already exist), then sets status back
     to 'ended' so the hourly loop regenerates them.
 
+    Also increments retry_count so we can bound retries.
+
     Returns True if a session was reset, False if session not found.
     """
     async with pool.acquire() as conn:
-        # Verify session exists
+        # Verify session exists and get current retry_count
         session = await conn.fetchrow(
-            "SELECT id, status FROM sessions WHERE id = $1",
+            "SELECT id, status, retry_count FROM sessions WHERE id = $1",
             session_id,
         )
         if not session:
             return False
+
+        # Increment retry count
+        new_count = (session.get("retry_count") or 0) + 1
 
         # Delete existing recordings and transcription jobs so they can be regenerated fresh
         await conn.execute(
@@ -884,20 +889,22 @@ async def reset_session_for_reprocessing(session_id: int) -> bool:
             session_id,
         )
 
-        # Reset status to 'ended' so hourly loop picks it up
+        # Reset status to 'ended' and increment retry count so hourly loop picks it up
         await conn.execute(
             """
             UPDATE sessions
-            SET status = 'ended'
+            SET status = 'ended', retry_count = $2
             WHERE id = $1
             """,
             session_id,
+            new_count,
         )
 
         logger.info(
-            "Session %d reset for reprocessing (was %s)",
+            "Session %d reset for reprocessing (was %s, retry_count=%d)",
             session_id,
             session["status"],
+            new_count,
         )
         return True
 
@@ -1368,6 +1375,7 @@ async def save_session_recording(
     speaker_segments: list | None = None,
     audio_range_start: datetime | None = None,
     audio_range_end: datetime | None = None,
+    created_at: datetime | None = None,
 ) -> int:
     """Create or update a recording linked to a session."""
     ts = session_timestamp.replace(tzinfo=None) if session_timestamp else None
@@ -1405,7 +1413,8 @@ async def save_session_recording(
                     SET transcript = $1, speakers = $2, summary = $3, todos = $4,
                         calendar = $5, notes = $6, conversation_changes = $7,
                         audio_filename = $8, speaker_segments = $9::json, timestamp = $10,
-                        category = $11, audio_range_start = $13, audio_range_end = $14
+                        category = $11, audio_range_start = $13, audio_range_end = $14,
+                        created_at = $15
                     WHERE id = $12
                     """,
                     transcript,
@@ -1422,6 +1431,7 @@ async def save_session_recording(
                     existing["id"],
                     audio_range_start,
                     audio_range_end,
+                    created_at,
                 )
             else:
                 await conn.execute(
@@ -1431,7 +1441,8 @@ async def save_session_recording(
                         calendar = $5, notes = $6, conversation_changes = $7,
                         audio_filename = $8, speaker_segments = $9::json,
                         timestamp = NOW(), category = $10,
-                        audio_range_start = $12, audio_range_end = $13
+                        audio_range_start = $12, audio_range_end = $13,
+                        created_at = $14
                     WHERE id = $11
                     """,
                     transcript,
@@ -1447,6 +1458,7 @@ async def save_session_recording(
                     existing["id"],
                     audio_range_start,
                     audio_range_end,
+                    created_at,
                 )
         if ts is not None:
             row = await conn.fetchrow(
@@ -1455,8 +1467,8 @@ async def save_session_recording(
                     (user_id, session_id, timestamp, transcript, speakers,
                      summary, todos, calendar, notes, conversation_changes,
                      audio_filename, speaker_segments, category,
-                     audio_range_start, audio_range_end)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13, $14, $15)
+                     audio_range_start, audio_range_end, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13, $14, $15, $16)
                 RETURNING id
                 """,
                 user_id,
@@ -1474,6 +1486,7 @@ async def save_session_recording(
                 category,
                 audio_range_start,
                 audio_range_end,
+                created_at,
             )
         else:
             row = await conn.fetchrow(
@@ -1482,8 +1495,8 @@ async def save_session_recording(
                     (user_id, session_id, timestamp, transcript, speakers,
                      summary, todos, calendar, notes, conversation_changes,
                      audio_filename, speaker_segments, category,
-                     audio_range_start, audio_range_end)
-                VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11::json, $12, $13, $14)
+                     audio_range_start, audio_range_end, created_at)
+                VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11::json, $12, $13, $14, $15)
                 RETURNING id
                 """,
                 user_id,
@@ -1500,9 +1513,9 @@ async def save_session_recording(
                 category,
                 audio_range_start,
                 audio_range_end,
+                created_at,
             )
         return row["id"]
-
 
 async def save_partition_recording(
     user_id: int,
@@ -1563,7 +1576,7 @@ async def get_sessions_for_reprocessing(user_id: int | None = None) -> list[dict
         if user_id is not None:
             rows = await conn.fetch(
                 """
-                SELECT s.id, s.user_id, s.started_at, s.ended_at
+                SELECT s.id, s.user_id, s.started_at, s.ended_at, s.retry_count
                 FROM sessions s
                 WHERE s.status = 'ended'
                   AND s.user_id = $1
@@ -1582,7 +1595,7 @@ async def get_sessions_for_reprocessing(user_id: int | None = None) -> list[dict
         else:
             rows = await conn.fetch(
                 """
-                SELECT s.id, s.user_id, s.started_at, s.ended_at
+                SELECT s.id, s.user_id, s.started_at, s.ended_at, s.retry_count
                 FROM sessions s
                 WHERE s.status = 'ended'
                   AND (
@@ -1597,7 +1610,6 @@ async def get_sessions_for_reprocessing(user_id: int | None = None) -> list[dict
                 """
             )
         return [dict(row) for row in rows]
-
 
 async def get_sessions_by_date_range(
     user_id: int, start: datetime, end: datetime
