@@ -266,17 +266,25 @@ def load_models() -> dict[str, Any]:
         model_name, device=device, compute_type=compute_type, download_root=cache_dir
     )
     align_language = os.getenv("ASR_LANGUAGE", "en")
-    align_model, metadata = whisperx.load_align_model(
+    default_align_model, metadata = whisperx.load_align_model(
         language_code=align_language,
         device=device,
     )
     diarize = DiarizationPipeline(use_auth_token=os.environ["HF_TOKEN"], device=device)
     return {
         "asr": asr,
-        "align_model": align_model,
+        # _default_align_model holds the default language model so it can be
+        # restored after processing a non-default language without reloading.
+        "_default_align_model": default_align_model,
+        "_default_metadata": metadata,
+        # align_model and align_language track whichever model is currently loaded.
+        # Always starts with the default; swapped to non-default as needed.
+        "align_model": default_align_model,
         "metadata": metadata,
-        "align_language": align_language,
-        "align_cache": {},
+        "_current_align_lang": align_language,
+        # _align_cache is no longer used (single model at a time) but kept
+        # so that in-process code that reads it does not break.
+        "_align_cache": {},
         "diarize": diarize,
         "device": device,
         "compute_type": compute_type,
@@ -366,23 +374,56 @@ def _as_segment_dicts(segments: Any) -> list[dict]:
 
 
 def _get_align_model(models: dict, language_code: str) -> tuple:
-    """Load or retrieve a cached alignment model for the given language code."""
+    """Load or swap in the alignment model for the given language.
+
+    Only one alignment model is held on GPU at a time.  If the requested
+    language matches the currently-loaded language, return it immediately.
+    If it differs from the default language, swap it in (evicting whatever
+    is currently loaded).  If it matches the default language, restore the
+    default model from _default_align_model.
+    """
+    import gc
+
+    import torch
+
     import whisperx
 
-    if (
-        models.get("align_language") == language_code
-        and models.get("align_model") is not None
-    ):
+    if models.get("_current_align_lang") == language_code:
         return models["align_model"], models["metadata"]
-    align_cache = models.setdefault("_align_cache", {})
-    if language_code in align_cache:
-        return align_cache[language_code]
-    align_model, metadata = whisperx.load_align_model(
+
+    default_lang = os.getenv("ASR_LANGUAGE", "en")
+    if language_code == default_lang:
+        # Restore the default model — it is kept in _default_align_model
+        # so no reload is needed.
+        models["align_model"] = models["_default_align_model"]
+        models["metadata"] = models["_default_metadata"]
+        models["_current_align_lang"] = language_code
+        return models["align_model"], models["metadata"]
+
+    # Non-default language — load it, evicting whatever is currently loaded.
+    # The default model is preserved in _default_align_model and can be
+    # restored cheaply when needed.
+    #
+    # Explicitly delete the old model and call empty_cache so the GPU memory
+    # is reclaimed before loading the new model.  Without this, torch's
+    # memory pool holds onto the old model's tensors even after the Python
+    # object is dereferenced.
+    old_model = models.get("align_model")
+    old_metadata = models.get("metadata")
+    models["align_model"], models["metadata"] = whisperx.load_align_model(
         language_code=language_code,
         device=models["device"],
     )
-    align_cache[language_code] = (align_model, metadata)
-    return align_model, metadata
+    models["_current_align_lang"] = language_code
+
+    # Free the evicted model immediately
+    del old_model
+    del old_metadata
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+
+    return models["align_model"], models["metadata"]
 
 
 def transcribe_audio(
