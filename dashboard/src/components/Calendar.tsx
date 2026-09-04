@@ -270,6 +270,12 @@ export default function Calendar() {
           booked: 'has-recording-dot',
           todo: 'has-todo-dot',
         }}
+        className="w-full h-full"
+        classNames={{
+          months: 'flex w-full flex-col flex-1',
+          month: 'w-full flex flex-col',
+          week: 'flex w-full',
+        }}
       />
     </div>
   );
