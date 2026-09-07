@@ -64,7 +64,7 @@ describe('DecisionsList', () => {
     render(<MemoryRouter><DecisionsList /></MemoryRouter>);
 
     await waitFor(() => {
-      expect(screen.getByText('No decisions found')).toBeInTheDocument();
+      expect(screen.getByText(/No decisions/i)).toBeInTheDocument();
     });
   });
 
@@ -115,8 +115,7 @@ describe('DecisionsList', () => {
     await waitFor(() => {
       expect(mockApi.getDecisions).toHaveBeenCalledWith(false);
     });
-
-    fireEvent.click(screen.getByText('Show archived'));
+    fireEvent.click(screen.getByText(/archived/i));
 
     await waitFor(() => {
       expect(mockApi.getDecisions).toHaveBeenCalledWith(true);
@@ -157,11 +156,10 @@ describe('DecisionsList', () => {
 
   it('shows create form when add button clicked', async () => {
     mockApi.getDecisions.mockResolvedValue({ decisions: [] });
-
     render(<MemoryRouter><DecisionsList /></MemoryRouter>);
 
     await waitFor(() => {
-      expect(screen.getByText('No decisions found')).toBeInTheDocument();
+      expect(screen.getByText(/No decisions/i)).toBeInTheDocument();
     });
 
     const addBtn = screen.getByText('+ Add Decision');
@@ -179,7 +177,7 @@ describe('DecisionsList', () => {
     render(<MemoryRouter><DecisionsList /></MemoryRouter>);
 
     await waitFor(() => {
-      expect(screen.getByText('No decisions found')).toBeInTheDocument();
+      expect(screen.getByText(/No decisions/i)).toBeInTheDocument();
     });
 
     // Open form

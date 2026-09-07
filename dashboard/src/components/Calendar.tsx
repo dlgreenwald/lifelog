@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/table';
 import type { DateRange } from 'react-day-picker';
 import { api } from '../api/client';
-import MobileNavBar from '@/components/MobileNavBar';
+
 import DayView from './DayView';
 import type { Recording, CalendarDay, Todo } from '../types';
 
@@ -31,8 +31,12 @@ function getLastWeekRange(): DateRange {
   const lastWeek = addWeeks(today, -1);
   return { from: startOfISOWeek(lastWeek), to: endOfISOWeek(lastWeek) };
 }
+interface CalendarProps {
+  calendarOpen: boolean;
+  onCalendarToggle: () => void;
+}
 
-export default function Calendar() {
+export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarProps) {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -89,13 +93,11 @@ export default function Calendar() {
       setSelectedDay(selected.from);
     }
   }, [isMobile, selected?.from]);
-
   const [recordingsByDate, setRecordingsByDate] = useState<Map<string, Recording[]>>(new Map());
+  const [loading, setLoading] = useState(false);
+  const [todosByDate, setTodosByDate] = useState<{ date: string; todos: Todo[] }[]>([]);
   const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
   const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [calendarOpen, setCalendarOpen] = useState(false);
-  const [todosByDate, setTodosByDate] = useState<{ date: string; todos: Todo[] }[]>([]);
   const [incompleteTodoDates, setIncompleteTodoDates] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'work' | 'personal' | 'not_meaningful'>('all');
   const [currentMonth, setCurrentMonth] = useState(() => new Date());
@@ -479,7 +481,7 @@ export default function Calendar() {
           </div>
           {/* Backdrop - click to close */}
           {calendarOpen && (
-            <div className="mobile-calendar-backdrop" onClick={() => setCalendarOpen(false)} />
+            <div className="mobile-calendar-backdrop" onClick={onCalendarToggle} />
           )}
           {/* Slide-up calendar panel - appears above footer */}
           <div className={`mobile-calendar-panel ${calendarOpen ? 'open' : ''}`}>
@@ -487,11 +489,14 @@ export default function Calendar() {
               {calendarInDrawer}
             </div>
           </div>
+<<<<<<< HEAD
           {/* Bottom navigation bar for mobile */}
           <MobileNavBar
             calendarOpen={calendarOpen}
             onCalendarToggle={() => setCalendarOpen(!calendarOpen)}
           />
+=======
+>>>>>>> 5844a71f (feat(dashboard): migrate TodoList and DecisionsList to shadcn, wire LoginPage, add mobile nav)
         </div>
       ) : (
         <div className="calendar-body">

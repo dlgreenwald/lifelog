@@ -83,6 +83,7 @@ export default function LoginPage() {
             </div>
 
             <Button
+              id="sign-in-button"
               size="lg"
               variant="default"
               className="w-full"
