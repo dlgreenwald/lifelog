@@ -61,7 +61,7 @@ export default function LoginPage() {
   return (
     <div className="flex flex-col lg:grid lg:grid-cols-2 min-h-svh">
       {/* Left: text with logo */}
-      <div className="order-2 lg:order-none flex items-center justify-center border border-gray-200 bg-background p-8 lg:min-h-svh">
+      <div className="order-2 lg:order-none flex items-center justify-center bg-background p-8 lg:min-h-svh">
         <div className="flex w-full max-w-sm flex-col gap-8">
           {/* Logo */}
           <div className="flex items-center gap-2 font-medium">
@@ -106,7 +106,7 @@ export default function LoginPage() {
       </div>
 
       {/* Right: waveform */}
-      <div className="order-1 lg:order-none flex items-center justify-center border border-gray-200 bg-muted p-8 lg:min-h-svh">
+      <div className="order-1 lg:order-none flex items-center justify-center bg-muted p-8 lg:min-h-svh">
         <div className="flex h-40 w-full max-w-sm items-center">
           <AudioWave />
         </div>
