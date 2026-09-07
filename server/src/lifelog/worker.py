@@ -814,7 +814,9 @@ async def _finalize_completed_sessions() -> None:
                 )
                 continue
             pending_or_processing = [
-                job for job in full_jobs if job.get("status") in {"pending", "processing"}
+                job
+                for job in full_jobs
+                if job.get("status") in {"pending", "processing"}
             ]
             if pending_or_processing:
                 logger.info(
@@ -845,11 +847,14 @@ async def _finalize_completed_sessions() -> None:
                     await db.mark_session_processed(session["id"])
                     continue
                 # Terminal failure — save an error recording with the failure reason
-                error_messages = "; ".join(
-                    f"chunk {job.get('chunk_index')}: {job.get('error', 'unknown')}"
-                    for job in failed_jobs
-                    if job.get("error")
-                ) or "Transcription failed after maximum retries."
+                error_messages = (
+                    "; ".join(
+                        f"chunk {job.get('chunk_index')}: {job.get('error', 'unknown')}"
+                        for job in failed_jobs
+                        if job.get("error")
+                    )
+                    or "Transcription failed after maximum retries."
+                )
                 logger.warning(
                     "session_transcription_terminal_failure",
                     session_id=session["id"],
@@ -1013,6 +1018,8 @@ async def _finalize_completed_sessions() -> None:
                 # First partition gets the existing session-level summary + todos/decisions
                 partition_0 = partitions[0]
                 persisted_0 = _persist_partition_segments(partition_0, user)
+                named_0 = _named_from_persisted(persisted_0)
+                llm_0 = _normalise_summary(summarize(named_0, llm_context=llm_context))
                 recording_id = await db.save_session_recording(
                     session["user_id"],
                     session["id"],

@@ -1517,6 +1517,7 @@ async def save_session_recording(
             )
         return row["id"]
 
+
 async def save_partition_recording(
     user_id: int,
     session_id: int,
@@ -1610,6 +1611,7 @@ async def get_sessions_for_reprocessing(user_id: int | None = None) -> list[dict
                 """
             )
         return [dict(row) for row in rows]
+
 
 async def get_sessions_by_date_range(
     user_id: int, start: datetime, end: datetime
