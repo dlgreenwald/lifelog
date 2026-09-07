@@ -17,7 +17,7 @@
 #endif
 
 #include "lifelog_core/codec.h"
-
+#include "lifelog_core/filename.h"
 static const char* TAG = "WRITER";
 
 // ── fileIndex definition (declared extern in audio.h) ────────────────
@@ -50,6 +50,7 @@ struct UploadRequest {
     uint32_t chunkIndex;
     bool isFinal;
     bool from_sd;
+    time_t recorded_at;      // UTC epoch seconds; 0 if clock invalid
 };
 
 // ── Forward declarations ──────────────────────────────────────────
@@ -198,12 +199,15 @@ static void opus_init_stream() {
     ESP_LOGD(TAG, "opus_init_stream: PSRAM buffer %luKB (header=%lu bytes)",
              (unsigned long)(mem_buf_capacity / 1024), (unsigned long)mem_buf_pos);
 }
-
-// Flush entire mem_buf to SD (fallback when WiFi is down).
 static void mem_flush_to_sd() {
     if (mem_buf_pos == 0 || mem_to_sd) return;
 
-    snprintf(sd_filename, sizeof(sd_filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+    time_t now = time(nullptr);
+    if (now > 0) {
+        generateFilenameUtc(sd_filename, sizeof(sd_filename), now, fileIndex++, true);
+    } else {
+        snprintf(sd_filename, sizeof(sd_filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+    }
 
     sdTake();
     opus_file = SD.open(sd_filename, FILE_WRITE);
@@ -420,12 +424,12 @@ static void upload_if_connected(const UploadRequest &req) {
                      (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex);
             ok = uploadFileFromMemory(req.mem_ptr, req.mem_size,
                                       req.filename, req.utteranceId,
-                                      req.chunkIndex, req.isFinal);
+                                      req.chunkIndex, req.isFinal, req.recorded_at);
         } else {
             // SD path — upload from file
             ESP_LOGD(TAG, "Uploading from SD: %s (utt=%lu chunk=%lu)...",
                      req.filename, (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex);
-            ok = uploadFile(req.filename, req.utteranceId, req.chunkIndex, req.isFinal);
+            ok = uploadFile(req.filename, req.utteranceId, req.chunkIndex, req.isFinal, req.recorded_at);
             if (ok) {
                 sdTake();
                 SD.remove(req.filename);
@@ -493,7 +497,14 @@ void writerTask(void *pvParameters) {
             opus_init_stream();
 #else
             char filename[64];
-            snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
+            time_t now = time(nullptr);
+            if (now > 0) {
+                char base[64];
+                generateFilenameUtc(base, sizeof(base), now, fileIndex++, false);
+                snprintf(filename, sizeof(filename), "/lifelog/%s", base);
+            } else {
+                snprintf(filename, sizeof(filename), "/lifelog/rec_%05lu.wav", fileIndex++);
+            }
             strcpy(lastSavedFile, filename);
 #endif
             prev_recording = true;
@@ -532,6 +543,7 @@ void writerTask(void *pvParameters) {
                 req.utteranceId = utteranceId;
                 req.chunkIndex = chunkIndex;
                 req.isFinal = isFinal;
+                req.recorded_at = time(nullptr);
                 chunkIndex++;
                 if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
                     ESP_LOGW(TAG, "Upload queue full (%lu/%d), skipping %s",

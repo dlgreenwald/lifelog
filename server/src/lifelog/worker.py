@@ -120,7 +120,9 @@ async def process_utterance(user_id: int, utterance_id: int):
 
     queue_entry = await db.get_utterance_queue_entry(user_id, utterance_id)
     utterance_time = (
-        queue_entry["created_at"]
+        queue_entry["recorded_at"]
+        if queue_entry and queue_entry.get("recorded_at")
+        else queue_entry["created_at"]
         if queue_entry
         else datetime.now(UTC).replace(tzinfo=None)
     )
