@@ -40,6 +40,8 @@ static TaskHandle_t fetchTaskHandle = NULL;
 DeviceSettings deviceSettings;
 KnownNetwork knownNetworks[MAX_KNOWN_NETWORKS];
 int knownNetworkCount = 0;
+// ── Clock validity (volatile — reset on every boot, set true after SNTP sync) ─
+bool clock_valid = false;
 
 // ── Idle hook counters (per-core CPU usage) ────────────────────────
 
@@ -555,43 +557,53 @@ void setup() {
     // Set timezone to UTC so time() returns Unix epoch seconds.
     setenv("TZ", "UTC0", 1);
     tzset();
-    // Check if we have a recent cached sync.
+
+    // Volatile clock validity — reset to false on every boot.
+    // Set to true only when SNTP actually updates the RTC.
+    bool clock_valid = false;
+
+    // Check NVS for recent sync — only used to skip blocking SNTP wait
+    // if the clock was already set this boot session.
     time_t now = time(nullptr);
     time_t last_sync = 0;
-    // time_t is int64_t on ESP32; store as string to avoid Preferences type mismatch.
     char lastSyncStr[32] = {0};
     prefs.getString("sntp_last", "").toCharArray(lastSyncStr, sizeof(lastSyncStr));
     if (lastSyncStr[0]) {
         last_sync = (time_t)atoll(lastSyncStr);
     }
-    if (last_sync > 0 && now - last_sync < 3600) {
+
+    // Skip blocking sync if already synced within this boot session (last_sync is recent).
+    // Guard with a minimum epoch check (Jan 2024) to handle cold-boot RTC=0 case
+    // where the subtraction would underflow and incorrectly pass the age check.
+    bool recently_synced = last_sync > 1700000000 && now - last_sync < 3600;
+
+    if (recently_synced) {
         ESP_LOGI("SNTP", "Clock trusted (cached sync %lld, age=%llds)", last_sync, now - last_sync);
     } else {
-        // Need fresh sync.
+        // Need fresh sync. Capture time before to detect whether SNTP actually updated it.
+        time_t pre_sntp = time(nullptr);
         esp_sntp_config_t cfg = ESP_SNTP_TIME_SYNC_DEFAULT_CONFIG;
         cfg.servers = (char*)"pool.ntp.org";
         esp_sntp_init(&cfg);
-        // Wait up to 10 seconds.
+
         int64_t deadline = esp_timer_get_time() + 10'000'000;
         while (esp_timer_get_time() < deadline) {
             time_t t = time(nullptr);
-            if (t > 0) {
+            // SNTP set the clock if time jumped by more than 1 hour from pre-sync value.
+            if (t - pre_sntp > 3600) {
                 ESP_LOGI("SNTP", "SNTP sync: %lld", (int64_t)t);
                 prefs.putString("sntp_last", String((int64_t)t).c_str());
+                clock_valid = true;
                 esp_sntp_stop();
                 break;
             }
             vTaskDelay(pdMS_TO_TICKS(100));
         }
-        if (time(nullptr) == 0) {
+        if (!clock_valid) {
             ESP_LOGW("SNTP", "SNTP sync failed (clock may be wrong)");
             esp_sntp_stop();
         }
     }
-
-#ifdef BUILD_DEVELOPMENT
-    taskman_server_setup();
-    ESP_LOGI("SYSTEM", "Task Manager: http://%s:81/taskman", WiFi.localIP().toString().c_str());
 #endif
 
     // Start OAuth2 background task AFTER WiFi is connected

@@ -203,7 +203,9 @@ static void mem_flush_to_sd() {
     if (mem_buf_pos == 0 || mem_to_sd) return;
 
     time_t now = time(nullptr);
-    if (now > 0) {
+    // Use UTC filename if SNTP synced this boot AND clock is in a reasonable epoch range.
+    // clock_valid is volatile (not NVS-persisted) so it resets on cold-boot RTC reset.
+    if (clock_valid && now > 1700000000) {
         generateFilenameUtc(sd_filename, sizeof(sd_filename), now, fileIndex++, true);
     } else {
         snprintf(sd_filename, sizeof(sd_filename), "/lifelog/rec_%05lu.opus", fileIndex++);
@@ -498,7 +500,7 @@ void writerTask(void *pvParameters) {
 #else
             char filename[64];
             time_t now = time(nullptr);
-            if (now > 0) {
+            if (clock_valid && now > 1700000000) {
                 char base[64];
                 generateFilenameUtc(base, sizeof(base), now, fileIndex++, false);
                 snprintf(filename, sizeof(filename), "/lifelog/%s", base);

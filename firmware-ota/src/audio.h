@@ -22,6 +22,7 @@ extern unsigned long listenStartMs;
 extern SemaphoreHandle_t sdMutex;
 void sdTake();
 void sdGive();
+extern bool clock_valid;  // Set true by main.cpp after SNTP sync succeeds
 extern uint32_t fileIndex;
 extern char lastSavedFile[64];
 
