@@ -33,7 +33,7 @@ describe('SettingsForm', () => {
   it('renders the settings card with all sections', () => {
     setup();
     expect(screen.getByText('Settings')).toBeInTheDocument();
-    expect(screen.getByRole('combobox')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /transcription language/i })).toBeInTheDocument();
     expect(screen.getByRole('textbox')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /save settings/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /sign out/i })).toBeInTheDocument();
@@ -41,7 +41,7 @@ describe('SettingsForm', () => {
 
   it('displays the current language and context values', () => {
     setup({ settings: { language: 'en', llm_context: 'I am a developer.' } });
-    expect(screen.getByRole('combobox')).toHaveValue('en');
+    expect(screen.getByRole('combobox', { name: /transcription language/i })).toHaveValue('en');
     expect(screen.getByRole('textbox')).toHaveValue('I am a developer.');
   });
 
@@ -89,7 +89,7 @@ describe('SettingsForm', () => {
 
   it('calls onChange when language select changes', async () => {
     const { onChange } = setup();
-    await userEvent.selectOptions(screen.getByRole('combobox'), 'en');
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /transcription language/i }), 'en');
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({ language: 'en' }),
     );
