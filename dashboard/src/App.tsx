@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import ProtectedRoute from './auth/ProtectedRoute';
+import CallbackPage from './pages/CallbackPage';
 import LoginPage from './pages/LoginPage';
 import Calendar from './components/Calendar';
 import RecordingDetail from './components/RecordingDetail';
@@ -37,7 +38,7 @@ function AppRoutes() {
       <main>
         <Routes>
           <Route path="/" element={user ? <Navigate to="/calendar" replace /> : <LoginPage />} />
-          <Route path="/login" element={<Navigate to="/" replace />} />
+          <Route path="/callback" element={<CallbackPage />} />
           <Route path="/calendar" element={<ProtectedRoute><Calendar /></ProtectedRoute>} />
           <Route path="/recording/:id" element={<ProtectedRoute><RecordingDetail /></ProtectedRoute>} />
           <Route path="/todos" element={<ProtectedRoute><TodoList /></ProtectedRoute>} />
