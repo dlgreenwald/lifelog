@@ -207,6 +207,7 @@ class ModelManager:
             cache = self._models.get("_align_cache")
             if cache:
                 cache.clear()
+
     def shutdown(self):
         self._stop_event.set()
         if self._watchdog_thread:
@@ -310,6 +311,7 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
         raise
     finally:
         model_manager.end_job()
+
 
 async def poll_once(client: httpx.AsyncClient) -> bool:
     response = await client.post(f"{SERVER_URL}/internal/transcription/claim")

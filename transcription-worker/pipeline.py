@@ -385,7 +385,6 @@ def _get_align_model(models: dict, language_code: str) -> tuple:
     import gc
 
     import torch
-
     import whisperx
 
     if models.get("_current_align_lang") == language_code:
