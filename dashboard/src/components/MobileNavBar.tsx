@@ -21,7 +21,7 @@ export default function MobileNavBar({ calendarOpen, onCalendarToggle }: MobileN
         variant="ghost"
         size="sm"
         className="mobile-nav-btn"
-        onClick={onCalendarToggle ? onCalendarToggle : () => navigate('/calendar')}
+        onClick={onCalendarToggle ? onCalendarToggle : () => navigate('/')}
       >
         <FontAwesomeIcon icon={faCalendar} />
         <span>{calendarOpen !== undefined ? (calendarOpen ? 'Close' : 'Calendar') : 'Calendar'}</span>
