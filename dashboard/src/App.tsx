@@ -7,14 +7,14 @@ import RecordingDetail from './components/RecordingDetail';
 import TodoList from './components/TodoList';
 import DecisionsList from './components/DecisionsList';
 import SpeakerLabel from './components/SpeakerLabel';
-import Settings from './components/Settings';
+import SettingsPage from './pages/SettingsPage';
 import { ThemeProvider } from './components/theme-provider';
 import { setAuthProvider } from './api/client';
 import { useEffect } from 'react';
 import { useIsMobile } from './hooks/use-mobile';
 
 function AppRoutes() {
-  const { user, getAccessToken, userManager } = useAuth();
+  const { user, getAccessToken, userManager, logout } = useAuth();
   const isMobile = useIsMobile();
   useEffect(() => {
     setAuthProvider(getAccessToken, userManager);
@@ -42,7 +42,7 @@ function AppRoutes() {
           <Route path="/todos" element={<ProtectedRoute><TodoList /></ProtectedRoute>} />
           <Route path="/decisions" element={<ProtectedRoute><DecisionsList /></ProtectedRoute>} />
           <Route path="/speakers" element={<ProtectedRoute><SpeakerLabel /></ProtectedRoute>} />
-          <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
         </Routes>
       </main>
     </div>
