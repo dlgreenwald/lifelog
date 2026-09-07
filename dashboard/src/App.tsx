@@ -26,7 +26,7 @@ function AppRoutes() {
         <header>
           <h1>LifeLog</h1>
           <nav>
-            <Link to="/">Calendar</Link>
+            <Link to="/calendar">Calendar</Link>
             <Link to="/todos">TODOs</Link>
             <Link to="/decisions">Decisions</Link>
             <Link to="/speakers">Speakers</Link>
@@ -36,8 +36,9 @@ function AppRoutes() {
       )}
       <main>
         <Routes>
-          <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
-          <Route path="/" element={<ProtectedRoute><Calendar /></ProtectedRoute>} />
+          <Route path="/" element={user ? <Navigate to="/calendar" replace /> : <LoginPage />} />
+          <Route path="/login" element={<Navigate to="/" replace />} />
+          <Route path="/calendar" element={<ProtectedRoute><Calendar /></ProtectedRoute>} />
           <Route path="/recording/:id" element={<ProtectedRoute><RecordingDetail /></ProtectedRoute>} />
           <Route path="/todos" element={<ProtectedRoute><TodoList /></ProtectedRoute>} />
           <Route path="/decisions" element={<ProtectedRoute><DecisionsList /></ProtectedRoute>} />
