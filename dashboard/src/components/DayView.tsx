@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FC } from 'react';
-import { format, parseISO } from 'date-fns';
+import { format } from 'date-fns';
 import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
 import type { Recording } from '../types';
+import { toUTCDate } from '../utils/format';
 
 interface DayViewProps {
   date: string;
@@ -14,23 +15,31 @@ interface DayViewProps {
   onMount?: (date: string, el: HTMLDivElement) => void;
   isRightmost?: boolean;
 }
-
 function getRecordingTimeRange(rec: Recording): { startMin: number; endMin: number } {
   // Use audio_range_start for position when available (actual audio time, not upload time).
   // Fall back to timestamp if audio_range_start is not set.
+  // All timestamps are UTC naive from PostgreSQL — parse as UTC with toUTCDate.
   let startMin = 0;
   if (rec.audio_range_start) {
-    const s = parseISO(rec.audio_range_start);
+    const s = toUTCDate(rec.audio_range_start);
     startMin = Math.max(0, s.getHours() * 60 + s.getMinutes());
   } else {
-    const recDate = parseISO(rec.timestamp);
+    const recDate = toUTCDate(rec.timestamp);
     startMin = Math.max(0, recDate.getHours() * 60 + recDate.getMinutes());
+  }
+
+  // For live recordings, use current time as the end so the block grows in real-time.
+  if (rec.is_live) {
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const endMin = Math.min(nowMin, 24 * 60 - 1);
+    return { startMin, endMin };
   }
 
   let durationMinutes = 30;
   if (rec.audio_range_start && rec.audio_range_end) {
-    const s = parseISO(rec.audio_range_start);
-    const e = parseISO(rec.audio_range_end);
+    const s = toUTCDate(rec.audio_range_start);
+    const e = toUTCDate(rec.audio_range_end);
     const sMin = s.getHours() * 60 + s.getMinutes();
     const eMin = e.getHours() * 60 + e.getMinutes();
     if (eMin > sMin) {
@@ -153,7 +162,8 @@ function computeLayout(recordings: Recording[], dayHeightPx: number, containerWi
 }
 
 function isWeekend(dateStr: string): boolean {
-  const d = parseISO(dateStr);
+  // dateStr is YYYY-MM-DD — no timezone needed for day-of-week
+  const d = new Date(dateStr + 'T00:00:00');
   const day = d.getDay();
   return day === 0 || day === 6;
 }
@@ -270,7 +280,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
               ) : (
                 <div className="recording-block-content">
                   <span className="recording-block-time">
-                    {format(parseISO(rec.timestamp), 'HH:mm')}
+                    {format(toUTCDate(rec.timestamp), 'HH:mm')}
                   </span>
                   {rec.summary && (
                     <span className="recording-block-summary">
