@@ -14,7 +14,7 @@ import { useEffect } from 'react';
 import { useIsMobile } from './hooks/use-mobile';
 
 function AppRoutes() {
-  const { user, getAccessToken, userManager, logout } = useAuth();
+  const { user, getAccessToken, userManager } = useAuth();
   const isMobile = useIsMobile();
   useEffect(() => {
     setAuthProvider(getAccessToken, userManager);
