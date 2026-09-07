@@ -177,6 +177,7 @@ export default function Calendar() {
 
   // Fetch recordings for all selected dates in parallel
   useEffect(() => {
+    setLoading(true);
     Promise.all(selectedDates.map(date => api.getRecordings(date, categoryFilter === 'all' ? undefined : categoryFilter)))
       .then(results => {
         const map = new Map<string, Recording[]>();
@@ -185,8 +186,22 @@ export default function Calendar() {
         });
         setRecordingsByDate(map);
         setLoading(false);
-      })
+      });
   }, [selectedDates, categoryFilter]);
+
+  // Merge active recording into the correct day's recordings so it shows as a block in the day view
+  useEffect(() => {
+    setRecordingsByDate(prev => {
+      const next = new Map(prev);
+      if (activeRecording) {
+        const date = activeRecording.timestamp.split('T')[0];
+        const existing = next.get(date) ?? [];
+        const filtered = existing.filter(r => r.id !== activeRecording.id);
+        next.set(date, [...filtered, activeRecording]);
+      }
+      return next;
+    });
+  }, [activeRecording]);
 
   // Load todos for all selected dates
   useEffect(() => {
@@ -349,17 +364,6 @@ export default function Calendar() {
         }}
       />
 
-      {activeRecording && (
-        <div className="active-recording-panel">
-          <h3>Recording in progress</h3>
-          <DayView
-            date={activeRecording.timestamp?.split('T')[0] ?? ''}
-            recordings={[activeRecording]}
-            onRecordingClick={(id) => navigate(`/recording/${id}`)}
-            hourLabelPosition="left"
-          />
-        </div>
-      )}
       {todosByDate.length > 0 && (
         <div className="day-todos">
           {todosByDate.map(({ date, todos }) => (
