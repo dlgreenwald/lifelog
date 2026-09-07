@@ -20,6 +20,9 @@
 
 static const char* TAG = "WRITER";
 
+// ── fileIndex definition (declared extern in audio.h) ────────────────
+uint32_t fileIndex = 0;
+
 // ── Upload state ──────────────────────────────────────────────────
 static QueueHandle_t uploadQueue = NULL;
 static TaskHandle_t uploadTaskHandle = NULL;
