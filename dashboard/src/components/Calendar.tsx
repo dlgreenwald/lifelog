@@ -17,8 +17,7 @@ import {
 } from '@/components/ui/table';
 import type { DateRange } from 'react-day-picker';
 import { api } from '../api/client';
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faCalendar, faCheckSquare, faLightbulb, faUsers, faCog } from '@fortawesome/free-solid-svg-icons';
+import MobileNavBar from '@/components/MobileNavBar';
 import DayView from './DayView';
 import type { Recording, CalendarDay, Todo } from '../types';
 
@@ -489,28 +488,10 @@ export default function Calendar() {
             </div>
           </div>
           {/* Bottom navigation bar for mobile */}
-          <nav className="mobile-nav-bar">
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => setCalendarOpen(!calendarOpen)}>
-              <FontAwesomeIcon icon={faCalendar} />
-              <span>Calendar</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/todos')}>
-              <FontAwesomeIcon icon={faCheckSquare} />
-              <span>TODOs</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/decisions')}>
-              <FontAwesomeIcon icon={faLightbulb} />
-              <span>Decisions</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/speakers')}>
-              <FontAwesomeIcon icon={faUsers} />
-              <span>Speakers</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/settings')}>
-              <FontAwesomeIcon icon={faCog} />
-              <span>Settings</span>
-            </Button>
-          </nav>
+          <MobileNavBar
+            calendarOpen={calendarOpen}
+            onCalendarToggle={() => setCalendarOpen(!calendarOpen)}
+          />
         </div>
       ) : (
         <div className="calendar-body">

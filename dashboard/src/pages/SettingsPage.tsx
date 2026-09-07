@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { api } from '../api/client';
 import { ModeToggle } from '@/components/mode-toggle';
+import MobileNavBar from '@/components/MobileNavBar';
 import type { UserSettings } from '../types';
 import SettingsForm from '@/components/SettingsForm';
-
 export default function SettingsPage() {
   const { logout } = useAuth();
   const [settings, setSettings] = useState<UserSettings>({
@@ -16,7 +16,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     api.getSettings().then((data) => {
-      setSettings(data.settings);
+      setSettings(data);
     });
   }, []);
 
@@ -46,6 +46,7 @@ export default function SettingsPage() {
         onSave={handleSave}
         onLogout={logout}
       />
+      <MobileNavBar />
     </div>
   );
 }
