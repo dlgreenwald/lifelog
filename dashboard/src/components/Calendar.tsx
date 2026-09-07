@@ -428,15 +428,14 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
           )}
         </ButtonGroup>
         <ButtonGroup orientation="horizontal">
-          <Button variant={categoryFilter === 'all' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('all')}>Both</Button>
-          <Button variant={categoryFilter === 'work' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('work')}>Work</Button>
-          <Button variant={categoryFilter === 'personal' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('personal')}>Home</Button>
+          <Button variant={categoryFilter === 'all' ? 'selected' : 'outline'} size="sm" onClick={() => setCategoryFilter('all')}>Both</Button>
+          <Button variant={categoryFilter === 'work' ? 'selected' : 'outline'} size="sm" onClick={() => setCategoryFilter('work')}>Work</Button>
+          <Button variant={categoryFilter === 'personal' ? 'selected' : 'outline'} size="sm" onClick={() => setCategoryFilter('personal')}>Home</Button>
           {!isMobile && (
-            <Button variant={categoryFilter === 'not_meaningful' ? 'default' : 'outline'} size="sm" onClick={() => setCategoryFilter('not_meaningful')}>Other</Button>
+            <Button variant={categoryFilter === 'not_meaningful' ? 'selected' : 'outline'} size="sm" onClick={() => setCategoryFilter('not_meaningful')}>Other</Button>
           )}
         </ButtonGroup>
       </div>
-
       {isMobile ? (
         <div className="calendar-body calendar-body-mobile">
           {/* Day view stack - always visible on mobile */}

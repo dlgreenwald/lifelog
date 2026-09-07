@@ -194,6 +194,9 @@ function CalendarDayButton({
   if (modifiers.range_start) modifierClasses.push("rdp-range_start")
   if (modifiers.range_middle) modifierClasses.push("rdp-range_middle")
   if (modifiers.range_end) modifierClasses.push("rdp-range_end")
+  if (modifiers.booked) modifierClasses.push("has-recording-dot")
+  if (modifiers.todo) modifierClasses.push("has-todo-dot")
+
 
   return (
     <Button
