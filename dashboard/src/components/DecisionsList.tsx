@@ -123,14 +123,17 @@ export default function DecisionsList() {
           </Button>
         </form>
       )}
-
-      <button
-        className="toggle-archived"
-        onClick={() => setShowArchived(prev => !prev)}
-      >
-        {showArchived ? 'Hide archived' : 'Show archived'}
-      </button>
-
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">Show archived</span>
+        </div>
+        <button
+          className="toggle-archived text-sm"
+          onClick={() => setShowArchived(prev => !prev)}
+        >
+          {showArchived ? 'Hide archived' : 'Show archived'}
+        </button>
+      </div>
       {decisions.length === 0 ? (
         <p className="text-sm text-muted-foreground py-12 text-center">No decisions yet — click "Add Decision" above to create one.</p>
       ) : (

@@ -115,7 +115,7 @@ describe('DecisionsList', () => {
     await waitFor(() => {
       expect(mockApi.getDecisions).toHaveBeenCalledWith(false);
     });
-    fireEvent.click(screen.getByText(/archived/i));
+    fireEvent.click(screen.getAllByText(/archived/i)[1]);
 
     await waitFor(() => {
       expect(mockApi.getDecisions).toHaveBeenCalledWith(true);

@@ -26,7 +26,7 @@ describe('Settings', () => {
       expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Settings');
     });
 
-    expect(screen.getByRole('combobox')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Transcription Language' })).toBeInTheDocument();
     expect(screen.getByRole('textbox')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument();
   });
@@ -42,7 +42,7 @@ describe('Settings', () => {
     const textarea = screen.getByRole('textbox');
     expect(textarea).toHaveValue('I am a developer.');
 
-    const select = screen.getByRole('combobox');
+    const select = screen.getByRole('combobox', { name: 'Transcription Language' });
     expect(select).toHaveValue('en');
   });
 
@@ -53,14 +53,14 @@ describe('Settings', () => {
     render(<Settings />);
 
     await waitFor(() => {
-      expect(screen.getByRole('combobox')).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: 'Transcription Language' })).toBeInTheDocument();
     });
 
     const textarea = screen.getByRole('textbox');
     await userEvent.clear(textarea);
     await userEvent.type(textarea, 'I work as a software engineer.');
 
-    const select = screen.getByRole('combobox');
+    const select = screen.getByRole('combobox', { name: 'Transcription Language' });
     await userEvent.selectOptions(select, 'fr');
 
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
@@ -80,7 +80,7 @@ describe('Settings', () => {
     render(<Settings />);
 
     await waitFor(() => {
-      expect(screen.getByRole('combobox')).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: 'Transcription Language' })).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
@@ -96,7 +96,7 @@ describe('Settings', () => {
     render(<Settings />);
 
     await waitFor(() => {
-      expect(screen.getByRole('combobox')).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: 'Transcription Language' })).toBeInTheDocument();
     });
 
     const textarea = screen.getByRole('textbox');

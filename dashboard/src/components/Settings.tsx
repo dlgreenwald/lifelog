@@ -154,8 +154,8 @@ export default function Settings() {
   }
 
   return (
-    <div className="settings-page">
-      <h2>Settings</h2>
+    <div className="settings-page px-4">
+      <h2 className="text-xl font-semibold tracking-tight mb-6">Settings</h2>
 
       <div className="settings-section">
         <h3>Appearance</h3>
@@ -168,8 +168,10 @@ export default function Settings() {
           <p>Default language for WhisperX transcription. &quot;Auto-detect&quot; will automatically identify the language.</p>
           <select
             id="language-select"
+            aria-label="Transcription Language"
             value={settings.language}
             onChange={(e) => setSettings((s) => ({ ...s, language: e.target.value }))}
+            className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             {sortedLanguages.map(([code, name]) => (
               <option key={code} value={code}>{name}</option>
@@ -191,23 +193,28 @@ export default function Settings() {
           placeholder="e.g. I work as a software engineer at a startup. My wife is named Sarah. We live in Seattle. I often discuss side projects related to Python and React..."
           maxLength={2000}
           rows={6}
-          className={clientError ? 'error' : ''}
+          className={`flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${clientError ? 'border-red-500' : ''}`}
         />
-        <div className="char-count">
+        <div className="char-count text-xs text-muted-foreground mt-1">
           {settings.llm_context.length} / 2000 characters
         </div>
         {clientError && (
-          <div className="error-message">{clientError}</div>
+          <div className="error-message text-sm text-red-500 mt-1">{clientError}</div>
         )}
       </div>
 
       {message && (
-        <div className={`message ${message.type}`}>
+        <div className={`message ${message.type} text-sm mb-4`}>
           {message.text}
         </div>
       )}
 
-      <button onClick={handleSave} disabled={saving || !!clientError} className="save-button">
+      <button
+        onClick={handleSave}
+        disabled={saving || !!clientError}
+        className="save-button"
+        style={{ backgroundColor: 'hsl(221.2,83.2%,53.3%)', color: 'hsl(0,0%,98%)', border: 'none', padding: '8px 16px', borderRadius: '6px', fontSize: '14px', cursor: 'pointer' }}
+      >
         {saving ? 'Saving...' : 'Save Settings'}
       </button>
     </div>
