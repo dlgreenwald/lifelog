@@ -87,7 +87,7 @@ beforeEach(() => {
 function renderCalendar(entries: string[] = ['/']) {
   return render(
     <MemoryRouter initialEntries={entries}>
-      <Calendar />
+      <Calendar calendarOpen={false} onCalendarToggle={() => {}} />
     </MemoryRouter>
   );
 }
@@ -264,7 +264,7 @@ describe('Mobile to desktop view transition', () => {
     mockIsMobile.value = false;
     rerender(
       <MemoryRouter initialEntries={['/']}>
-        <Calendar />
+        <Calendar calendarOpen={false} onCalendarToggle={() => {}} />
       </MemoryRouter>
     );
 

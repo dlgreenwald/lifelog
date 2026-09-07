@@ -17,8 +17,6 @@ import {
 } from '@/components/ui/table';
 import type { DateRange } from 'react-day-picker';
 import { api } from '../api/client';
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faCalendar, faCheckSquare, faLightbulb, faUsers, faCog } from '@fortawesome/free-solid-svg-icons';
 import DayView from './DayView';
 import type { Recording, CalendarDay, Todo } from '../types';
 
@@ -32,8 +30,12 @@ function getLastWeekRange(): DateRange {
   const lastWeek = addWeeks(today, -1);
   return { from: startOfISOWeek(lastWeek), to: endOfISOWeek(lastWeek) };
 }
+interface CalendarProps {
+  calendarOpen: boolean;
+  onCalendarToggle: () => void;
+}
 
-export default function Calendar() {
+export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarProps) {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -90,13 +92,11 @@ export default function Calendar() {
       setSelectedDay(selected.from);
     }
   }, [isMobile, selected?.from]);
-
   const [recordingsByDate, setRecordingsByDate] = useState<Map<string, Recording[]>>(new Map());
+  const [loading, setLoading] = useState(false);
+  const [todosByDate, setTodosByDate] = useState<{ date: string; todos: Todo[] }[]>([]);
   const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
   const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [calendarOpen, setCalendarOpen] = useState(false);
-  const [todosByDate, setTodosByDate] = useState<{ date: string; todos: Todo[] }[]>([]);
   const [incompleteTodoDates, setIncompleteTodoDates] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'work' | 'personal' | 'not_meaningful'>('all');
   const [currentMonth, setCurrentMonth] = useState(() => new Date());
@@ -476,7 +476,7 @@ export default function Calendar() {
           </div>
           {/* Backdrop - click to close */}
           {calendarOpen && (
-            <div className="mobile-calendar-backdrop" onClick={() => setCalendarOpen(false)} />
+            <div className="mobile-calendar-backdrop" onClick={onCalendarToggle} />
           )}
           {/* Slide-up calendar panel - appears above footer */}
           <div className={`mobile-calendar-panel ${calendarOpen ? 'open' : ''}`}>
@@ -484,29 +484,6 @@ export default function Calendar() {
               {calendarInDrawer}
             </div>
           </div>
-          {/* Bottom navigation bar for mobile */}
-          <nav className="mobile-nav-bar">
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => setCalendarOpen(!calendarOpen)}>
-              <FontAwesomeIcon icon={faCalendar} />
-              <span>Calendar</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/todos')}>
-              <FontAwesomeIcon icon={faCheckSquare} />
-              <span>TODOs</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/decisions')}>
-              <FontAwesomeIcon icon={faLightbulb} />
-              <span>Decisions</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/speakers')}>
-              <FontAwesomeIcon icon={faUsers} />
-              <span>Speakers</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/settings')}>
-              <FontAwesomeIcon icon={faCog} />
-              <span>Settings</span>
-            </Button>
-          </nav>
         </div>
       ) : (
         <div className="calendar-body">

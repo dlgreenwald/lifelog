@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { ModeToggle } from '@/components/mode-toggle';
 import type { UserSettings } from '../types';
-
 const LANGUAGES: Record<string, string> = {
   auto: 'Auto-detect',
   en: 'English',

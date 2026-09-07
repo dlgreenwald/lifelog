@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Plus, X } from 'lucide-react';
 import { api } from '../api/client';
 import type { Todo } from '../types';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 
 const ONE_DAY_MS = 86400000;
 
@@ -51,7 +54,6 @@ export default function TodoList() {
       due: formDue || undefined,
       priority: formPriority,
     });
-    // Prepend optimistic todo (server returns { id })
     const todoId =
       result && typeof result === 'object' && 'id' in result && typeof result.id === 'number'
         ? result.id
@@ -82,82 +84,116 @@ export default function TodoList() {
     ? todos
     : todos.filter(t => {
         if (!t.completed) return true;
-        // Show recently completed (within 24h), hide old
         if (!t.completed_at) return true;
         return Date.now() - new Date(t.completed_at).getTime() < ONE_DAY_MS;
       });
 
   return (
-    <div className="todo-list">
-      <h2>TODOs</h2>
-      <button className="add-button" onClick={() => setShowForm(!showForm)}>
-        {showForm ? 'Cancel' : '+ Add Todo'}
-      </button>
+    <div className="flex flex-col h-full px-4">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-semibold tracking-tight">TODOs</h2>
+        <Button
+          size="sm"
+          onClick={() => setShowForm(prev => !prev)}
+          className="add-button"
+          style={{ backgroundColor: 'hsl(221.2,83.2%,53.3%)', color: 'hsl(0,0%,98%)', border: 'none' }}
+        >
+          <Plus className="h-4 w-4 mr-1" />
+          {showForm ? 'Cancel' : '+ Add Todo'}
+        </Button>
+      </div>
+
       {showForm && (
-        <form className="create-form" onSubmit={handleCreate}>
+        <form className="create-form mb-4 rounded-lg border bg-card p-4 shadow-sm space-y-3" onSubmit={handleCreate}>
           <input
             type="text"
             placeholder="Task *"
             value={formTask}
             onChange={e => setFormTask(e.target.value)}
             required
+            autoFocus
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
           <input
             type="text"
             placeholder="Owner"
             value={formOwner}
             onChange={e => setFormOwner(e.target.value)}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
-          <input
-            type="date"
-            placeholder="Due date"
-            value={formDue}
-            onChange={e => setFormDue(e.target.value)}
-          />
-          <select value={formPriority} onChange={e => setFormPriority(e.target.value)}>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-          </select>
-          <button type="submit">Create</button>
+          <div className="flex gap-3">
+            <input
+              type="date"
+              placeholder="Due date"
+              value={formDue}
+              onChange={e => setFormDue(e.target.value)}
+              className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            />
+            <select
+              value={formPriority}
+              onChange={e => setFormPriority(e.target.value)}
+              className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+          </div>
+          <Button
+            type="submit"
+            size="sm"
+            style={{ backgroundColor: 'hsl(221.2,83.2%,53.3%)', color: 'hsl(0,0%,98%)', border: 'none' }}
+          >
+            Create
+          </Button>
         </form>
       )}
+
       {todos.length === 0 ? (
-        <p>No TODOs found</p>
+        <p className="text-sm text-muted-foreground py-8 text-center">No TODOs found</p>
       ) : (
         <>
           <button
             className="toggle-completed"
-            onClick={() => setShowCompleted(!showCompleted)}
+            onClick={() => setShowCompleted(prev => !prev)}
           >
             {showCompleted ? 'Hide completed' : 'Show completed'}
           </button>
-          <ul>
-            {filteredTodos.map(todo => (
+
+          <ul className="rounded-lg border bg-card text-card-foreground shadow-sm" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+            {filteredTodos.map((todo, i) => (
               <li
                 key={todo.id}
-                className={`priority-${todo.priority} ${todo.completed ? 'completed' : ''} clickable`}
+                className={`priority-${todo.priority} ${todo.completed ? 'completed' : ''} clickable group flex items-start gap-3 px-4 py-3 transition-colors ${todo.recording_id ? 'cursor-pointer hover:bg-muted/50' : ''} ${todo.completed ? 'opacity-60' : ''} ${i > 0 ? 'border-t border-border' : ''}`}
                 onClick={() => {
                   if (todo.recording_id) navigate(`/recording/${todo.recording_id}`);
                 }}
               >
-                <input
-                  type="checkbox"
-                  className="todo-checkbox"
+                <Checkbox
                   checked={todo.completed}
-                  onChange={e => { e.stopPropagation(); handleToggle(todo); }}
+                  onCheckedChange={() => handleToggle(todo)}
+                  onClick={e => e.stopPropagation()}
+                  className="todo-checkbox mt-0.5 shrink-0"
+                  aria-label={`Mark "${todo.task}" as ${todo.completed ? 'incomplete' : 'complete'}`}
                 />
-                <span className="todo-task">{todo.task}</span>
-                <span> - {todo.owner}</span>
-                {todo.due && <span> (due: {todo.due})</span>}
-                <span className="priority-badge">{todo.priority}</span>
-                <button
-                  className="todo-delete"
+                <div className="flex-1 min-w-0">
+                  <span className="todo-task text-sm font-medium leading-tight">{todo.task}</span>
+                  <span className="text-sm text-muted-foreground"> - {todo.owner}</span>
+                  {todo.due && <span className="text-sm text-muted-foreground"> (due: {todo.due})</span>}
+                </div>
+                <span className="priority-badge text-xs font-medium" style={{
+                  backgroundColor: todo.priority === 'high' ? '#fee2e2' : todo.priority === 'medium' ? '#fef3c7' : '#dcfce7',
+                  color: todo.priority === 'high' ? '#991b1b' : todo.priority === 'medium' ? '#92400e' : '#166534',
+                }}>{todo.priority}</span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="todo-delete h-7 w-7 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity"
                   onClick={e => { e.stopPropagation(); handleDelete(todo.id); }}
                   aria-label={`Delete todo: ${todo.task}`}
                 >
-                  ×
-                </button>
+                  <X className="h-4 w-4" />
+                </Button>
               </li>
             ))}
           </ul>
