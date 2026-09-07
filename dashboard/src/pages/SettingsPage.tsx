@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { api } from '../api/client';
-import { ModeToggle } from '@/components/mode-toggle';
 import MobileNavBar from '@/components/MobileNavBar';
 import type { UserSettings } from '../types';
 import SettingsForm from '@/components/SettingsForm';
@@ -36,7 +35,6 @@ export default function SettingsPage() {
     <div className="flex min-h-screen flex-col gap-6 p-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <ModeToggle />
       </div>
       <SettingsForm
         settings={settings}

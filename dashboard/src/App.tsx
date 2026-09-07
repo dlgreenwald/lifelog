@@ -4,7 +4,6 @@ import { AuthProvider, useAuth } from './auth/AuthContext';
 import ProtectedRoute from './auth/ProtectedRoute';
 import LoginPage from './pages/LoginPage';
 import CallbackPage from './pages/CallbackPage';
-import LoginPage from './pages/LoginPage';
 import Calendar from './components/Calendar';
 import RecordingDetail from './components/RecordingDetail';
 import TodoList from './components/TodoList';

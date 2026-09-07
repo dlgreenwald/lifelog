@@ -260,6 +260,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
         const next = { from: today, to: today };
         setSelected(next);
         selectedRef.current = next;
+        setSelectedDay(today);
         break;
       }
       case 'yesterday': {
@@ -267,18 +268,21 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
         const next = { from: yesterday, to: yesterday };
         setSelected(next);
         selectedRef.current = next;
+        setSelectedDay(yesterday);
         break;
       }
       case 'this-week': {
         const next = getThisWeekRange();
         setSelected(next);
         selectedRef.current = next;
+        setSelectedDay(next.from);
         break;
       }
       case 'last-week': {
         const next = getLastWeekRange();
         setSelected(next);
         selectedRef.current = next;
+        setSelectedDay(next.from);
         break;
       }
     }
@@ -305,6 +309,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
     if (day) {
       setSelectedDay(day);
       setSelectedState({ from: day, to: day });
+      onCalendarToggle();
     }
   };
 
@@ -488,14 +493,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
               {calendarInDrawer}
             </div>
           </div>
-<<<<<<< HEAD
-          {/* Bottom navigation bar for mobile */}
-          <MobileNavBar
-            calendarOpen={calendarOpen}
-            onCalendarToggle={() => setCalendarOpen(!calendarOpen)}
-          />
-=======
->>>>>>> 5844a71f (feat(dashboard): migrate TodoList and DecisionsList to shadcn, wire LoginPage, add mobile nav)
+
         </div>
       ) : (
         <div className="calendar-body">

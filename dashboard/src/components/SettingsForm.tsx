@@ -1,5 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { ModeToggle } from '@/components/mode-toggle';
 import type { UserSettings } from '../types';
 
 const LANGUAGES: Record<string, string> = {
@@ -127,6 +128,7 @@ export default function SettingsForm({
         <div className="space-y-2">
           <h3 className="text-sm font-medium">Appearance</h3>
           <p className="text-xs text-muted-foreground">Toggle between light, dark, and system color theme.</p>
+          <ModeToggle />
         </div>
 
         {/* Transcription Language */}
