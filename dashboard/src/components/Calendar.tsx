@@ -100,14 +100,42 @@ export default function Calendar() {
   const [incompleteTodoDates, setIncompleteTodoDates] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'work' | 'personal' | 'not_meaningful'>('all');
   const [currentMonth, setCurrentMonth] = useState(() => new Date());
+  // Track previous active recording so we can remove it when a new one arrives
+  const prevActiveRef = useRef<Recording | null>(null);
 
   // Active recording polling
   const loadActive = useCallback(() => {
     api.getActiveRecording().then(setActiveRecording).catch(() => setActiveRecording(null));
   }, []);
+
+  // Merge active recording into the correct day's recordings so it shows as a block in the day view.
+  // Also removes the PREVIOUS active recording when it changes so finished recordings don't linger.
+  useEffect(() => {
+    const prev = prevActiveRef.current;
+    setRecordingsByDate(next => {
+      const map = new Map(next);
+
+      // Remove the previous active recording from its date so finished recordings don't linger
+      if (prev) {
+        const prevDate = prev.timestamp.split('T')[0];
+        const existing = map.get(prevDate) ?? [];
+        map.set(prevDate, existing.filter(r => r.id !== prev.id));
+      }
+
+      if (activeRecording) {
+        const date = activeRecording.timestamp.split('T')[0];
+        const existing = map.get(date) ?? [];
+        // Remove any recording with the same ID first (handles same-URL refresh)
+        map.set(date, [...existing.filter(r => r.id !== activeRecording.id), activeRecording]);
+      }
+
+      return map;
+    });
+    prevActiveRef.current = activeRecording;
+  }, [activeRecording]);
+
   // Shared scroll manager: all day-view scroll els registered here
   const scrollElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
-  // Track which column the user last scrolled, to ignore synthetic scroll events from sync
   const lastScrolledRef = useRef<string | null>(null);
 
   const handleDayViewMount = useCallback((date: string, el: HTMLDivElement) => {
@@ -188,20 +216,6 @@ export default function Calendar() {
         setLoading(false);
       });
   }, [selectedDates, categoryFilter]);
-
-  // Merge active recording into the correct day's recordings so it shows as a block in the day view
-  useEffect(() => {
-    setRecordingsByDate(prev => {
-      const next = new Map(prev);
-      if (activeRecording) {
-        const date = activeRecording.timestamp.split('T')[0];
-        const existing = next.get(date) ?? [];
-        const filtered = existing.filter(r => r.id !== activeRecording.id);
-        next.set(date, [...filtered, activeRecording]);
-      }
-      return next;
-    });
-  }, [activeRecording]);
 
   // Load todos for all selected dates
   useEffect(() => {
