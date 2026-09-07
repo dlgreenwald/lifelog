@@ -824,6 +824,7 @@ async def _finalize_completed_sessions() -> None:
                     pending_ids=[j["id"] for j in pending_or_processing],
                 )
                 continue
+            failed_jobs = [job for job in full_jobs if job.get("status") == "failed"]
             if failed_jobs:
                 retry_count = session.get("retry_count") or 0
                 if retry_count < MAX_RETRY_COUNT:
