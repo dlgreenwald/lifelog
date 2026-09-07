@@ -258,16 +258,12 @@ header nav a:hover {
 }
 
 .calendar-day {
+  position: relative;
   aspect-ratio: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
   border: 1px solid #ecf0f1;
   border-radius: 4px;
   cursor: pointer;
   transition: background 0.2s;
-  position: relative;
 }
 
 .calendar-day:hover {
@@ -280,11 +276,6 @@ header nav a:hover {
 
 .calendar-day.selected {
   background: var(--primary);
-  color: var(--primary-foreground);
-}
-
-.calendar-day.empty {
-  border: none;
 }
 
 .recording-dot {
@@ -961,8 +952,9 @@ header nav a:hover {
 .calendar-sidebar {
   padding: 0.5rem;
   position: relative;
-  overflow: hidden; /* clip absolutely-positioned children that would otherwise expand the container */
 }
+
+/* Dot base styles */
 .has-recording-dot::before,
 .has-todo-dot::before,
 .has-recording-dot::after,
@@ -975,19 +967,18 @@ header nav a:hover {
   border-radius: 50%;
   pointer-events: none;
 }
-/* Green dot (using ::before so both dots can coexist on same element) */
+/* Recording dot (green) */
 .has-recording-dot::before {
   left: calc(50% - 6px);
-  background: var(--primary);
-  z-index: 2;
+  background: #27ae60;
 }
-/* Red dot (::after) */
+/* Todo dot (red) */
 .has-todo-dot::after {
   left: calc(50% + 2px);
   background: #e74c3c;
   z-index: 2;
 }
-/* When both dots on same element, ensure stacking */
+/* When both dots on same element */
 .has-recording-dot.has-todo-dot::before {
   z-index: 3;
 }
