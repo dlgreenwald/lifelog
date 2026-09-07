@@ -3,21 +3,54 @@ import { useAuth } from '../auth/AuthContext';
 import { Button } from '@/components/ui/button';
 
 function AudioWave() {
+  // Speech waveform: never goes to silence — continuous noise floor with peaks
+  const heights = [
+    // 0 silence at very start
+    0, 0, 0, 0, 0, 0, 0,
+    // 1 rise into first peak
+    3, 8, 18, 32, 50, 68, 82,
+    // 2 first peak (jagged top)
+    95, 88, 100, 90, 78, 95, 82, 70, 92, 75, 60,
+    // 3 decay but STAY above noise floor — rising into second peak
+    40, 30, 42, 35, 52, 48, 65, 58, 75, 68, 85,
+    // 4 second peak (higher, sustained)
+    100, 92, 98, 100, 95, 88, 100, 97, 90, 85, 95, 80, 70,
+    // 5 drop to noise floor, then buildup to third
+    45, 38, 50, 55, 65, 75, 88, 78,
+    // 6 third peak (sharp attack)
+    100, 85, 95, 70, 55, 88, 65, 45,
+    // 7 decay toward end
+    30, 20, 12, 8, 5, 2, 0, 0, 0, 0, 0,
+  ];
+  const positions = heights.map((_, i) => 8 + i * 8);
+
   return (
     <svg
-      viewBox="0 0 400 120"
-      className="w-full max-w-xs text-primary/30"
+      viewBox={`0 0 ${positions[positions.length - 1] + 8} 100`}
+      className="h-full w-full text-primary/40"
       aria-hidden="true"
       preserveAspectRatio="none"
     >
-      {/* Center line */}
-      <line x1="0" y1="60" x2="400" y2="60" stroke="currentColor" strokeWidth="1" />
-      {/* Top wave bars */}
-      {[8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 264, 272, 280, 288, 296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384, 392, 400].map((x, i) => {
-        const heights = [20, 35, 50, 65, 80, 65, 50, 75, 90, 75, 55, 70, 85, 70, 50, 40, 60, 80, 95, 80, 60, 45, 65, 85, 100, 85, 65, 50, 35, 55, 75, 90, 75, 55, 40, 60, 80, 95, 80, 60, 45, 30, 50, 70, 85, 70, 50, 35, 20];
-        const h = heights[i % heights.length];
-        return <rect key={x} x={x} y={60 - h} width="6" height={h} rx="3" fill="currentColor" />;
-      })}
+      {/* Center line over active region */}
+      <line x1={positions[7]} y1="50" x2={positions[positions.length - 5]} y2="50" stroke="currentColor" strokeWidth="1" strokeDasharray="4 4" />
+      <g>
+        {positions.map((x, i) => {
+          const envelope = heights[i] / 100;
+          if (envelope < 0.03) return null;
+          const noise = 0.88 + Math.random() * 0.24;
+          const h = envelope * 44 * noise;
+          return <rect key={`u${x}`} x={x} y={50 - h} width="6" height={h} rx="3" fill="currentColor" />;
+        })}
+      </g>
+      <g>
+        {positions.map((x, i) => {
+          const envelope = heights[i] / 100;
+          if (envelope < 0.03) return null;
+          const noise = 0.88 + Math.random() * 0.24;
+          const h = envelope * 44 * noise;
+          return <rect key={`d${x}`} x={x} y={50} width="6" height={h} rx="3" fill="currentColor" />;
+        })}
+      </g>
     </svg>
   );
 }
@@ -26,20 +59,20 @@ export default function LoginPage() {
   const { login } = useAuth();
 
   return (
-    <div className="grid min-h-svh w-full lg:grid-cols-2">
-      {/* Left column: branding + sign-in */}
-      <div className="flex flex-col bg-background p-8 md:p-12">
-        {/* Logo */}
-        <div className="flex items-center gap-2 font-medium">
-          <div className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <Mic className="size-4" aria-hidden="true" />
+    <div className="flex flex-col lg:grid lg:grid-cols-2 min-h-svh">
+      {/* Left: text with logo */}
+      <div className="order-2 lg:order-none flex items-center justify-center bg-background p-8 lg:min-h-svh">
+        <div className="flex w-full max-w-sm flex-col gap-8">
+          {/* Logo */}
+          <div className="flex items-center gap-2 font-medium">
+            <div className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
+              <Mic className="size-4" aria-hidden="true" />
+            </div>
+            <span className="text-lg">LifeLog</span>
           </div>
-          <span className="text-lg">LifeLog</span>
-        </div>
 
-        {/* Sign-in content — flows directly, no card wrapper */}
-        <div className="flex flex-1 flex-col justify-center">
-          <div className="max-w-sm space-y-6">
+          {/* CTA block */}
+          <div className="space-y-6">
             <div className="space-y-3">
               <h1 className="text-4xl font-semibold tracking-tight">
                 Your voice, remembered.
@@ -50,15 +83,21 @@ export default function LoginPage() {
             </div>
 
             <Button
+              id="sign-in-button"
               size="lg"
-              variant="outline"
+              variant="default"
               className="w-full"
+              style={{
+                backgroundColor: 'hsl(221.2, 83.2%, 53.3%)',
+                color: 'hsl(0, 0%, 98%)',
+                border: 'none',
+              }}
               onClick={login}
             >
               Sign in with OIDC
             </Button>
 
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-foreground">
               Your voice journal is private. All recordings are encrypted and
               accessible only to you.
             </p>
@@ -66,18 +105,10 @@ export default function LoginPage() {
         </div>
       </div>
 
-      {/* Right column: audio wave hero */}
-      <div className="relative hidden flex-col items-center justify-center bg-muted lg:flex">
-        <div className="flex w-full flex-col items-center gap-6 p-12">
-          <div className="flex size-16 items-center justify-center rounded-full bg-primary/10">
-            <Mic className="size-8 text-primary" aria-hidden="true" />
-          </div>
-          <div className="w-full">
-            <AudioWave />
-          </div>
-          <p className="text-sm text-muted-foreground text-center max-w-xs">
-            Speak freely. LifeLog captures, transcribes, and organizes your conversations automatically.
-          </p>
+      {/* Right: waveform */}
+      <div className="order-1 lg:order-none flex items-center justify-center bg-muted p-8 lg:min-h-svh">
+        <div className="flex h-40 w-full max-w-sm items-center">
+          <AudioWave />
         </div>
       </div>
     </div>

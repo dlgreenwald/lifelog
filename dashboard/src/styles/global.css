@@ -2,6 +2,31 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+:root,
+:root.dark {
+  --background: 0 0% 100%;
+  --foreground: 0 0% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 3.9%;
+  --primary: 221.2 83.2% 53.3%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 0 0% 96.1%;
+  --secondary-foreground: 0 0% 9%;
+  --muted: 0 0% 96.1%;
+  --muted-foreground: 0 0% 45.1%;
+  --accent: 0 0% 96.1%;
+  --accent-foreground: 0 0% 9%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 0 0% 89.8%;
+  --input: 0 0% 89.8%;
+  --ring: 221.2 83.2% 53.3%;
+  --radius: 0.5rem;
+}
+}
 * {
   margin: 0;
   padding: 0;
@@ -10,19 +35,11 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-  background: #f5f5f5;
-  color: #333;
-  line-height: 1.6;
-}
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-  background: #f5f5f5;
-  color: #333;
+  background: var(--background);
+  color: var(--foreground);
   line-height: 1.6;
   height: 100vh;
   overflow: hidden;
-  margin: 0;
 }
 
 .app {
@@ -64,7 +81,7 @@ header nav a:hover {
 }
 
 .calendar-view {
-  background: white;
+  background: var(--card);
   padding: 20px;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
@@ -174,7 +191,7 @@ header nav a:hover {
   z-index: 40;
   transform: translateY(100%);
   transition: transform 0.3s ease-out;
-  background: white;
+  background: #ffffff;
   border-top-left-radius: 16px;
   border-top-right-radius: 16px;
   box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
@@ -184,10 +201,17 @@ header nav a:hover {
 .mobile-calendar-panel.open {
   transform: translateY(0);
 }
+[data-theme="dark"] .mobile-calendar-panel {
+  background: hsl(0 0% 15%);
+}
 .mobile-calendar-panel-content {
   padding: 16px;
   max-height: 60vh;
   overflow-y: auto;
+  background: #ffffff;
+}
+[data-theme="dark"] .mobile-calendar-panel-content {
+  background: hsl(0 0% 15%);
 }
 
 /* Mobile calendar panel - fill width with responsive day sizes */
@@ -219,8 +243,8 @@ header nav a:hover {
 }
 
 .calendar-header button {
-  background: #3498db;
-  color: white;
+  background: var(--primary);
+  color: var(--primary-foreground);
   border: none;
   padding: 8px 16px;
   border-radius: 4px;
@@ -241,16 +265,12 @@ header nav a:hover {
 }
 
 .calendar-day {
+  position: relative;
   aspect-ratio: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
   border: 1px solid #ecf0f1;
   border-radius: 4px;
   cursor: pointer;
   transition: background 0.2s;
-  position: relative;
 }
 
 .calendar-day:hover {
@@ -258,22 +278,17 @@ header nav a:hover {
 }
 
 .calendar-day.has-recording {
-  background: #d4edda;
+  background: var(--card);
 }
 
 .calendar-day.selected {
-  background: #3498db;
-  color: white;
-}
-
-.calendar-day.empty {
-  border: none;
+  background: var(--primary);
 }
 
 .recording-dot {
   width: 6px;
   height: 6px;
-  background: #27ae60;
+  background: var(--primary);
   border-radius: 50%;
   margin-top: 4px;
 }
@@ -281,14 +296,14 @@ header nav a:hover {
 .recordings-panel {
   margin-top: 20px;
   padding: 20px;
-  background: #f8f9fa;
+  background: var(--muted);
   border-radius: 8px;
 }
 
 .daily-summary {
   margin-top: 16px;
   padding: 16px;
-  background: white;
+  background: var(--card);
   border-radius: 8px;
   border-left: 4px solid #3498db;
 }
@@ -296,7 +311,7 @@ header nav a:hover {
 .recordings-list {
   margin-top: 16px;
   padding: 16px;
-  background: white;
+  background: var(--card);
   border-radius: 8px;
   border-left: 4px solid #2ecc71;
 }
@@ -310,7 +325,7 @@ header nav a:hover {
   display: flex;
   gap: 0;
   margin-bottom: 12px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
   width: fit-content;
@@ -319,10 +334,10 @@ header nav a:hover {
 .category-filter button {
   padding: 6px 16px;
   border: none;
-  background: white;
+  background: var(--card);
   cursor: pointer;
   font-size: 0.9rem;
-  color: #555;
+  color: var(--muted-foreground);
   transition: background 0.15s, color 0.15s;
 }
 
@@ -335,8 +350,8 @@ header nav a:hover {
 }
 
 .category-filter button.active {
-  background: #3498db;
-  color: white;
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .recording-list {
@@ -348,7 +363,7 @@ header nav a:hover {
 .recording-item {
   display: block;
   padding: 15px;
-  background: white;
+  background: var(--card);
   border-radius: 8px;
   text-decoration: none;
   color: inherit;
@@ -380,7 +395,7 @@ header nav a:hover {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  background: white;
+  background: var(--card);
   padding: 20px;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
@@ -409,8 +424,8 @@ header nav a:hover {
 }
 
 .reprocess-button {
-  background: #3498db;
-  color: white;
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .reprocess-button:hover:not(:disabled) {
@@ -438,10 +453,10 @@ header nav a:hover {
 
 .category-btn {
   padding: 4px 10px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background: white;
-  color: #555;
+  background: var(--card);
+  color: var(--muted-foreground);
   font-size: 0.8rem;
   cursor: pointer;
   transition: all 0.15s;
@@ -461,7 +476,7 @@ header nav a:hover {
 .recording-detail .summary {
   margin-bottom: 20px;
   padding: 15px;
-  background: #f8f9fa;
+  background: var(--muted);
   border-radius: 8px;
 }
 
@@ -475,14 +490,14 @@ header nav a:hover {
 }
 
 .speakers li.unknown {
-  background: #fff3cd;
+  background: var(--card);
 }
 
 .speakers li button {
   margin-left: 10px;
   padding: 4px 8px;
-  background: #3498db;
-  color: white;
+  background: var(--primary);
+  color: var(--primary-foreground);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -529,14 +544,14 @@ header nav a:hover {
 
 .todo-list,
 .speaker-label {
-  background: white;
+  background: var(--card);
   padding: 20px;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .decisions-list {
-  background: #f8f9fa;
+  background: var(--muted);
   padding: 16px;
   border-radius: 8px;
 }
@@ -558,7 +573,7 @@ header nav a:hover {
 
 .decisions-list li {
   padding: 10px;
-  background: white;
+  background: var(--card);
   border-radius: 4px;
   border-left: 4px solid #3498db;
   margin-bottom: 8px;
@@ -593,23 +608,23 @@ header nav a:hover {
   padding: 2px 6px;
   border-radius: 3px;
   font-size: 0.75rem;
-  background: #95a5a6;
-  color: white;
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 .decision-reason {
   margin-top: 4px;
-  color: #7f8c8d;
+  color: var(--muted-foreground);
   font-size: 0.9rem;
 }
 
 .toggle-archived {
   margin-bottom: 12px;
   padding: 6px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background: white;
-  color: #555;
+  background: var(--card);
+  color: var(--muted-foreground);
   cursor: pointer;
   font-size: 0.85rem;
 }
@@ -622,7 +637,7 @@ header nav a:hover {
 .day-todos li.completed,
 .recording-detail .todos,
 .recording-detail .decisions {
-  background: #f8f9fa;
+  background: var(--muted);
   padding: 16px;
   border-radius: 8px;
   margin-bottom: 20px;
@@ -638,7 +653,7 @@ header nav a:hover {
 .recording-detail .todos li,
 .recording-detail .decisions li {
   padding: 10px;
-  background: white;
+  background: var(--card);
   border-radius: 4px;
   border-left: 4px solid #3498db;
   margin-bottom: 8px;
@@ -683,20 +698,6 @@ header nav a:hover {
   color: #e74c3c;
 }
 
-.toggle-completed {
-  margin-bottom: 12px;
-  padding: 6px 12px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  background: white;
-  color: #555;
-  cursor: pointer;
-  font-size: 0.85rem;
-}
-
-.toggle-completed:hover {
-  background: #f0f0f0;
-}
 
 .day-todos {
   margin-top: 4px;
@@ -771,8 +772,52 @@ header nav a:hover {
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 0.8rem;
-  background: #ecf0f1;
+  font-weight: 600;
+  background: #e2e8f0;
+  color: #475569;
 }
+.priority-badge.high {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.priority-badge.medium {
+  background: #fef3c7;
+  color: #92400e;
+}
+.priority-badge.low {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.toggle-completed {
+  margin-bottom: 12px;
+  padding: 6px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.toggle-archived {
+  display: inline-block;
+  margin-bottom: 12px;
+  padding: 6px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.toggle-archived:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
 
 .unknown-list {
   display: flex;
@@ -782,19 +827,19 @@ header nav a:hover {
 
 .unknown-list .segment {
   padding: 15px;
-  background: #f8f9fa;
+  background: var(--muted);
   border-radius: 8px;
   cursor: pointer;
 }
 
 .unknown-list .segment.selected {
-  background: #d4edda;
+  background: var(--card);
 }
 
 .label-form {
   margin-top: 20px;
   padding: 20px;
-  background: #f8f9fa;
+  background: var(--muted);
   border-radius: 8px;
 }
 
@@ -802,14 +847,14 @@ header nav a:hover {
   width: 100%;
   padding: 10px;
   margin-bottom: 10px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   border-radius: 4px;
 }
 
 .label-form button {
   width: 100%;
   padding: 10px;
-  background: #27ae60;
+  background: var(--primary);
   color: white;
   border: none;
   border-radius: 4px;
@@ -824,23 +869,23 @@ header nav a:hover {
 .add-button {
   margin-bottom: 12px;
   padding: 6px 14px;
-  border: 1px solid #3498db;
+  border: 1px solid var(--primary);
   border-radius: 4px;
-  background: white;
+  background: var(--card);
   color: #3498db;
   cursor: pointer;
   font-size: 0.85rem;
 }
 
 .add-button:hover {
-  background: #3498db;
-  color: white;
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .create-form {
   margin-bottom: 16px;
   padding: 16px;
-  background: #f8f9fa;
+  background: var(--muted);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -851,7 +896,7 @@ header nav a:hover {
 .create-form textarea,
 .create-form select {
   padding: 8px 10px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 0.9rem;
   font-family: inherit;
@@ -863,7 +908,7 @@ header nav a:hover {
 
 .create-form button[type="submit"] {
   padding: 8px 16px;
-  background: #27ae60;
+  background: var(--primary);
   color: white;
   border: none;
   border-radius: 4px;
@@ -914,8 +959,10 @@ header nav a:hover {
 .calendar-sidebar {
   padding: 0.5rem;
   position: relative;
-  overflow: hidden; /* clip absolutely-positioned children that would otherwise expand the container */
+  background: #ffffff;
 }
+
+/* Dot base styles */
 .has-recording-dot::before,
 .has-todo-dot::before,
 .has-recording-dot::after,
@@ -928,19 +975,18 @@ header nav a:hover {
   border-radius: 50%;
   pointer-events: none;
 }
-/* Green dot (using ::before so both dots can coexist on same element) */
+/* Recording dot (green) */
 .has-recording-dot::before {
   left: calc(50% - 6px);
   background: #27ae60;
-  z-index: 2;
 }
-/* Red dot (::after) */
+/* Todo dot (red) */
 .has-todo-dot::after {
   left: calc(50% + 2px);
   background: #e74c3c;
   z-index: 2;
 }
-/* When both dots on same element, ensure stacking */
+/* When both dots on same element */
 .has-recording-dot.has-todo-dot::before {
   z-index: 3;
 }
@@ -963,7 +1009,7 @@ header nav a:hover {
 .active-recording-panel {
   margin-top: 1rem;
   padding: 0.5rem;
-  background: #fff3cd;
+  background: var(--card);
   border-radius: 4px;
 }
 
@@ -972,7 +1018,7 @@ header nav a:hover {
   flex: 1;
   position: relative;
   overflow-y: auto;
-  border-right: 1px solid #eee;
+  border-right: 1px solid var(--border);
   /* Hide scrollbar on all columns except rightmost */
   scrollbar-width: none;
 }
@@ -997,7 +1043,7 @@ header nav a:hover {
   font-size: 0.7rem;
   font-weight: 600;
   color: #333;
-  background: white;
+  background: var(--card);
   padding: 0 2px;
   z-index: 1;
 }
@@ -1010,7 +1056,7 @@ header nav a:hover {
   position: absolute;
   left: 2px;
   right: 2px;
-  background: #d4edda;
+  background: var(--card);
   border-radius: 4px;
   padding: 2px 6px;
   cursor: pointer;
@@ -1023,7 +1069,7 @@ header nav a:hover {
 .recording-block:hover { opacity: 0.85; }
 
 .recording-block-live {
-  background: #fff3cd;
+  background: var(--card);
   border-left-color: #f39c12;
   /* re-assert position after display:flex in base rule */
   position: absolute;
@@ -1037,7 +1083,7 @@ header nav a:hover {
 
 /* Category colors for recording blocks */
 .recording-block.category-work {
-  background: #d4edda;
+  background: #e8f5e9;
   border-color: rgba(39, 174, 96, 0.4);
   border-left-color: #27ae60;
 }
@@ -1068,7 +1114,7 @@ header nav a:hover {
 }
 .recording-block-summary {
   font-size: 0.65rem;
-  color: #555;
+  color: var(--muted-foreground);
   word-break: break-word;
 }
 
@@ -1130,8 +1176,8 @@ header nav a:hover {
   font-size: 0.7rem;
   font-weight: 600;
   color: #333;
-  background: #f8f8f8;
-  border-bottom: 2px solid #27ae60;
+  background: var(--muted);
+  border-bottom: 2px solid var(--primary);
   text-align: center;
   white-space: normal;
   flex-shrink: 0;
@@ -1155,4 +1201,166 @@ main {
 /* Drawer (mobile) overrides - lighten scrim */
 .drawer-overlay {
   background-color: rgba(0, 0, 0, 0.4) !important;
+}
+/* ============================================
+   Dark mode overrides for day view + calendar
+   ============================================ */
+
+[data-theme="dark"] .hour-label {
+  color: var(--muted-foreground);
+  background: var(--background);
+}
+
+[data-theme="dark"] .weekend {
+  background: hsl(0 0% 17.5%);
+}
+
+/* Category colors in dark mode — desaturated dark backgrounds */
+[data-theme="dark"] .recording-block.category-work {
+  background: hsl(140 40% 15%);
+  border-color: hsl(140 40% 30% / 0.4);
+  border-left-color: hsl(140 60% 45%);
+}
+
+[data-theme="dark"] .recording-block.category-home {
+  background: hsl(207 50% 15%);
+  border-color: hsl(207 50% 30% / 0.4);
+  border-left-color: hsl(207 80% 55%);
+}
+
+[data-theme="dark"] .recording-block.category-other {
+  background: hsl(36 40% 15%);
+  border-color: hsl(36 40% 30% / 0.4);
+  border-left-color: hsl(36 80% 55%);
+}
+
+[data-theme="dark"] .recording-block-live {
+  background: hsl(48 50% 20%);
+  border-left-color: hsl(48 100% 60%);
+}
+
+[data-theme="dark"] .live-recording-progress {
+  background: hsl(48 40% 20%);
+  border-left-color: hsl(48 100% 60%);
+}
+
+[data-theme="dark"] .live-recording-text {
+  color: var(--foreground);
+}
+
+[data-theme="dark"] .recording-block-summary {
+  color: var(--muted-foreground);
+}
+
+[data-theme="dark"] .active-recording-panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+
+
+/* ============================================
+   Calendar + react-day-picker dark mode
+   ============================================ */
+
+[data-theme="dark"] .rdp-root,
+:root.dark .rdp-root {
+  --rdp-accent-color: hsl(217.2 91.2% 59.8%);
+  --rdp-accent-background-color: hsl(217.2 91.2% 59.8% / 0.3);
+}
+
+[data-theme="dark"] .rdp .rdp-day_button,
+:root.dark .rdp .rdp-day_button {
+  color: hsl(0 0% 98%) !important;
+}
+
+[data-theme="dark"] .rdp .rdp-head_cell,
+:root.dark .rdp .rdp-head_cell {
+  color: hsl(0 0% 63.9%);
+}
+
+[data-theme="dark"] .rdp .rdp-caption_label,
+:root.dark .rdp .rdp-caption_label {
+  color: hsl(0 0% 98%);
+}
+
+[data-theme="dark"] .rdp .rdp-nav_button,
+:root.dark .rdp .rdp-nav_button {
+  color: hsl(0 0% 98%);
+}
+
+[data-theme="dark"] .rdp .rdp-chevron,
+:root.dark .rdp .rdp-chevron {
+  color: hsl(0 0% 98%);
+}
+
+[data-theme="dark"] .rdp .rdp-month_caption,
+:root.dark .rdp .rdp-month_caption {
+  color: hsl(0 0% 98%);
+}
+
+[data-theme="dark"] .rdp .rdp-dropdown,
+:root.dark .rdp .rdp-dropdown {
+  background: hsl(0 0% 20%);
+  color: hsl(0 0% 98%);
+}
+
+[data-theme="dark"] .rdp .rdp-day:disabled,
+:root.dark .rdp .rdp-day:disabled {
+  color: hsl(0 0% 45%);
+  opacity: 0.5;
+}
+
+[data-theme="dark"] .rdp .rdp-day_outside,
+:root.dark .rdp .rdp-day_outside {
+  color: hsl(0 0% 45%);
+  opacity: 0.4;
+}
+
+[data-theme="dark"] .calendar-sidebar,
+:root.dark .calendar-sidebar {
+  background: var(--card) !important;
+  color: var(--foreground) !important;
+}
+
+[data-theme="dark"] .calendar-sidebar h1,
+[data-theme="dark"] .calendar-sidebar h2,
+[data-theme="dark"] .calendar-sidebar h3,
+[data-theme="dark"] .calendar-sidebar h4,
+[data-theme="dark"] .calendar-sidebar p,
+[data-theme="dark"] .calendar-sidebar span,
+[data-theme="dark"] .calendar-sidebar label {
+  color: var(--foreground) !important;
+}
+
+[data-theme="dark"] .calendar-sidebar .text-muted-foreground,
+:root.dark .calendar-sidebar .text-muted-foreground {
+  color: var(--muted-foreground) !important;
+}
+
+[data-theme="dark"] .calendar-presets,
+:root.dark .calendar-presets {
+  background: var(--background);
+}
+
+[data-theme="dark"] .day-view-header,
+:root.dark .day-view-header {
+  background: var(--muted) !important;
+  color: var(--foreground) !important;
+}
+
+[data-theme="dark"] .day-view,
+:root.dark .day-view {
+  background: var(--background) !important;
+  color: var(--foreground) !important;
+}
+
+[data-theme="dark"] .day-views-scroll,
+:root.dark .day-views-scroll {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+[data-theme="dark"] .day-view-column,
+:root.dark .day-view-column {
+  background: var(--background);
 }

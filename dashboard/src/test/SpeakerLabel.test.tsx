@@ -3,11 +3,9 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import SpeakerLabel from '../components/SpeakerLabel';
 import { api } from '../api/client';
-import type { UnknownSpeaker } from '../types';
 
 vi.mock('../api/client', () => ({
   api: {
-    getUnknownSpeakers: vi.fn(),
     getAllSpeakers: vi.fn(),
     labelSpeaker: vi.fn(),
   },
@@ -15,72 +13,83 @@ vi.mock('../api/client', () => ({
 
 const mockApi = vi.mocked(api);
 
-const mockUnknowns: UnknownSpeaker[] = [
-  { id: 5, timestamp: '2024-01-15T10:00:00', speakers: [], audio_filename: 'rec1.enc' },
-  { id: 8, timestamp: '2024-01-16T14:00:00', speakers: [], audio_filename: 'rec2.enc' },
-];
-
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.getUnknownSpeakers.mockResolvedValue({ recordings: mockUnknowns });
-  mockApi.getAllSpeakers.mockResolvedValue({
-    speakers: [
-      { name: 'Unknown', labeled: false, recording_id: 5, speaker_label: 'Unknown' },
-      { name: 'Alice', labeled: true, recording_id: 5, speaker_label: 'Alice' },
-    ],
-  });
 });
 
 describe('SpeakerLabel', () => {
-  it('loads and displays unknown speakers', async () => {
+  it('loads and displays unlabeled speakers', async () => {
+    mockApi.getAllSpeakers.mockResolvedValue({
+      speakers: [
+        { name: 'SPEAKER_00', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_00' },
+        { name: 'SPEAKER_01', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_01' },
+      ],
+    });
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('Unknown').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('SPEAKER_00').length).toBeGreaterThanOrEqual(1);
     });
-
     expect(mockApi.getAllSpeakers).toHaveBeenCalled();
   });
 
   it('shows label form when segment is clicked', async () => {
     const user = userEvent.setup();
+    mockApi.getAllSpeakers.mockResolvedValue({
+      speakers: [
+        { name: 'SPEAKER_00', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_00' },
+      ],
+    });
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('Unknown').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('SPEAKER_00').length).toBeGreaterThanOrEqual(1);
     });
 
-    // Click on the first unlabeled segment (within .unknown-list)
-    const firstSegment = document.querySelector('.unknown-list .segment');
-    await user.click(firstSegment!);
+    await user.click(screen.getAllByText('SPEAKER_00')[0].closest('div[style], [class*="cursor-pointer"]')!);
 
-    expect(screen.getByText('Label Speaker: Unknown')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(/Label Speaker: SPEAKER_00/)).toBeInTheDocument();
+    });
     expect(screen.getByPlaceholderText('Enter speaker name')).toBeInTheDocument();
   });
 
   it('disables label button when input is empty', async () => {
     const user = userEvent.setup();
+    mockApi.getAllSpeakers.mockResolvedValue({
+      speakers: [
+        { name: 'SPEAKER_00', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_00' },
+      ],
+    });
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('Unknown').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('SPEAKER_00').length).toBeGreaterThanOrEqual(1);
     });
 
-    await user.click(screen.getAllByText('Unknown')[0].closest('.segment')!);
+    await user.click(screen.getAllByText('SPEAKER_00')[0].closest('[class*="cursor-pointer"]')!);
 
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /label/i })).toBeInTheDocument();
+    });
     const button = screen.getByRole('button', { name: /label/i });
     expect(button).toBeDisabled();
   });
 
   it('enables label button when input has text', async () => {
     const user = userEvent.setup();
+    mockApi.getAllSpeakers.mockResolvedValue({
+      speakers: [
+        { name: 'SPEAKER_00', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_00' },
+      ],
+    });
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('Unknown').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('SPEAKER_00').length).toBeGreaterThanOrEqual(1);
     });
 
-    await user.click(screen.getAllByText('Unknown')[0].closest('.segment')!);
+    await user.click(screen.getAllByText('SPEAKER_00')[0].closest('[class*="cursor-pointer"]')!);
     await user.type(screen.getByPlaceholderText('Enter speaker name'), 'Alice');
 
     const button = screen.getByRole('button', { name: /label/i });
@@ -92,29 +101,29 @@ describe('SpeakerLabel', () => {
     mockApi.labelSpeaker.mockResolvedValue({ status: 'labeled', label: 'Alice' });
     mockApi.getAllSpeakers
       .mockResolvedValueOnce({
-        speakers: [{ name: 'Unknown', labeled: false, recording_id: 5, speaker_label: 'Unknown' }],
+        speakers: [{ name: 'SPEAKER_00', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_00' }],
       })
       .mockResolvedValueOnce({ speakers: [] });
 
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('Unknown').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('SPEAKER_00').length).toBeGreaterThanOrEqual(1);
     });
 
-    await user.click(screen.getAllByText('Unknown')[0].closest('.segment')!);
+    await user.click(screen.getAllByText('SPEAKER_00')[0].closest('[class*="cursor-pointer"]')!);
     await user.type(screen.getByPlaceholderText('Enter speaker name'), 'Alice');
     await user.click(screen.getByRole('button', { name: /label/i }));
 
     await waitFor(() => {
-      expect(mockApi.labelSpeaker).toHaveBeenCalledWith(5, 'Unknown', 'Alice');
+      expect(mockApi.labelSpeaker).toHaveBeenCalledWith(5, 'SPEAKER_00', 'Alice');
     });
     await waitFor(() => {
       expect(mockApi.getAllSpeakers).toHaveBeenCalledTimes(2);
     });
   });
 
-  it('shows empty state when no unknowns', async () => {
+  it('shows empty state when no speakers', async () => {
     mockApi.getAllSpeakers.mockResolvedValue({ speakers: [] });
 
     render(<SpeakerLabel />);
@@ -124,18 +133,18 @@ describe('SpeakerLabel', () => {
     });
   });
 
-  it('highlights selected segment', async () => {
-    const user = userEvent.setup();
+  it('displays labeled speakers', async () => {
+    mockApi.getAllSpeakers.mockResolvedValue({
+      speakers: [
+        { name: 'Alice', labeled: true, recording_id: 5, speaker_label: 'SPEAKER_00' },
+      ],
+    });
+
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('Unknown').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('Labeled (1)')).toBeInTheDocument();
+      expect(screen.getByText('Alice')).toBeInTheDocument();
     });
-
-    const segments = screen.getAllByText('Unknown');
-    await user.click(segments[0].closest('.segment')!);
-
-    const selectedSegment = segments[0].closest('.segment');
-    expect(selectedSegment).toHaveClass('selected');
   });
 });

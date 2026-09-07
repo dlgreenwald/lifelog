@@ -261,7 +261,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
           if (!layout) return null;
           const { top, height, left, width } = layout;
           const isLive = rec.is_live === true;
-          const categoryClass = rec.category === 'work' ? 'category-work' : rec.category === 'personal' ? 'category-home' : rec.category === 'not_meaningful' ? 'category-other' : '';
+          const categoryClass = rec.category === 'work' ? 'category-work' : rec.category === 'personal' ? 'category-home' : rec.category === 'not_meaningful' ? 'category-other' : 'category-other';
           return (
             <div
               key={rec.id}
