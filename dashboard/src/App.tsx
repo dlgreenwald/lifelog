@@ -30,7 +30,7 @@ function AppRoutes() {
         <header>
           <h1>LifeLog</h1>
           <nav>
-            <Link to="/calendar">Calendar</Link>
+            <Link to="/">Calendar</Link>
             <Link to="/todos">TODOs</Link>
             <Link to="/decisions">Decisions</Link>
             <Link to="/speakers">Speakers</Link>
