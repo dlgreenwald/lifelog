@@ -1067,7 +1067,7 @@ async def get_utterance_queue_entry(user_id: int, utterance_id: int) -> dict | N
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT user_id, utterance_id, status, created_at
+            SELECT user_id, utterance_id, status, created_at, recorded_at
             FROM utterance_queue
             WHERE user_id = $1 AND utterance_id = $2
             """,
