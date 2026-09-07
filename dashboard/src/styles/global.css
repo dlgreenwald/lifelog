@@ -191,7 +191,7 @@ header nav a:hover {
   z-index: 40;
   transform: translateY(100%);
   transition: transform 0.3s ease-out;
-  background: var(--card);
+  background: #ffffff;
   border-top-left-radius: 16px;
   border-top-right-radius: 16px;
   box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
@@ -201,10 +201,17 @@ header nav a:hover {
 .mobile-calendar-panel.open {
   transform: translateY(0);
 }
+[data-theme="dark"] .mobile-calendar-panel {
+  background: hsl(0 0% 15%);
+}
 .mobile-calendar-panel-content {
   padding: 16px;
   max-height: 60vh;
   overflow-y: auto;
+  background: #ffffff;
+}
+[data-theme="dark"] .mobile-calendar-panel-content {
+  background: hsl(0 0% 15%);
 }
 
 /* Mobile calendar panel - fill width with responsive day sizes */
@@ -952,6 +959,7 @@ header nav a:hover {
 .calendar-sidebar {
   padding: 0.5rem;
   position: relative;
+  background: #ffffff;
 }
 
 /* Dot base styles */
@@ -1075,7 +1083,7 @@ header nav a:hover {
 
 /* Category colors for recording blocks */
 .recording-block.category-work {
-  background: var(--card);
+  background: #e8f5e9;
   border-color: rgba(39, 174, 96, 0.4);
   border-left-color: #27ae60;
 }
