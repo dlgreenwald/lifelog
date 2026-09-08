@@ -26,7 +26,7 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     sdGive();
 
     if (fileSize < 4096) {
-        ESP_LOGI(TAG, "Discarded short clip: %s (%luB)", filename, (unsigned long)fileSize);
+        ESP_LOGD(TAG, "Discarded short clip: %s (%luB)", filename, (unsigned long)fileSize);
         return true;
     }
 
@@ -316,7 +316,7 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
     }
 
     if (size < 4096) {
-        ESP_LOGI(TAG, "Discarded short clip: %s (%luB)", filename, (unsigned long)size);
+        ESP_LOGD(TAG, "Discarded short clip: %s (%luB)", filename, (unsigned long)size);
         return true;
     }
 

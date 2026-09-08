@@ -186,7 +186,7 @@ static void processAfeResult(afe_fetch_result_t *result) {
         ESP_LOGD(TAG, "Voice started (utterance %lu) vol=%.1f dBFS cache=%d",
                 (unsigned long)utteranceId + 1, result->data_volume, result->vad_cache_size);
     } else if (!isVoice && wasVoice) {
-        ESP_LOGI(TAG, "Voice ended — signaling writer to drain ring");
+        ESP_LOGD(TAG, "Voice ended — signaling writer to drain ring");
     }
 
     if (isVoice) {
