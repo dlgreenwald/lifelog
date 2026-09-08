@@ -43,8 +43,8 @@ uint32_t getWriterStallMaxMs();
 uint32_t getFlushDropCount();
 uint32_t getTotalSamplesCaptured();
 uint32_t getRingFillLevel();
-
-// Functions
+// Timezone offset for UTC epoch correction (seconds, set from NVS risaldash/tz in main.cpp)
+extern int32_t gmtOffset;
 void audioInit();
 void startRecording(uint32_t durationMs);
 void toggleVAD();
