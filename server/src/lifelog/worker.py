@@ -20,6 +20,7 @@ _NAIVE_MIN = datetime(1900, 1, 1)  # noqa: DTZ001
 POLL_INTERVAL = 60.0
 MAX_RETRY_COUNT = 3
 
+
 async def claim_utterance(user_id: int, utterance_id: int) -> bool:
     """Try to claim an utterance for processing. Returns True if claimed."""
     async with db.pool.acquire() as conn:
@@ -898,7 +899,8 @@ async def _finalize_completed_sessions() -> None:
             # Sort by window_start (UTC audio timestamp) to merge in true chronological
             # order, regardless of device upload order or chunk_index assignment.
             for job in sorted(
-                full_jobs, key=lambda item: (item.get("window_start") or _NAIVE_MIN, item["id"])
+                full_jobs,
+                key=lambda item: (item.get("window_start") or _NAIVE_MIN, item["id"]),
             ):
                 # Skip duplicate windows (same start/end from reprocess rescheduling)
                 window = (job["window_start"], job["window_end"])
