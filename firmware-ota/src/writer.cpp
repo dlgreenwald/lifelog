@@ -203,9 +203,8 @@ static void mem_flush_to_sd() {
     if (mem_buf_pos == 0 || mem_to_sd) return;
 
     time_t now = time(nullptr);
-    // Use UTC filename if SNTP synced this boot AND clock is in a reasonable epoch range.
-    // clock_valid is volatile (not NVS-persisted) so it resets on cold-boot RTC reset.
-    if (clock_valid && now > 1700000000) {
+    // Use UTC filename if clock is in a reasonable epoch range (after Jan 2024).
+    if (now > 1700000000) {
         generateFilenameUtc(sd_filename, sizeof(sd_filename), now, fileIndex++, true);
     } else {
         snprintf(sd_filename, sizeof(sd_filename), "/lifelog/rec_%05lu.opus", fileIndex++);
@@ -374,6 +373,14 @@ static void opus_file_end() {
         ESP_LOGD(TAG, "opus_file_end: SD fallback %lu bytes, granule=%lld",
                  (unsigned long)pendingCloseFile.size(), (long long)opus_granulepos);
     } else if (mem_buf_pos > 0) {
+        // Memory path — if WiFi is down at session end, flush to SD first so the
+        // auto-upload task can pick up the orphaned file when WiFi returns.
+        if (WiFi.status() != WL_CONNECTED) {
+            ESP_LOGW(TAG, "WiFi down, flushing %lu bytes to SD",
+                     (unsigned long)mem_buf_pos);
+            mem_flush_to_sd();
+        }
+
         // Memory path — finalize EOS packet in buffer, no SD touch
         uint8_t eos_data = 0;
         ogg_packet eos_op = {0};
@@ -388,7 +395,13 @@ static void opus_file_end() {
         // Flush EOS page into mem_buf
         while (ogg_stream_pageout(&ogg_stream, &ogg_page_buf) != 0) {
             int page_size = ogg_page_buf.header_len + ogg_page_buf.body_len;
-            if (!mem_buf_grow(page_size)) {
+            // If WiFi went down during recording, mem_to_sd may already be true
+            if (mem_to_sd) {
+                sdTake();
+                opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
+                opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
+                sdGive();
+            } else if (!mem_buf_grow(page_size)) {
                 // Fallback: flush to SD if can't grow
                 mem_flush_to_sd();
                 if (mem_to_sd) {
@@ -456,6 +469,7 @@ static void upload_if_connected(const UploadRequest &req) {
 // ── Upload worker task — non-blocking upload from queue ────────────
 
 static void uploadWorkerTask(void *pvParameters) {
+    (void)pvParameters;
     UploadRequest req;
     while (true) {
         if (xQueueReceive(uploadQueue, &req, portMAX_DELAY) == pdTRUE) {
@@ -463,14 +477,13 @@ static void uploadWorkerTask(void *pvParameters) {
         }
     }
 }
-
 // ── Writer init — creates upload queue, spawns upload task ─────────
 
 void writerInit() {
     uploadQueue = xQueueCreate(8, sizeof(UploadRequest));
     xTaskCreatePinnedToCore(uploadWorkerTask, "uploader", 16384, NULL, 1, &uploadTaskHandle, 1);
     ESP_LOGD(TAG, "Upload task started (queue depth=8)");
-
+    startAutoUploadTask();
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
     opus_init();
 #endif
@@ -500,8 +513,7 @@ void writerTask(void *pvParameters) {
 #else
             char filename[64];
             time_t now = time(nullptr);
-            if (clock_valid && now > 1700000000) {
-                char base[64];
+            if (now > 1700000000) {
                 generateFilenameUtc(base, sizeof(base), now, fileIndex++, false);
                 snprintf(filename, sizeof(filename), "/lifelog/%s", base);
             } else {
@@ -544,8 +556,9 @@ void writerTask(void *pvParameters) {
                 req.filename[sizeof(req.filename) - 1] = '\0';
                 req.utteranceId = utteranceId;
                 req.chunkIndex = chunkIndex;
-                req.isFinal = isFinal;
-                req.recorded_at = time(nullptr);
+                // time() returns local time after configTime() sets the timezone offset.
+                // Convert to UTC epoch for the server's recorded_at field.
+                req.recorded_at = time(nullptr) - gmtOffset;
                 chunkIndex++;
                 if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
                     ESP_LOGW(TAG, "Upload queue full (%lu/%d), skipping %s",

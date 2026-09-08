@@ -39,9 +39,7 @@ static TaskHandle_t fetchTaskHandle = NULL;
 
 DeviceSettings deviceSettings;
 KnownNetwork knownNetworks[MAX_KNOWN_NETWORKS];
-int knownNetworkCount = 0;
-// ── Clock validity (volatile — reset on every boot, set true after SNTP sync) ─
-bool clock_valid = false;
+int32_t gmtOffset = 0;  // GMT offset in seconds; set after dash.begin() from NVS
 
 // ── Idle hook counters (per-core CPU usage) ────────────────────────
 
@@ -551,60 +549,17 @@ void setup() {
     // - First boot (no saved creds) → captive portal AP, blocks until configured
     // - Saved creds → STA mode, connects to known network
     dash.begin();
-    setupOTA();  // Register AFTER dash.begin() so we override RisalDash's /update routes
-
-    // ── SNTP sync (must be after WiFi is connected) ──────────────────
-    // Set timezone to UTC so time() returns Unix epoch seconds.
-    setenv("TZ", "UTC0", 1);
-    tzset();
-
-    // Volatile clock validity — reset to false on every boot.
-    // Set to true only when SNTP actually updates the RTC.
-    bool clock_valid = false;
-
-    // Check NVS for recent sync — only used to skip blocking SNTP wait
-    // if the clock was already set this boot session.
-    time_t now = time(nullptr);
-    time_t last_sync = 0;
-    char lastSyncStr[32] = {0};
-    prefs.getString("sntp_last", "").toCharArray(lastSyncStr, sizeof(lastSyncStr));
-    if (lastSyncStr[0]) {
-        last_sync = (time_t)atoll(lastSyncStr);
+    // Load GMT offset from RisalDash's NVS namespace so we can convert
+    // local time() to UTC for recorded_at timestamps sent to the server.
+    // RisalDash stores _tz in minutes east of UTC; convert to seconds.
+    {
+        Preferences risalPrefs;
+        risalPrefs.begin("risaldash", true);
+        int tz_min = risalPrefs.getInt("tz", 0);  // minutes east of UTC (e.g. 180 = +03:00)
+        gmtOffset = (int32_t)tz_min * 60;         // convert to seconds
+        risalPrefs.end();
+        ESP_LOGI("TIME", "GMT offset: %ld seconds (%+d minutes)", (long)gmtOffset, tz_min);
     }
-
-    // Skip blocking sync if already synced within this boot session (last_sync is recent).
-    // Guard with a minimum epoch check (Jan 2024) to handle cold-boot RTC=0 case
-    // where the subtraction would underflow and incorrectly pass the age check.
-    bool recently_synced = last_sync > 1700000000 && now - last_sync < 3600;
-
-    if (recently_synced) {
-        ESP_LOGI("SNTP", "Clock trusted (cached sync %lld, age=%llds)", last_sync, now - last_sync);
-    } else {
-        // Need fresh sync. Capture time before to detect whether SNTP actually updated it.
-        time_t pre_sntp = time(nullptr);
-        esp_sntp_config_t cfg = ESP_SNTP_TIME_SYNC_DEFAULT_CONFIG;
-        cfg.servers = (char*)"pool.ntp.org";
-        esp_sntp_init(&cfg);
-
-        int64_t deadline = esp_timer_get_time() + 10'000'000;
-        while (esp_timer_get_time() < deadline) {
-            time_t t = time(nullptr);
-            // SNTP set the clock if time jumped by more than 1 hour from pre-sync value.
-            if (t - pre_sntp > 3600) {
-                ESP_LOGI("SNTP", "SNTP sync: %lld", (int64_t)t);
-                prefs.putString("sntp_last", String((int64_t)t).c_str());
-                clock_valid = true;
-                esp_sntp_stop();
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-        if (!clock_valid) {
-            ESP_LOGW("SNTP", "SNTP sync failed (clock may be wrong)");
-            esp_sntp_stop();
-        }
-    }
-#endif
 
     // Start OAuth2 background task AFTER WiFi is connected
     if (deviceSettings.oauthIssuer[0] && deviceSettings.oauthClientId[0]) {

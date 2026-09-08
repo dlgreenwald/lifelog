@@ -228,8 +228,11 @@ void uploadAllRecordings() {
 #else
         if (String(f.name()).endsWith(".wav")) {
 #endif
-            snprintf(paths[count], sizeof(paths[count]), "/lifelog/%s", f.name());
-            count++;
+            // On ESP32, openNextFile() returns "lifelog/filename" (relative).
+            // Strip the "lifelog/" prefix before prepending our absolute path.
+            const char* fname = f.name();
+            if (strncmp(fname, "lifelog/", 8) == 0) fname += 8;
+            snprintf(paths[count], sizeof(paths[count]), "/lifelog/%s", fname);
         }
     }
     sdTake();
@@ -392,4 +395,65 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
                    (unsigned long)elapsed, (unsigned long)getUploadQueueDepth(), httpStatus);
         return false;
     }
+}
+static int cmp_path(const void* a, const void* b) {
+    return strcmp((const char*)a, (const char*)b);
+}
+
+static void autoUploadTask(void *pvParameters) {
+    (void)pvParameters;
+    TickType_t period = pdMS_TO_TICKS(30000);
+    TickType_t wake = xTaskGetTickCount();
+    while (true) {
+        vTaskDelayUntil(&wake, period);
+        if (WiFi.status() != WL_CONNECTED) continue;
+
+        // Scan /lifelog for orphan .opus files under sdMutex protection
+        sdTake();
+        File root = SD.open("lifelog");
+        if (!root) { sdGive(); continue; }
+
+        char paths[64][64];
+        int count = 0;
+        while (count < 64) {
+            File f = root.openNextFile();
+            if (!f) break;
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+            if (String(f.name()).endsWith(".opus")) {
+#else
+            if (String(f.name()).endsWith(".wav")) {
+#endif
+                // On ESP32, openNextFile() returns "lifelog/filename" (relative).
+                // Strip the "lifelog/" prefix before prepending our absolute path.
+                const char* fname = f.name();
+                if (strncmp(fname, "lifelog/", 8) == 0) fname += 8;
+                snprintf(paths[count], sizeof(paths[count]), "/lifelog/%s", fname);
+            }
+        }
+        root.close();
+        sdGive();
+
+        if (count == 0) continue;
+
+        // Sort lexicographically — both filename schemes sort in recording order:
+        //   UTC form:  "YYYYMMDDTHHMMSS_NNN.opus"  (timestamp prefix)
+        //   seq form:  "rec_NNNNN.opus"             (zero-padded index)
+        qsort(paths, count, sizeof(paths[0]), cmp_path);
+
+        uint32_t orphanId = 0x80000000;
+        for (int i = 0; i < count; i++) {
+            if (uploadFile(paths[i], orphanId++, 0, true, 0)) {
+                sdTake();
+                SD.remove(paths[i]);
+                sdGive();
+                ESP_LOGD(TAG, "Auto-uploaded and deleted %s", paths[i]);
+            }
+        }
+        ESP_LOGI(TAG, "Auto-upload scan done: %d files", count);
+    }
+}
+
+void startAutoUploadTask() {
+    xTaskCreatePinnedToCore(autoUploadTask, "autoUpload", 8192, NULL, 1, NULL, 1);
+    ESP_LOGD(TAG, "Auto-upload task started (30s interval)");
 }

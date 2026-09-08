@@ -22,7 +22,11 @@ extern unsigned long listenStartMs;
 extern SemaphoreHandle_t sdMutex;
 void sdTake();
 void sdGive();
-extern bool clock_valid;  // Set true by main.cpp after SNTP sync succeeds
+
+// GMT offset in seconds (loaded from NVS after dash.begin(), used to convert local time to UTC)
+// configTime(gmtOffset, ...) sets the local timezone, so time() returns local time.
+// To get UTC: recorded_at_utc = time(nullptr) - gmtOffset.
+extern int32_t gmtOffset;
 extern uint32_t fileIndex;
 extern char lastSavedFile[64];
 
