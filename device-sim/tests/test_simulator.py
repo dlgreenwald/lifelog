@@ -9,10 +9,10 @@ from __future__ import annotations
 import os
 
 from device_sim.auth import DeviceAuthenticator
-from device_sim.simulator import Simulator
+from device_sim.simulator import Simulator, UploadMode
 
 
-def _make_sim(ami_data_dir: str) -> Simulator:
+def _make_sim(ami_data_dir: str, mode: UploadMode = UploadMode.NORMAL) -> Simulator:
     # Disable duration filter so slicer doesn't reject all AMI utterances
     # (default MIN_UTTERANCE_DURATION=20 in slicer.py filters out everything)
     os.environ["MIN_UTTERANCE_DURATION"] = "0"
@@ -21,6 +21,7 @@ def _make_sim(ami_data_dir: str) -> Simulator:
         server_url=os.environ["DEVICE_SIM_SERVER_URL"],
         meeting_id=os.environ.get("MEETING_ID", "EN2001a"),
         authenticator=auth,
+        mode=mode,
     )
 
 
@@ -121,5 +122,33 @@ class TestSimulator:
             ids = sim.upload_all()
             assert len(ids) == 2, f"Expected 2 IDs after retry, got {len(ids)}"
             assert call_count[0] >= 2, f"Expected at least 2 POST attempts, got {call_count[0]}"
+        finally:
+            os.environ.pop("MAX_UTTERANCES", None)
+
+    def test_out_of_order_upload(self, ami_data_dir, test_oidc_sub):
+        """Out-of-order mode shuffles upload sequence but preserves recording timestamps."""
+        os.environ["MAX_UTTERANCES"] = "10"
+        try:
+            sim = _make_sim(ami_data_dir, mode=UploadMode.OUT_OF_ORDER)
+            sim.prepare(ami_data_dir)
+            ids = sim.upload_all()
+
+            assert len(ids) == 10, f"Expected 10 IDs, got {len(ids)}"
+            assert all(isinstance(i, int) for i in ids)
+        finally:
+            os.environ.pop("MAX_UTTERANCES", None)
+
+    def test_delayed_upload(self, ami_data_dir, test_oidc_sub):
+        """Delayed mode sets device_start_ahead to 7 days; recorded_at is ~7 days ago."""
+        os.environ["MAX_UTTERANCES"] = "5"
+        try:
+            sim = _make_sim(ami_data_dir, mode=UploadMode.DELAYED)
+            # Mode is set via constructor; device_start_ahead should be overridden to 7 days
+            assert sim.mode == UploadMode.DELAYED
+            sim.prepare(ami_data_dir)
+
+            ids = sim.upload_all()
+            assert len(ids) == 5, f"Expected 5 IDs, got {len(ids)}"
+            assert all(isinstance(i, int) for i in ids)
         finally:
             os.environ.pop("MAX_UTTERANCES", None)

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import random
 import time
 from datetime import UTC, datetime, timedelta
+from enum import Enum, auto
 from pathlib import Path
 
 import httpx
@@ -12,6 +14,19 @@ import httpx
 from device_sim.auth import DeviceAuthenticator
 from device_sim.encode import encode_opus, encode_silent_opus
 from device_sim.slicer import UtteranceSlice, slice_meeting
+
+
+class UploadMode(Enum):
+    """Controls upload order and timestamp behavior.
+
+    - NORMAL: upload in recording order with current timestamps (device just finished).
+    - OUT_OF_ORDER: upload shuffled but timestamps reflect true recording time.
+    - DELAYED: upload with timestamps 7 days in the past (offline recording session).
+    """
+
+    NORMAL = auto()
+    OUT_OF_ORDER = auto()
+    DELAYED = auto()
 
 
 class Simulator:
@@ -25,6 +40,7 @@ class Simulator:
             device "was turned on" (used to set realistic device timestamps).
         upload_interval_seconds: pause between uploads (slightly > chunk so chunks
             don't overlap in time).
+        mode: controls upload order and timestamp behavior (see UploadMode).
     """
 
     def __init__(
@@ -34,12 +50,14 @@ class Simulator:
         authenticator: DeviceAuthenticator,
         device_start_ahead_seconds: float = 120.0,
         upload_interval_seconds: float = 5.1,
+        mode: UploadMode = UploadMode.NORMAL,
     ) -> None:
         self.server_url = server_url.rstrip("/")
         self.meeting_id = meeting_id
         self.auth = authenticator
         self.device_start_ahead = device_start_ahead_seconds
         self.upload_interval = upload_interval_seconds
+        self.mode = mode
 
         self.device_start_time: datetime | None = None
         self.device_utterance_id = 0
@@ -83,7 +101,9 @@ class Simulator:
 
         return self.utterances
 
-    def _upload_one(self, utt: UtteranceSlice) -> int | None:
+    def _upload_one(
+        self, utt: UtteranceSlice, recorded_at: int | None = None
+    ) -> int | None:
         """Upload a single utterance with retries for transient errors."""
         if not Path(utt.opus_path).exists():
             raise FileNotFoundError(f"Opus file not found: {utt.opus_path}")
@@ -92,6 +112,15 @@ class Simulator:
             audio_bytes = f.read()
 
         filename = f"rec_{self.device_utterance_id:05d}.opus"
+
+        # Build request data; recorded_at is the device's UTC epoch timestamp
+        data = {
+            "utterance_id": str(self.device_utterance_id),
+            "chunk_index": "0",
+            "is_final": "true",
+        }
+        if recorded_at is not None:
+            data["recorded_at"] = str(recorded_at)
 
         # Retry transient errors (timeout, connect) with backoff
         for attempt in range(3):
@@ -105,17 +134,19 @@ class Simulator:
                         files={
                             "file": (filename, audio_bytes, "application/octet-stream"),
                         },
-                        data={
-                            "utterance_id": str(self.device_utterance_id),
-                            "chunk_index": "0",
-                            "is_final": "true",
-                        },
+                        data=data,
                     )
-                except (httpx.ReadTimeout, httpx.ConnectError, httpx.NetworkError) as exc:
+                except (
+                    httpx.ReadTimeout,
+                    httpx.ConnectError,
+                    httpx.NetworkError,
+                ) as exc:
                     if attempt < 2:
-                        time.sleep(2 ** attempt)
+                        time.sleep(2**attempt)
                         continue
-                    raise RuntimeError(f"Upload request failed after 3 attempts: {exc}") from exc
+                    raise RuntimeError(
+                        f"Upload request failed after 3 attempts: {exc}"
+                    ) from exc
                 except httpx.RequestError as exc:
                     raise RuntimeError(f"Upload request failed: {exc}") from exc
 
@@ -129,11 +160,7 @@ class Simulator:
                         files={
                             "file": (filename, audio_bytes, "application/octet-stream"),
                         },
-                        data={
-                            "utterance_id": str(self.device_utterance_id),
-                            "chunk_index": "0",
-                            "is_final": "true",
-                        },
+                        data=data,
                     )
 
                 if resp.status_code not in (200, 201):
@@ -147,7 +174,13 @@ class Simulator:
         return None
 
     def upload_all(self) -> list[int]:
-        """Upload all prepared utterances in real-time replay order.
+        """Upload all prepared utterances.
+
+        In NORMAL mode: uploads in recording order with current timestamps (device
+        just finished recording). In OUT_OF_ORDER mode: shuffles upload order but
+        uses true recording timestamps so server orders correctly by recorded_at.
+        In DELAYED mode: timestamps are 7 days in the past, simulating an offline
+        recording session that syncs much later.
 
         Returns:
             list of server-assigned utterance IDs.
@@ -155,27 +188,44 @@ class Simulator:
         if not self.utterances:
             raise RuntimeError("No utterances prepared. Call prepare() first.")
 
+        # DELAYED mode: device_start_ahead of 7 days so recorded_at is ~7 days ago.
+        # This exercises the server's ±7-day timestamp validation.
+        device_start_ahead = self.device_start_ahead
+        if self.mode == UploadMode.DELAYED:
+            device_start_ahead = 7 * 24 * 3600
+
         self.device_start_time = datetime.now(UTC) - timedelta(
-            seconds=self.device_start_ahead,
+            seconds=device_start_ahead
         )
         self.uploaded_server_ids = []
 
-        for utt in self.utterances:
-            target_time = self.device_start_time + timedelta(seconds=utt.start_s)
-            now = datetime.now(UTC)
-            wait_s = (target_time - now).total_seconds()
-            if wait_s > 0:
-                time.sleep(wait_s)
+        # OUT_OF_ORDER mode: shuffle upload order but compute recorded_at from
+        # original start_s so the server sees true recording timestamps.
+        upload_order = self.utterances[:]
+        if self.mode == UploadMode.OUT_OF_ORDER:
+            random.shuffle(upload_order)
 
-            server_id = self._upload_one(utt)
+        for utt in upload_order:
+            # recorded_at = device boot + audio start offset (Unix epoch seconds)
+            target_time = self.device_start_time + timedelta(seconds=utt.start_s)
+            recorded_at = int(target_time.timestamp())
+
+            # Only sleep for NORMAL mode — out-of-order/delayed skip timing simulation
+            if self.mode == UploadMode.NORMAL:
+                now = datetime.now(UTC)
+                wait_s = (target_time - now).total_seconds()
+                if wait_s > 0:
+                    time.sleep(wait_s)
+
+            server_id = self._upload_one(utt, recorded_at=recorded_at)
             if server_id is not None:
                 self.uploaded_server_ids.append(int(server_id))
 
             self.device_utterance_id += 1
             self.chunk_index = 0
 
-            # Sleep between uploads (skip on last)
-            if utt != self.utterances[-1]:
+            # Sleep between uploads (skip on last); only in NORMAL mode
+            if self.mode == UploadMode.NORMAL and utt != upload_order[-1]:
                 time.sleep(self.upload_interval)
 
         return self.uploaded_server_ids
