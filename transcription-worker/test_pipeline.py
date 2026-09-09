@@ -16,6 +16,7 @@ from pipeline import (
     _register_omegaconf_safe_globals,
     group_into_speaker_segments,
     quick_transcribe,
+    release_gpu_cache,
     transcribe_audio,
     unload_models,
 )
@@ -399,3 +400,30 @@ def test_unload_models_calls_gc_collect_and_empty_cache(monkeypatch):
     fake_torch.cuda.synchronize.assert_called_once_with()
     fake_torch.cuda.empty_cache.assert_called_once_with()
     assert models == {}
+
+
+def test_release_gpu_cache_returns_blocks_to_driver(monkeypatch):
+    """``release_gpu_cache`` syncs + empties the cached allocator so the
+    post-job high-water mark is returned to the driver without unloading
+    models (freed full-session workspace blocks otherwise stay cached
+    in-process until the process exits)."""
+    fake_torch = MagicMock()
+    fake_torch.cuda.is_available.return_value = True
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    release_gpu_cache()
+
+    fake_torch.cuda.synchronize.assert_called_once_with()
+    fake_torch.cuda.empty_cache.assert_called_once_with()
+
+
+def test_release_gpu_cache_noop_without_cuda(monkeypatch):
+    """CPU-only environments must not touch the CUDA API."""
+    fake_torch = MagicMock()
+    fake_torch.cuda.is_available.return_value = False
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    release_gpu_cache()
+
+    fake_torch.cuda.synchronize.assert_not_called()
+    fake_torch.cuda.empty_cache.assert_not_called()

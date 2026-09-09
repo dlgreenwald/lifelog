@@ -173,3 +173,100 @@ def test_resolve_no_valid_audio_400():
     assert response.status_code == 400
     assert response.json()["detail"] == "no valid audio"
     embed.assert_not_called()
+
+
+# --- CUDA OOM retry behavior ---
+
+
+def _oom():
+    import torch
+
+    return torch.OutOfMemoryError("CUDA out of memory")
+
+
+def test_resolve_oom_retry_recovers_segment():
+    """A segment that OOMs once is retried after empty_cache and counted."""
+    with (
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            side_effect=[_oom(), np.array([2.0, 0.0])],
+        ) as embed,
+        patch("speaker_id.routes.opus_to_wav", return_value=b"wav"),
+        patch("speaker_id.routes.torch.cuda.empty_cache") as empty_cache,
+    ):
+        response = _resolve_client().post(
+            "/resolve",
+            json={
+                "audio_b64": [base64.b64encode(b"fake-opus").decode()],
+                "voiceprints": [],
+            },
+        )
+    assert response.status_code == 200
+    assert embed.call_count == 2
+    empty_cache.assert_called_once_with()
+    np.testing.assert_allclose(response.json()["centroid"], [1.0, 0.0], atol=1e-6)
+
+
+def test_resolve_oom_retry_exhausted_skips_segment_but_keeps_others(caplog):
+    """Persistent OOM drops only that segment — with a logged warning."""
+    with (
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            side_effect=[_oom(), _oom(), np.array([0.0, 3.0])],
+        ) as embed,
+        patch("speaker_id.routes.opus_to_wav", return_value=b"wav"),
+    ):
+        response = _resolve_client().post(
+            "/resolve",
+            json={
+                "audio_b64": [
+                    base64.b64encode(b"fake-opus").decode(),
+                    base64.b64encode(b"fake-opus").decode(),
+                ],
+                "voiceprints": [],
+            },
+        )
+    assert response.status_code == 200
+    assert embed.call_count == 3
+    np.testing.assert_allclose(response.json()["centroid"], [0.0, 1.0], atol=1e-6)
+    assert "segment_skipped_after_oom_retry" in caplog.text
+
+
+def test_resolve_oom_exhausted_all_segments_returns_400():
+    """Zero embeddings after exhausted retries is a 400, not a 500."""
+    with (
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            side_effect=[_oom(), _oom()],
+        ),
+        patch("speaker_id.routes.opus_to_wav", return_value=b"wav"),
+    ):
+        response = _resolve_client().post(
+            "/resolve",
+            json={
+                "audio_b64": [base64.b64encode(b"fake-opus").decode()],
+                "voiceprints": [],
+            },
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "no valid audio"
+
+
+def test_resolve_non_oom_runtime_error_skips_without_retry():
+    """Non-OOM RuntimeErrors skip immediately — one attempt, no retry."""
+    with (
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            side_effect=[RuntimeError("decode failed")],
+        ) as embed,
+        patch("speaker_id.routes.opus_to_wav", return_value=b"wav"),
+    ):
+        response = _resolve_client().post(
+            "/resolve",
+            json={
+                "audio_b64": [base64.b64encode(b"fake-opus").decode()],
+                "voiceprints": [],
+            },
+        )
+    assert response.status_code == 400
+    assert embed.call_count == 1

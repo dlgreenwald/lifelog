@@ -1,4 +1,10 @@
 # Repository Guidelines
+## ⚠️ Agent Execution Rules
+- Always use parallel subagents (task tool) for exploration, searching, test-running, and multi-file reading. Main agent should only receive summaries and make decisions/edits.
+- Batch independent read-only investigation into one task[] call.
+- **NEVER** run grep, find, or multi-file cat in the main thread.
+- For ANY search, exploration, or codebase scan, you MUST use the `task` tool to spawn a subagent running on the cheap model tier.
+- Main thread is strictly reserved for planning, final edits, and review.
 
 ## ⚠️ Commit Rule
 
@@ -210,8 +216,8 @@ docker-compose logs -f server  # Tail orchestrator logs
 # Python services (each in its own venv)
 cd server && .venv/bin/python -m pytest tests/ -q        # 180 tests
 cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
-cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 15 tests
-cd transcription-worker && python -m pytest -q           # 25 tests
+cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 19 tests
+cd transcription-worker && python -m pytest -q           # 35 tests
 
 # Dashboard (108 tests pass)
 cd dashboard && npx vitest run                            # 108 tests
@@ -400,7 +406,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - Dashboard has `package-lock.json` for reproducible npm installs; uses **shadcn/ui** (Base UI) components with Tailwind CSS 3
 - Docker images use CUDA runtime for GPU services; dashboard uses `node:24-alpine` → `nginx:alpine`
 - GPU services require NVIDIA runtime with CUDA
-- Transcription worker: **`ASR_COMPUTE_TYPE=int8`** is **required on 16 GiB GPU cards** (RTX 4060/5070, RTX 5060 Ti). At float16 the combined load of WhisperX large-v3 + pyannote diarization exceeds 16 GiB when Ollama or other processes share the card. int8 drops memory usage to ~4000–5000 MiB, leaving headroom for concurrent speaker-id inference. Set via `ASR_COMPUTE_TYPE=int8` environment variable in `docker-compose.yml`.
+- Transcription worker: **`ASR_COMPUTE_TYPE=int8`** is **required on 16 GiB GPU cards** (RTX 4060/5070, RTX 5060 Ti); at float16 the WhisperX ASR load alone overflows the card once Ollama shares it. int8 quantizes only the Whisper encoder — wav2vec2 alignment and pyannote diarization stay fp32 — for a ~3.5 GiB loaded-model floor. Full-session jobs push torch's caching allocator to a ~12 GiB high-water mark, so the worker calls `release_gpu_cache()` after every job (returns workspace blocks to the driver without unloading models), and both GPU services set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` to curb fragmentation growth. Do not remove the post-job release: speaker-id hit repeated CUDA OOM against the retained peak on 2026-09-09 before it existed.
 - SSL certs are generated at compose level (command overrides), not baked into Dockerfiles
 
 ## Testing & QA
@@ -435,7 +441,7 @@ A failed build produces `conclusion: failure` for that component's job in `ci.ym
 
 ### Test counts
 
-Total: **~404 tests** across 6 components (180 server + 8 diarization + 15 speaker-id + 29 transcription-worker + 108 dashboard + 69 firmware-ota).
+Total: **~428 tests** across 6 components (180 server + 8 diarization + 19 speaker-id + 35 transcription-worker + 108 dashboard + 78 firmware-ota).
 ### Python test framework
 
 - **pytest** with `pytest-asyncio` (`asyncio_mode = "auto"`)
@@ -499,7 +505,7 @@ Before merging any change:
 0. **Build**: Run the component's `build.sh` (or `pio test -e test` for firmware) — this catches lint errors, format drift, pip-audit CVEs, and test failures before they reach CI. Never commit if `build.sh` reports any failures.
 1. **Lint**: `ruff check src/ tests/` passes on all Python services (0 errors)
 2. **Type check**: `npx tsc --noEmit` passes on dashboard (0 errors)
-3. **Tests**: All ~404 tests pass across all 6 components
+3. **Tests**: All ~428 tests pass across all 6 components
 4. **No regressions**: Existing functionality not broken
 
 Python services use these ruff rules (in `pyproject.toml`):
@@ -531,9 +537,9 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | `build.sh` | Runs all component builds, reports pass/fail |
 | `server/build.sh` | venv bootstrap (uv) → ruff lint → pytest (180 tests) |
 | `diarization/build.sh` | venv bootstrap (uv) → ruff lint → pytest (8 tests) |
-| `speaker-id/build.sh` | venv bootstrap (uv) → ruff lint → pytest (15 tests) |
+| `speaker-id/build.sh` | venv bootstrap (uv) → ruff lint → pytest (19 tests) |
 | `dashboard/build.sh` | tsc type check → vite build → vitest (108 tests) → bundle size |
-| `transcription-worker/build.sh` | venv bootstrap (uv) → ruff lint → py_compile → pytest (29 tests) |
+| `transcription-worker/build.sh` | venv bootstrap (uv) → ruff lint → py_compile → pytest (35 tests) |
 
 **Run everything:**
 

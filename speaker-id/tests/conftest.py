@@ -52,6 +52,13 @@ _fake_torch = MagicMock()
 _fake_torch.tensor = lambda x, dtype=None: _Tensor(x)
 _fake_torch.nn.functional = _fake_functional
 
+
+class _FakeOutOfMemoryError(RuntimeError):
+    """Stand-in for ``torch.OutOfMemoryError`` (a RuntimeError subclass)."""
+
+
+_fake_torch.OutOfMemoryError = _FakeOutOfMemoryError
+
 sys.modules.setdefault("torch", _fake_torch)
 sys.modules.setdefault("torch.nn", MagicMock())
 sys.modules["torch.nn"].functional = _fake_functional

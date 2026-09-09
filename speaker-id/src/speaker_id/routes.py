@@ -1,12 +1,16 @@
 import base64
+import logging
 import subprocess
 import tempfile
 
 import numpy as np
+import torch
 from fastapi import APIRouter, HTTPException
 
 from speaker_id.config import settings
 from speaker_id.embeddings import encoder
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -62,7 +66,20 @@ async def resolve_speaker(data: dict):
             wav_bytes = opus_to_wav(audio_bytes)
         try:
             embeddings.append(encoder.extract_embedding(wav_bytes))
-        except (RuntimeError, OSError):
+        except torch.OutOfMemoryError:
+            # The CUDA caching allocator already retried internally before
+            # raising; one more attempt after empty_cache can still fit when
+            # driver memory frees between failures (a concurrent request
+            # completing, or the transcription worker's post-job release).
+            logger.warning("cuda_oom_retrying_segment")
+            torch.cuda.empty_cache()
+            try:
+                embeddings.append(encoder.extract_embedding(wav_bytes))
+            except (RuntimeError, OSError) as retry_exc:
+                logger.warning("segment_skipped_after_oom_retry error=%s", retry_exc)
+                continue
+        except (RuntimeError, OSError) as exc:
+            logger.warning("segment_skipped_embedding_failed error=%s", exc)
             continue
 
     if not embeddings:

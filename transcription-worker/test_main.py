@@ -1,7 +1,9 @@
 import asyncio
+import base64
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
 
@@ -86,6 +88,10 @@ def test_check_idle_unloads_after_timeout_plus_warmup(fresh_model_manager, monke
     main_mod.model_manager._last_activity = time.time() - 10000
     monkeypatch.setattr(main_mod.settings, "idle_unload_seconds", 5)
     monkeypatch.setattr(main_mod.settings, "warm_keepalive_seconds", 1)
+    # Default is 900s, not 0: without pinning this, the restart stage
+    # os._exit(0)s the pytest process mid-suite (exit code 0 = green CI
+    # with a truncated run).
+    monkeypatch.setattr(main_mod.settings, "idle_process_restart_seconds", 0)
     main_mod.model_manager._check_idle()
     assert unload_marker.call_count == 1
 
@@ -165,3 +171,73 @@ def test_check_idle_does_not_exit_before_unload_threshold(
     with patch("os._exit") as exit_marker:
         main_mod.model_manager._check_idle()
     exit_marker.assert_not_called()
+
+
+# ---------- Post-job GPU cache release ----------
+
+
+def _job_client(payload: dict) -> MagicMock:
+    audio_response = MagicMock()
+    audio_response.json.return_value = payload
+    complete_response = MagicMock(status_code=200)
+    client = MagicMock()
+    client.get = AsyncMock(return_value=audio_response)
+    client.post = AsyncMock(return_value=complete_response)
+    return client
+
+
+def test_process_job_releases_gpu_cache_after_completion():
+    """Completed jobs return the allocator's full-session high-water mark
+    to the driver — without this the worker ratchets to ~12 GiB on a
+    16 GiB card and starves speaker-id into CUDA OOM."""
+    import main as main_mod
+
+    client = _job_client(
+        {
+            "audio_segments": [base64.b64encode(b"opus-bytes").decode()],
+            "timestamps": [0],
+        }
+    )
+    with (
+        patch.object(main_mod.model_manager, "load", return_value={}),
+        patch.object(main_mod.model_manager, "begin_job"),
+        patch.object(main_mod.model_manager, "record_activity"),
+        patch.object(main_mod.model_manager, "end_job"),
+        patch(
+            "main.concatenate_segments_with_spans",
+            return_value=(np.zeros(4, dtype=np.float32), 16000, [(0.0, 1.0)]),
+        ),
+        patch("main.transcribe_audio", return_value={"segments": []}),
+        patch("main.release_gpu_cache") as release,
+    ):
+        asyncio.run(main_mod._process_job(client, {"job_id": 3, "job_type": "quick"}))
+
+    release.assert_called_once_with()
+
+
+def test_process_job_releases_gpu_cache_on_failure():
+    """Failed jobs (e.g. VAD 'no active speech') also release the peak."""
+    import main as main_mod
+
+    client = _job_client(
+        {
+            "audio_segments": [base64.b64encode(b"opus-bytes").decode()],
+            "timestamps": [0],
+        }
+    )
+    with (
+        patch.object(main_mod.model_manager, "load", return_value={}),
+        patch.object(main_mod.model_manager, "begin_job"),
+        patch.object(main_mod.model_manager, "record_activity"),
+        patch.object(main_mod.model_manager, "end_job"),
+        patch(
+            "main.concatenate_segments_with_spans",
+            return_value=(np.zeros(4, dtype=np.float32), 16000, [(0.0, 1.0)]),
+        ),
+        patch("main.transcribe_audio", side_effect=ValueError("no active speech")),
+        patch("main.release_gpu_cache") as release,
+        pytest.raises(ValueError),
+    ):
+        asyncio.run(main_mod._process_job(client, {"job_id": 4, "job_type": "quick"}))
+
+    release.assert_called_once_with()

@@ -66,6 +66,10 @@ services:
       - ASR_MODEL=large-v3
       - ASR_DEVICE=cuda
       - ASR_COMPUTE_TYPE=int8
+      # Curb cached-allocator fragmentation across full-session jobs;
+      # the post-job release_gpu_cache() call (main._process_job)
+      # returns the high-water mark to the driver.
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - HF_TOKEN=${HF_TOKEN}
       - IDLE_UNLOAD_SECONDS=${TRANSCRIPTION_IDLE_UNLOAD_SECONDS:-300}
       - WARM_KEEPALIVE_SECONDS=${TRANSCRIPTION_WARM_KEEPALIVE_SECONDS:-60}
@@ -107,6 +111,9 @@ services:
       - "8445:8443"
     environment:
       - HF_TOKEN=${HF_TOKEN}
+      # Keep the ECAPA allocator from fragmenting when the shared card
+      # is squeezed by the transcription worker's full-session peak.
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     deploy:
       resources:
         reservations:
@@ -118,6 +125,9 @@ services:
       uvicorn speaker_id.main:app
         --host 0.0.0.0
         --port 8443
+    # Match the transcription worker: resurrect after hard crashes
+    # (e.g. CUDA context corruption) so /resolve stays available.
+    restart: unless-stopped
 
   # Web dashboard - No DB access
   dashboard:
