@@ -199,6 +199,10 @@ async def test_get_unknown_speakers(mock_conn):
     with patch("lifelog.database.pool", pool):
         result = await get_unknown_speakers(1)
 
+    # speaker_segments is a json column; jsonb functions need the explicit cast
+    sql = mock_conn.fetch.call_args.args[0]
+    assert "jsonb_typeof(speaker_segments::jsonb)" in sql
+    assert "THEN speaker_segments::jsonb ELSE '[]'::jsonb END" in sql
     assert len(result) == 1
 
 

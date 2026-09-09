@@ -374,8 +374,8 @@ async def get_unknown_speakers(user_id: int) -> list[dict]:
                          THEN speakers ELSE '[]'::jsonb END) e
                     WHERE e->>'name' = 'Unknown' OR e->>'name' LIKE 'SPEAKER_%')
                 OR EXISTS (SELECT 1 FROM jsonb_array_elements(
-                    CASE WHEN jsonb_typeof(speaker_segments) = 'array'
-                         THEN speaker_segments ELSE '[]'::jsonb END) e
+                    CASE WHEN jsonb_typeof(speaker_segments::jsonb) = 'array'
+                         THEN speaker_segments::jsonb ELSE '[]'::jsonb END) e
                     WHERE e->>'speaker' = 'Unknown'
                        OR e->>'speaker' LIKE 'SPEAKER_%'))
             """,
@@ -475,8 +475,8 @@ async def rename_speaker(user_id: int, speaker_id: int, new_name: str) -> bool:
                   speaker_segments = (SELECT COALESCE(jsonb_agg(
                       CASE WHEN elem->>'speaker' = $2 THEN jsonb_set(elem, '{speaker}', $3::jsonb)
                            ELSE elem END), '[]'::jsonb)
-                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speaker_segments) = 'array'
-                         THEN speaker_segments ELSE '[]'::jsonb END) elem)
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speaker_segments::jsonb) = 'array'
+                         THEN speaker_segments::jsonb ELSE '[]'::jsonb END) elem)
                 WHERE user_id = $1
                 """,
             user_id,
@@ -519,8 +519,8 @@ async def merge_speakers(user_id: int, source_id: int, target_id: int) -> bool:
                            jsonb_set(elem, '{speaker}', $3::jsonb),
                            '{speaker_id}', $4::text::jsonb)
                            ELSE elem END), '[]'::jsonb)
-                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speaker_segments) = 'array'
-                         THEN speaker_segments ELSE '[]'::jsonb END) elem)
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speaker_segments::jsonb) = 'array'
+                         THEN speaker_segments::jsonb ELSE '[]'::jsonb END) elem)
                 WHERE user_id = $1
                 """,
             user_id,
@@ -562,8 +562,8 @@ async def delete_speaker(user_id: int, speaker_id: int) -> bool:
                            elem, '{speaker}',
                            COALESCE(elem->>'raw_speaker', 'Unknown')::jsonb) - 'speaker_id'
                            ELSE elem END), '[]'::jsonb)
-                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speaker_segments) = 'array'
-                         THEN speaker_segments ELSE '[]'::jsonb END) elem)
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speaker_segments::jsonb) = 'array'
+                         THEN speaker_segments::jsonb ELSE '[]'::jsonb END) elem)
                 WHERE user_id = $1
                 """,
             user_id,
