@@ -1,6 +1,7 @@
 """Unit tests for speaker-id utility functions and mock integration tests for routes."""
 
-from unittest.mock import MagicMock, patch
+import base64
+from unittest.mock import patch
 
 import numpy as np
 
@@ -44,60 +45,45 @@ def test_cosine_similarity_partial():
     assert abs(cosine_similarity(a, b) - expected) < 1e-6
 
 
-def test_match_voiceprint_exact_match():
-    """Exact embedding match returns the speaker name."""
-    from speaker_id.routes import match_voiceprint
+def test_compute_centroid_normalizes_before_and_after_mean():
+    """Centroid is the renormalized mean of L2-normalized embeddings."""
+    from speaker_id.routes import compute_centroid
 
-    embedding = np.array([1.0, 0.0, 0.0])
+    embeddings = [np.array([3.0, 0.0, 0.0]), np.array([0.0, 4.0, 0.0])]
+    centroid = compute_centroid(embeddings)
+
+    # normalize([[3,0,0],[0,4,0]]) = [[1,0,0],[0,1,0]]; mean=[0.5,0.5,0];
+    # renormalized -> [0.7071, 0.7071, 0] — NOT the raw mean [0.6, 0.8, 0].
+    expected = np.array([0.70710678, 0.70710678, 0.0])
+    np.testing.assert_allclose(centroid, expected, atol=1e-6)
+
+
+def test_match_centroid_best_above_threshold():
+    """Best similarity above threshold wins and carries speaker_id."""
+    from speaker_id.routes import match_centroid
+
+    centroid = np.array([1.0, 0.0])
     voiceprints = [
-        {"name": "Alice", "embedding": [1.0, 0.0, 0.0]},
+        {"speaker_id": 7, "name": "Alice", "embedding": [0.0, 1.0]},
+        {"speaker_id": 3, "name": "Bob", "embedding": [1.0, 0.0]},
     ]
-
-    result = match_voiceprint(embedding, voiceprints, threshold=0.5)
-    assert result == "Alice"
-
-
-def test_match_voiceprint_below_threshold():
-    """Dissimilar embedding returns Unknown."""
-    from speaker_id.routes import match_voiceprint
-
-    embedding = np.array([1.0, 0.0, 0.0])
-    voiceprints = [
-        {"name": "Alice", "embedding": [0.0, 1.0, 0.0]},
-    ]
-
-    result = match_voiceprint(embedding, voiceprints, threshold=0.9)
-    assert result == "Unknown"
+    match = match_centroid(centroid, voiceprints, threshold=0.75)
+    assert match is not None
+    assert match["speaker_id"] == 3
+    assert match["name"] == "Bob"
+    assert abs(match["similarity"] - 1.0) < 1e-6
 
 
-def test_match_voiceprint_best_match():
-    """Best matching voiceprint is returned when multiple exist."""
-    from speaker_id.routes import match_voiceprint
+def test_match_centroid_no_match_below_threshold():
+    """No similarity above threshold returns None."""
+    from speaker_id.routes import match_centroid
 
-    embedding = np.array([1.0, 0.0, 0.0])
-    voiceprints = [
-        {"name": "Alice", "embedding": [0.0, 1.0, 0.0]},  # orthogonal
-        {"name": "Bob", "embedding": [0.9, 0.1, 0.0]},  # very similar
-    ]
-
-    result = match_voiceprint(embedding, voiceprints, threshold=0.5)
-    assert result == "Bob"
+    centroid = np.array([1.0, 0.0])
+    voiceprints = [{"speaker_id": 7, "name": "Alice", "embedding": [0.0, 1.0]}]
+    assert match_centroid(centroid, voiceprints, threshold=0.75) is None
 
 
-def test_match_voiceprint_empty_voiceprints():
-    """No voiceprints returns Unknown."""
-    from speaker_id.routes import match_voiceprint
-
-    embedding = np.array([1.0, 0.0])
-    result = match_voiceprint(embedding, [], threshold=0.5)
-    assert result == "Unknown"
-
-
-# --- Mock integration tests for routes ---
-
-
-def test_identify_speakers():
-    """Identify endpoint returns segments with Unknown names."""
+def _resolve_client():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -105,111 +91,182 @@ def test_identify_speakers():
 
     app = FastAPI()
     app.include_router(router)
+    return TestClient(app)
 
-    client = TestClient(app)
-    response = client.post(
-        "/identify",
-        json={
-            "segments": [
-                {"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0},
-                {"speaker": "SPEAKER_01", "start": 2.0, "end": 4.0},
-            ],
-            "voiceprints": [],
-            "audio_format": "opus",
-        },
-    )
 
+def test_resolve_matched():
+    """Resolve returns centroid and best matching speaker_id."""
+    with (
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            return_value=np.array([3.0, 0.0]),
+        ),
+        patch("speaker_id.routes.opus_to_wav", return_value=b"wav"),
+    ):
+        response = _resolve_client().post(
+            "/resolve",
+            json={
+                "audio_b64": [base64.b64encode(b"fake-opus").decode()],
+                "voiceprints": [
+                    {"speaker_id": 7, "name": "Alice", "embedding": [1.0, 0.0]}
+                ],
+            },
+        )
     assert response.status_code == 200
     data = response.json()
-    assert len(data["speakers"]) == 2
-    assert data["speakers"][0]["name"] == "SPEAKER_00"
-    assert data["speakers"][1]["name"] == "SPEAKER_01"
+    assert data["match"]["speaker_id"] == 7
+    assert data["match"]["name"] == "Alice"
+    np.testing.assert_allclose(data["centroid"], [1.0, 0.0], atol=1e-6)
 
 
-def test_identify_speakers_matches_voiceprint_from_audio():
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from speaker_id.routes import router
-
-    app = FastAPI()
-    app.include_router(router)
+def test_resolve_unmatched():
+    """Resolve with no similar voiceprint returns match None."""
     with (
-        patch("speaker_id.routes._extract_segment_wav", return_value=b"wav"),
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            return_value=np.array([0.0, 5.0]),
+        ),
+        patch("speaker_id.routes.opus_to_wav", return_value=b"wav"),
+    ):
+        response = _resolve_client().post(
+            "/resolve",
+            json={
+                "audio_b64": [base64.b64encode(b"fake-opus").decode()],
+                "voiceprints": [
+                    {"speaker_id": 7, "name": "Alice", "embedding": [1.0, 0.0]}
+                ],
+            },
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["match"] is None
+    np.testing.assert_allclose(data["centroid"], [0.0, 1.0], atol=1e-6)
+
+
+def test_resolve_riff_passthrough_skips_opus_conversion():
+    """RIFF-headed audio is used as-is without opus_to_wav."""
+    wav = b"RIFF" + b"\x00" * 32
+    with (
         patch(
             "speaker_id.routes.encoder.extract_embedding",
             return_value=np.array([1.0, 0.0]),
-        ),
-        patch("speaker_id.routes.match_voiceprint", return_value="Alice") as match,
+        ) as embed,
+        patch("speaker_id.routes.opus_to_wav") as convert,
     ):
-        response = TestClient(app).post(
-            "/identify",
+        response = _resolve_client().post(
+            "/resolve",
+            json={"audio_b64": [base64.b64encode(wav).decode()], "voiceprints": []},
+        )
+    assert response.status_code == 200
+    convert.assert_not_called()
+    embed.assert_called_once_with(wav)
+    assert response.json()["match"] is None
+
+
+def test_resolve_no_valid_audio_400():
+    """No decodable audio returns 400."""
+    with patch("speaker_id.routes.encoder.extract_embedding") as embed:
+        response = _resolve_client().post(
+            "/resolve",
+            json={"audio_b64": ["not-base64!!"], "voiceprints": []},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "no valid audio"
+    embed.assert_not_called()
+
+
+# --- CUDA OOM retry behavior ---
+
+
+def _oom():
+    import torch
+
+    return torch.OutOfMemoryError("CUDA out of memory")
+
+
+def test_resolve_oom_retry_recovers_segment():
+    """A segment that OOMs once is retried after empty_cache and counted."""
+    with (
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            side_effect=[_oom(), np.array([2.0, 0.0])],
+        ) as embed,
+        patch("speaker_id.routes.opus_to_wav", return_value=b"wav"),
+        patch("speaker_id.routes.torch.cuda.empty_cache") as empty_cache,
+    ):
+        response = _resolve_client().post(
+            "/resolve",
             json={
-                "segments": [
-                    {"speaker": "SPEAKER_00", "start": 0, "end": 1, "text": "hi"}
-                ],
-                "audio_bytes": "YXVkaW8=",
-                "audio_format": "wav",
-                "voiceprints": [{"name": "Alice", "embedding": [1.0, 0.0]}],
+                "audio_b64": [base64.b64encode(b"fake-opus").decode()],
+                "voiceprints": [],
             },
         )
-    assert response.json()["speakers"][0]["name"] == "Alice"
-    match.assert_called_once()
-
-
-def test_identify_speakers_preserves_segment_data():
-    """Identify endpoint preserves original segment fields."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from speaker_id.routes import router
-
-    app = FastAPI()
-    app.include_router(router)
-
-    client = TestClient(app)
-    response = client.post(
-        "/identify",
-        json={
-            "segments": [
-                {"speaker": "SPEAKER_00", "start": 1.5, "end": 3.2, "text": "Hello"},
-            ],
-            "voiceprints": [],
-        },
-    )
-
     assert response.status_code == 200
-    seg = response.json()["speakers"][0]
-    assert seg["start"] == 1.5
-    assert seg["end"] == 3.2
-    assert seg["text"] == "Hello"
+    assert embed.call_count == 2
+    empty_cache.assert_called_once_with()
+    np.testing.assert_allclose(response.json()["centroid"], [1.0, 0.0], atol=1e-6)
 
 
-def test_enroll_speaker():
-    """Enroll endpoint extracts embedding and returns it."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from speaker_id.routes import router
-
-    app = FastAPI()
-    app.include_router(router)
-
-    mock_embedding = np.array([0.1, 0.2, 0.3, 0.4])
-
-    mock_encoder = MagicMock()
-    mock_encoder.extract_embedding.return_value = mock_embedding
-
-    with patch("speaker_id.routes.encoder", mock_encoder):
-        with patch("speaker_id.routes.opus_to_wav", return_value=b"fake-wav"):
-            client = TestClient(app)
-            response = client.post(
-                "/enroll?name=Alice",
-                files={"file": ("voice.opus", b"fake-opus", "audio/opus")},
-            )
-
+def test_resolve_oom_retry_exhausted_skips_segment_but_keeps_others(caplog):
+    """Persistent OOM drops only that segment — with a logged warning."""
+    with (
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            side_effect=[_oom(), _oom(), np.array([0.0, 3.0])],
+        ) as embed,
+        patch("speaker_id.routes.opus_to_wav", return_value=b"wav"),
+    ):
+        response = _resolve_client().post(
+            "/resolve",
+            json={
+                "audio_b64": [
+                    base64.b64encode(b"fake-opus").decode(),
+                    base64.b64encode(b"fake-opus").decode(),
+                ],
+                "voiceprints": [],
+            },
+        )
     assert response.status_code == 200
-    data = response.json()
-    assert data["name"] == "Alice"
-    assert len(data["embedding"]) == 4
-    assert abs(data["embedding"][0] - 0.1) < 1e-6
+    assert embed.call_count == 3
+    np.testing.assert_allclose(response.json()["centroid"], [0.0, 1.0], atol=1e-6)
+    assert "segment_skipped_after_oom_retry" in caplog.text
+
+
+def test_resolve_oom_exhausted_all_segments_returns_400():
+    """Zero embeddings after exhausted retries is a 400, not a 500."""
+    with (
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            side_effect=[_oom(), _oom()],
+        ),
+        patch("speaker_id.routes.opus_to_wav", return_value=b"wav"),
+    ):
+        response = _resolve_client().post(
+            "/resolve",
+            json={
+                "audio_b64": [base64.b64encode(b"fake-opus").decode()],
+                "voiceprints": [],
+            },
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "no valid audio"
+
+
+def test_resolve_non_oom_runtime_error_skips_without_retry():
+    """Non-OOM RuntimeErrors skip immediately — one attempt, no retry."""
+    with (
+        patch(
+            "speaker_id.routes.encoder.extract_embedding",
+            side_effect=[RuntimeError("decode failed")],
+        ) as embed,
+        patch("speaker_id.routes.opus_to_wav", return_value=b"wav"),
+    ):
+        response = _resolve_client().post(
+            "/resolve",
+            json={
+                "audio_b64": [base64.b64encode(b"fake-opus").decode()],
+                "voiceprints": [],
+            },
+        )
+    assert response.status_code == 400
+    assert embed.call_count == 1

@@ -15,7 +15,10 @@ from fastapi import FastAPI
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from audio import concatenate_segments, concatenate_segments_with_spans
-from pipeline import transcribe_audio  # load_models called via model_manager.load()
+from pipeline import (  # load_models called via model_manager.load()
+    release_gpu_cache,
+    transcribe_audio,
+)
 
 logger = logging.getLogger("transcription-worker")
 
@@ -311,6 +314,15 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
         raise
     finally:
         model_manager.end_job()
+        # Post-job release: the allocator's full-session high-water mark
+        # (~12 GiB on a 16 GiB card) would otherwise stay reserved until
+        # process exit, starving speaker-id and ollama on the shared GPU.
+        release_gpu_cache()
+        logger.info(
+            "gpu_cache_released job_id=%d allocated_mib=%d",
+            job_id,
+            _cuda_allocated_mib(),
+        )
 
 
 async def poll_once(client: httpx.AsyncClient) -> bool:

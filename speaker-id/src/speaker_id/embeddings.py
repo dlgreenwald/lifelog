@@ -1,3 +1,4 @@
+import gc
 import logging
 import threading
 import time
@@ -19,6 +20,8 @@ class SpeakerEncoder:
     def __init__(self):
         self.encoder = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb",
+            hparams_file="",
+            use_auth_token=settings.hf_token,
             run_opts={"device": settings.device},
         )
 
@@ -57,8 +60,21 @@ class SpeakerEncoder:
 
         waveform_tensor = torch.from_numpy(waveform).unsqueeze(0)  # [1, time]
 
-        embeddings = self.encoder.encode_batch(waveform_tensor)
-        return embeddings.squeeze().cpu().numpy()
+        # Encode under no_grad to prevent autograd memory accumulation
+        with torch.no_grad():
+            embeddings = self.encoder.encode_batch(waveform_tensor)
+
+        result = embeddings.squeeze().cpu().numpy()
+
+        # Free CUDA buffers immediately after inference
+        del waveform_tensor
+        del embeddings
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        return result
 
 
 class ModelManager:
@@ -66,7 +82,8 @@ class ModelManager:
 
     def __init__(self):
         self._encoder = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._active_jobs = 0  # Count of in-flight inference requests
         self._last_access = 0.0
         self._watchdog_thread = None
         self._stop_event = threading.Event()
@@ -91,27 +108,30 @@ class ModelManager:
 
     def _check_idle(self):
         """Check if model has been idle too long and unload it."""
-        if self._encoder is None:
-            return
+        with self._lock:
+            # Never unload while inference is in progress
+            if self._active_jobs > 0:
+                return
 
-        idle_time = time.time() - self._last_access
-        if idle_time >= IDLE_TIMEOUT:
-            with self._lock:
-                # Re-check after acquiring lock — another thread may have accessed
-                idle_time = time.time() - self._last_access
-                if self._encoder is not None and idle_time >= IDLE_TIMEOUT:
-                    logger.info(
-                        "Model idle for %.1fs (timeout: %ds), unloading to free GPU memory",
-                        idle_time,
-                        IDLE_TIMEOUT,
-                    )
-                    del self._encoder
-                    self._encoder = None
-                    import torch
+            if self._encoder is None:
+                return
 
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    logger.info("Model unloaded and GPU memory cleared")
+            idle_time = time.time() - self._last_access
+            if idle_time >= IDLE_TIMEOUT:
+                logger.info(
+                    "Model idle for %.1fs (timeout: %ds), unloading to free GPU memory",
+                    idle_time,
+                    IDLE_TIMEOUT,
+                )
+                del self._encoder
+                self._encoder = None
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                logger.info("Model unloaded and GPU memory cleared")
 
     def _load_model(self) -> SpeakerEncoder:
         """Load the ECAPA-TDNN model."""
@@ -123,15 +143,24 @@ class ModelManager:
     def get_encoder(self):
         """Get the encoder, loading if necessary. Thread-safe."""
         with self._lock:
+            self._active_jobs += 1
             self._last_access = time.time()
             if self._encoder is None:
                 self._encoder = self._load_model()
             return self._encoder
 
+    def _release_encoder(self):
+        """Decrement active job counter after inference completes."""
+        with self._lock:
+            self._active_jobs -= 1
+
     def extract_embedding(self, audio_bytes: bytes) -> np.ndarray:
         """Extract ECAPA-TDNN embedding from audio segment."""
-        speaker_encoder = self.get_encoder()
-        return speaker_encoder.extract_embedding(audio_bytes)
+        encoder = self.get_encoder()
+        try:
+            return encoder.extract_embedding(audio_bytes)
+        finally:
+            self._release_encoder()
 
     def shutdown(self):
         """Stop the watchdog thread and unload model."""
@@ -145,7 +174,9 @@ class ModelManager:
                 import torch
 
                 if torch.cuda.is_available():
+                    torch.cuda.synchronize()
                     torch.cuda.empty_cache()
+                    gc.collect()
         logger.info("Model manager shut down")
 
 

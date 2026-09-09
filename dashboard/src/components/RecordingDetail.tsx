@@ -325,7 +325,9 @@ export default function RecordingDetail() {
                   .map((speaker, i) => (
                     <li key={i}>
                       <span>{speaker.name}</span>
-                      <button onClick={() => labelSpeaker(speaker)}>Label</button>
+                      {speaker.speaker_id != null && (
+                        <button onClick={() => labelSpeaker(speaker)}>Label</button>
+                      )}
                     </li>
                   ))}
               </ul>
@@ -486,12 +488,13 @@ export default function RecordingDetail() {
     </div>
   );
 
-  async function labelSpeaker(speaker: { id: number; name: string }) {
-    const name = prompt(`Enter a name for ${speaker.name}:`);
+  async function labelSpeaker(speaker: { id: number; name: string; speaker_id?: number }) {
+    if (!speaker.speaker_id) return;
+    const name = prompt(`Enter a new name for ${speaker.name}:`);
     if (!name?.trim()) return;
-    const recordingId = recording!.id as number;
-    await api.labelSpeaker(recordingId, speaker.name as string, name.trim());
+    await api.renameSpeaker(speaker.speaker_id, name.trim());
     // Reload recording to reflect updated labels
+    const recordingId = recording!.id as number;
     const updated = await api.getRecording(String(recordingId));
     setRecording(updated);
   }

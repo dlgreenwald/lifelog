@@ -1,6 +1,6 @@
-"""Mock integration tests for speaker label route."""
+"""Mock integration tests for speaker rename/merge/delete routes."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -23,68 +23,148 @@ def _app_with_mocks(oidc_user=None):
 
 
 @pytest.mark.asyncio
-async def test_label_speaker():
-    """Label speaker: update name, enroll embedding, save voiceprint, re-run ID."""
-    mock_user = {"id": 1, "name": "Test", "encryption_secret": "sec"}
-    mock_recording = {
-        "id": 10,
-        "user_id": 1,
-        "audio_filename": "rec-abc.enc",
-        "speakers": [{"name": "Unknown"}],
-    }
+async def test_rename_speaker():
+    """Rename returns ok with the new name."""
+    app = _app_with_mocks()
 
-    mock_enroll_response = MagicMock()
-    mock_enroll_response.json.return_value = {"name": "Alice", "embedding": [1, 2, 3]}
-
-    mock_http_client = AsyncMock()
-    mock_http_client.post.return_value = mock_enroll_response
-    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
-    mock_http_client.__aexit__ = AsyncMock(return_value=False)
-
-    app = _app_with_mocks(mock_user)
-
-    with (
-        patch(
-            "lifelog.routes.speakers.get_recording",
-            new_callable=AsyncMock,
-            return_value=mock_recording,
-        ),
-        patch("lifelog.routes.speakers.update_speaker_name", new_callable=AsyncMock),
-        patch(
-            "lifelog.routes.speakers.extract_speaker_audio", return_value=b"fake-audio"
-        ),
-        patch(
-            "lifelog.routes.speakers.httpx.AsyncClient", return_value=mock_http_client
-        ),
-        patch("lifelog.routes.speakers.save_voiceprint", new_callable=AsyncMock),
-        patch("lifelog.routes.speakers.rerun_identification", new_callable=AsyncMock),
-    ):
+    with patch(
+        "lifelog.routes.speakers.rename_speaker",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as mock_rename:
         client = TestClient(app)
         response = client.post(
-            "/label",
-            json={"recording_id": 10, "speaker_id": "Unknown", "label": "Alice"},
+            "/rename", json={"speaker_id": 9, "name": "Alice Ashford"}
         )
 
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "labeled"
-    assert data["label"] == "Alice"
+    assert data == {"ok": True, "speaker_id": 9, "name": "Alice Ashford"}
+    mock_rename.assert_awaited_once_with(1, 9, "Alice Ashford")
 
 
 @pytest.mark.asyncio
-async def test_label_speaker_recording_not_found():
-    """Labeling a non-existent recording returns 404."""
+async def test_rename_speaker_not_found():
+    """Renaming an unknown speaker returns 404."""
     app = _app_with_mocks()
 
     with patch(
-        "lifelog.routes.speakers.get_recording",
+        "lifelog.routes.speakers.rename_speaker",
         new_callable=AsyncMock,
-        return_value=None,
+        return_value=False,
     ):
         client = TestClient(app)
         response = client.post(
-            "/label",
-            json={"recording_id": 999, "speaker_id": "Unknown", "label": "Alice"},
+            "/rename", json={"speaker_id": 999, "name": "Alice Ashford"}
         )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Speaker not found"
+
+
+@pytest.mark.asyncio
+async def test_rename_speaker_duplicate_name():
+    """Renaming to an existing name returns 409."""
+    import asyncpg
+
+    app = _app_with_mocks()
+
+    async def raise_duplicate(*args, **kwargs):
+        raise asyncpg.UniqueViolationError("duplicate key value")
+
+    with patch(
+        "lifelog.routes.speakers.rename_speaker",
+        new_callable=AsyncMock,
+        side_effect=raise_duplicate,
+    ):
+        client = TestClient(app)
+        response = client.post(
+            "/rename", json={"speaker_id": 9, "name": "Alice Ashford"}
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Speaker name already exists"
+
+
+@pytest.mark.asyncio
+async def test_merge_speakers():
+    """Merge returns ok with the target id."""
+    app = _app_with_mocks()
+
+    with patch(
+        "lifelog.routes.speakers.merge_speakers",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as mock_merge:
+        client = TestClient(app)
+        response = client.post("/merge", json={"source_id": 3, "target_id": 9})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "speaker_id": 9}
+    mock_merge.assert_awaited_once_with(1, 3, 9)
+
+
+@pytest.mark.asyncio
+async def test_merge_speakers_self_merge():
+    """Merging a speaker into itself returns 400."""
+    app = _app_with_mocks()
+
+    with patch(
+        "lifelog.routes.speakers.merge_speakers", new_callable=AsyncMock
+    ) as mock_merge:
+        client = TestClient(app)
+        response = client.post("/merge", json={"source_id": 9, "target_id": 9})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Cannot merge a speaker into itself"
+    mock_merge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_merge_speakers_not_found():
+    """Merging an unknown speaker returns 404."""
+    app = _app_with_mocks()
+
+    with patch(
+        "lifelog.routes.speakers.merge_speakers",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        client = TestClient(app)
+        response = client.post("/merge", json={"source_id": 3, "target_id": 999})
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_speaker():
+    """Delete returns ok."""
+    app = _app_with_mocks()
+
+    with patch(
+        "lifelog.routes.speakers.delete_speaker",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as mock_delete:
+        client = TestClient(app)
+        response = client.delete("/9")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    mock_delete.assert_awaited_once_with(1, 9)
+
+
+@pytest.mark.asyncio
+async def test_delete_speaker_not_found():
+    """Deleting an unknown speaker returns 404."""
+    app = _app_with_mocks()
+
+    with patch(
+        "lifelog.routes.speakers.delete_speaker",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        client = TestClient(app)
+        response = client.delete("/999")
 
     assert response.status_code == 404

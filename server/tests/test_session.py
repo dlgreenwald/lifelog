@@ -559,7 +559,7 @@ class TestHourlyReprocessing:
                 "lifelog.worker.summarize",
                 return_value={"summary": "s", "todos": [], "calendar": [], "notes": []},
             ),
-            patch("lifelog.worker._auto_enroll_speakers", new_callable=AsyncMock),
+            patch("lifelog.worker._reidentify_recording", new_callable=AsyncMock),
             patch("lifelog.worker._daily_reprocess_user", new_callable=AsyncMock),
         ):
             mock_db.get_sessions_for_reprocessing = AsyncMock(return_value=[session])

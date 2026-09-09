@@ -1,10 +1,10 @@
 """Background worker for encrypted upload and asynchronous transcription jobs."""
 
 import asyncio
+import re
 import time
 from datetime import UTC, datetime, timedelta
 
-import httpx
 import structlog
 
 import lifelog.database as db
@@ -12,6 +12,7 @@ from lifelog.config import settings
 from lifelog.crypto import audio_crypto
 from lifelog.database import delete_utterance_chunks, get_utterance_chunks
 from lifelog.pipeline.llm import summarize
+from lifelog.speaker_names import generate_speaker_name
 
 logger = structlog.get_logger()
 POLL_INTERVAL = 60.0
@@ -603,100 +604,12 @@ def _normalise_summary(result: dict) -> dict:
     return result
 
 
-async def _auto_enroll_speakers(user: dict, speaker_segments: list[dict]) -> None:
-    """Enroll raw speaker labels from the current recording when possible."""
-    from lifelog.pipeline.speaker_client import serialize_embedding
-
-    voiceprints = await db.get_all_voiceprints(user["id"])
-    known = {voiceprint["name"] for voiceprint in voiceprints}
-    grouped: dict[str, list[bytes]] = {}
-    for segment in speaker_segments:
-        label = segment.get("speaker") or segment.get("name") or "Unknown"
-        filename = segment.get("audio_filename")
-        if label in {"Unknown", ""} or label in known or not filename:
-            continue
-        try:
-            audio = audio_crypto.decrypt_audio(
-                filename, user["encryption_secret"], bytes(user["key_salt"])
-            )
-        except Exception:
-            logger.warning("skipping_corrupt_audio", label=label, exc_info=True)
-            continue
-        grouped.setdefault(label, []).append(audio)
-
-    for label, audio_files in grouped.items():
-        if not audio_files:
-            continue
-        opus_audio = audio_files[0]
-        try:
-            async with httpx.AsyncClient(timeout=300) as client:
-                response = await client.post(
-                    f"{settings.speaker_id_url}/enroll",
-                    params={"name": label},
-                    files={"file": ("speaker.opus", opus_audio, "audio/opus")},
-                )
-                response.raise_for_status()
-                embedding = response.json()["embedding"]
-            await db.save_voiceprint(user["id"], label, serialize_embedding(embedding))
-            known.add(label)
-            logger.info("voiceprint_auto_enrolled", label=label)
-        except Exception:
-            logger.exception("auto_enroll_error", label=label)
-
-
-async def _enroll_session_speakers(
-    user: dict, all_partitions: list[list[dict]]
-) -> None:
-    """Enroll speakers from ALL partitions, not just partition 0.
-
-    Called after all partitions are saved so that speakers appearing only in
-    partitions 1+ (after a >5-min gap) get enrolled for cross-recording matching.
-    """
-    from lifelog.pipeline.speaker_client import serialize_embedding
-
-    voiceprints = await db.get_all_voiceprints(user["id"])
-    known = {vp["name"] for vp in voiceprints}
-
-    # Collect all unique speakers across all partitions
-    all_speakers: dict[str, bytes] = {}
-    for partition in all_partitions:
-        for segment in partition:
-            label = segment.get("speaker") or segment.get("name") or "Unknown"
-            if label in {"Unknown", ""} or label in known or label in all_speakers:
-                continue
-            filename = segment.get("audio_filename")
-            if not filename:
-                continue
-            try:
-                audio = audio_crypto.decrypt_audio(
-                    filename, user["encryption_secret"], bytes(user["key_salt"])
-                )
-                all_speakers[label] = audio
-            except Exception:
-                logger.warning(
-                    "skipping_corrupt_audio_for_speaker", label=label, exc_info=True
-                )
-
-    for label, opus_audio in all_speakers.items():
-        try:
-            async with httpx.AsyncClient(timeout=300) as client:
-                response = await client.post(
-                    f"{settings.speaker_id_url}/enroll",
-                    params={"name": label},
-                    files={"file": ("speaker.opus", opus_audio, "audio/opus")},
-                )
-                response.raise_for_status()
-                embedding = response.json()["embedding"]
-            await db.save_voiceprint(user["id"], label, serialize_embedding(embedding))
-            known.add(label)
-            logger.info("speaker_enrolled_from_partitions", label=label)
-        except Exception:
-            logger.exception("speaker_enroll_error", label=label)
+RAW_LABEL_RE = re.compile(r"^SPEAKER_\d+$")
 
 
 async def _reidentify_recording(user: dict, recording: dict) -> None:
-    """Re-identify raw labels and update all persisted recording structures."""
-    from lifelog.pipeline.speaker_client import identify_speakers
+    """Resolve raw speaker labels to speaker entities and persist the result."""
+    from lifelog.pipeline.speaker_client import resolve_speaker, serialize_embedding
 
     raw_segments = recording.get("speaker_segments") or []
     # asyncpg may return JSONB as a string (especially if double-encoded)
@@ -713,24 +626,14 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
         except (json.JSONDecodeError, ValueError, TypeError):
             segments = []
     if not segments:
-        filename = recording.get("audio_filename")
-        if not filename:
-            return
-        try:
-            audio = audio_crypto.decrypt_audio(
-                filename, user["encryption_secret"], bytes(user["key_salt"])
-            )
-            identified = await identify_speakers(
-                recording.get("speakers", []), audio, user["id"]
-            )
-            await db.update_recording_speakers(recording["id"], identified)
-        except Exception:
-            logger.exception(
-                "reidentify_recording_error", recording_id=recording.get("id")
-            )
+        logger.info("recording_no_speaker_segments", recording_id=recording.get("id"))
         return
-    updated = []
-    labels: dict[str, str] = {}
+
+    existing_names = {vp["name"] for vp in await db.get_all_voiceprints(user["id"])}
+
+    # Group segments needing resolution by raw label, preserving items in order.
+    items: list[dict] = []
+    groups: dict[str, list[dict]] = {}
     for segment in segments:
         if isinstance(segment, str):
             import json
@@ -744,24 +647,62 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
             if isinstance(segment, dict)
             else (segment.model_dump() if hasattr(segment, "model_dump") else segment)
         )
+        if not isinstance(item, dict):
+            continue
         raw = item.get("speaker") or item.get("name") or "Unknown"
-        filename = item.get("audio_filename")
-        if filename:
+        if raw == "Unknown" or RAW_LABEL_RE.match(raw):
+            groups.setdefault(raw, []).append(item)
+        items.append(item)
+
+    labels: dict[str, dict] = {}
+    for raw, group in groups.items():
+        audios: list[bytes] = []
+        for item in group:
+            filename = item.get("audio_filename")
+            if not filename:
+                continue
             try:
-                audio = audio_crypto.decrypt_audio(
-                    filename, user["encryption_secret"], bytes(user["key_salt"])
+                audios.append(
+                    audio_crypto.decrypt_audio(
+                        filename,
+                        user["encryption_secret"],
+                        bytes(user["key_salt"]),
+                    )
                 )
-                identified = await identify_speakers(
-                    [{"speaker": raw, "start": 0, "end": 1}],
-                    audio,
-                    user["id"],
-                    audio_format="wav",
-                )
-                if identified and identified[0].get("name") not in {None, "Unknown"}:
-                    labels[raw] = identified[0]["name"]
             except Exception:
-                logger.warning("segment_reidentify_error", raw=raw, exc_info=True)
-        item["speaker"] = labels.get(raw, raw)
+                logger.warning("skipping_corrupt_audio", raw=raw, exc_info=True)
+        if not audios:
+            continue
+        try:
+            result = await resolve_speaker(user, audios)
+            match = result.get("match")
+            if match:
+                await db.add_voiceprint(
+                    match["speaker_id"], serialize_embedding(result["centroid"])
+                )
+                labels[raw] = {
+                    "speaker_id": match["speaker_id"],
+                    "name": match["name"],
+                }
+            else:
+                name = generate_speaker_name(existing_names)
+                speaker = await db.create_speaker(user["id"], name)
+                await db.add_voiceprint(
+                    speaker["id"], serialize_embedding(result["centroid"])
+                )
+                existing_names.add(name)
+                labels[raw] = {"speaker_id": speaker["id"], "name": name}
+        except Exception:
+            logger.exception("speaker_resolve_error", raw=raw)
+
+    updated = []
+    for item in items:
+        raw = item.get("speaker") or item.get("name") or "Unknown"
+        resolved = labels.get(raw)
+        item["raw_speaker"] = raw
+        if resolved:
+            item["speaker"] = resolved["name"]
+            item["speaker_id"] = resolved["speaker_id"]
         updated.append(item)
     speakers = [
         {
@@ -770,6 +711,7 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
             "start": item.get("start", 0),
             "end": item.get("end", 0),
             "text": item.get("text", ""),
+            "speaker_id": item.get("speaker_id"),
         }
         for index, item in enumerate(updated)
     ]
@@ -988,7 +930,6 @@ async def _finalize_completed_sessions() -> None:
                     partition_count=1,
                 )
                 await db.mark_session_processed(session["id"])
-                await _auto_enroll_speakers(user, persisted)
                 current = await db.get_recording(user["id"], recording_id)
                 if current:
                     await _reidentify_recording(user, current)
@@ -1069,7 +1010,6 @@ async def _finalize_completed_sessions() -> None:
                     partition_count=len(partitions),
                 )
                 await db.mark_session_processed(session["id"])
-                await _auto_enroll_speakers(user, persisted_0)
                 all_persisted = [persisted_0]
 
                 # Subsequent partitions — one new recording each, no todos/decisions
@@ -1118,9 +1058,6 @@ async def _finalize_completed_sessions() -> None:
                             partition_idx=idx,
                             session_id=session["id"],
                         )
-
-                # Enroll any speakers from partitions 1+ that weren't in partition 0
-                await _enroll_session_speakers(user, all_persisted)
 
                 # Re-identify and daily summary after all partitions created
                 current = await db.get_recording(user["id"], recording_id)

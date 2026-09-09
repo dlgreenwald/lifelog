@@ -19,12 +19,10 @@ def serialize_embedding(embedding: list[float] | bytes) -> bytes:
 logger = structlog.get_logger()
 
 
-async def identify_speakers(
-    segments: list[dict], audio_bytes: bytes, user_id: int, audio_format: str = "opus"
-) -> list[dict]:
-    """Send diarized segments and encoded audio to speaker-id-service."""
+async def resolve_speaker(user: dict, segment_audios: list[bytes]) -> dict:
+    """Centroid + match for one raw label's segment audio against the user's voiceprints."""
     start = time.monotonic()
-    voiceprints = await get_all_voiceprints(user_id)
+    voiceprints = await get_all_voiceprints(user["id"])
     voiceprint_data = []
     for vp in voiceprints:
         embedding = vp["embedding"]
@@ -33,35 +31,37 @@ async def identify_speakers(
                 embedding = json.loads(embedding.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 embedding = list(embedding)
-        voiceprint_data.append({"name": vp["name"], "embedding": list(embedding)})
+        voiceprint_data.append(
+            {
+                "speaker_id": vp["speaker_id"],
+                "name": vp["name"],
+                "embedding": list(embedding),
+            }
+        )
     logger.info(
-        "identifying_speakers",
-        segment_count=len(segments),
+        "resolving_speaker",
+        audio_count=len(segment_audios),
         voiceprint_count=len(voiceprint_data),
-        user_id=user_id,
+        user_id=user["id"],
     )
     async with httpx.AsyncClient(timeout=300) as client:
         response = await client.post(
-            f"{settings.speaker_id_url}/identify",
+            f"{settings.speaker_id_url}/resolve",
             json={
-                "segments": segments,
-                "audio_format": audio_format,
-                "audio_bytes": base64.b64encode(audio_bytes).decode("ascii"),
+                "audio_b64": [
+                    base64.b64encode(audio).decode("ascii") for audio in segment_audios
+                ],
                 "voiceprints": voiceprint_data,
             },
         )
         response.raise_for_status()
-        result = response.json()["speakers"]
+        result = response.json()
     duration = time.monotonic() - start
-    matched = [
-        speaker
-        for speaker in result
-        if speaker.get("name") and speaker["name"] != "Unknown"
-    ]
     logger.info(
-        "speaker_identification_complete",
+        "speaker_resolved",
         duration=duration,
-        result_count=len(result),
-        matched_count=len(matched),
+        audio_count=len(segment_audios),
+        voiceprint_count=len(voiceprint_data),
+        matched=result.get("match") is not None,
     )
     return result

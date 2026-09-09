@@ -54,10 +54,14 @@ class JobResult(BaseModel):
     utterance_ids: list[int] = Field(default_factory=list)
 
 
-class SpeakerLabel(BaseModel):
-    recording_id: int
-    speaker_id: str = Field(..., max_length=50)
-    label: str = Field(..., min_length=1, max_length=100)
+class SpeakerRename(BaseModel):
+    speaker_id: int
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class SpeakerMerge(BaseModel):
+    source_id: int
+    target_id: int
 
 
 class CreateTodo(BaseModel):

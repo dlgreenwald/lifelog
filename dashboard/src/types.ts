@@ -34,6 +34,14 @@ export interface Speaker {
   start: number;
   end: number;
   text: string;
+  speaker_id?: number;
+}
+
+export interface SpeakerSummary {
+  id: number;
+  name: string;
+  voiceprint_count: number;
+  recording_id: number | null;
 }
 
 export interface Todo {

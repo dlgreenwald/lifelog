@@ -8,16 +8,15 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_identify_speakers_client():
-    """identify_speakers() sends voiceprints and base64 audio."""
-    from lifelog.pipeline.speaker_client import identify_speakers
+async def test_resolve_speaker_client():
+    """resolve_speaker() sends base64 audio + voiceprint bodies to /resolve."""
+    from lifelog.pipeline.speaker_client import resolve_speaker
 
-    fake_voiceprints = [{"name": "Alice", "embedding": b"\x01\x02\x03"}]
+    fake_voiceprints = [{"speaker_id": 7, "name": "Alice", "embedding": b"[1.0, 0.0]"}]
     mock_response = MagicMock()
     mock_response.json.return_value = {
-        "speakers": [
-            {"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0, "name": "Alice"}
-        ]
+        "centroid": [1.0, 0.0],
+        "match": {"speaker_id": 7, "name": "Alice", "similarity": 0.9},
     }
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_response
@@ -35,16 +34,20 @@ async def test_identify_speakers_client():
         ),
     ):
         mock_vp.return_value = fake_voiceprints
-        result = await identify_speakers(
-            segments=[{"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0}],
-            audio_bytes=b"fake-audio",
-            user_id=1,
-        )
+        result = await resolve_speaker({"id": 1}, [b"audio-one", b"audio-two"])
 
-    assert len(result) == 1
+    url = mock_client.post.call_args.args[0]
+    assert url.endswith("/resolve")
     request_json = mock_client.post.call_args.kwargs["json"]
-    assert base64.b64decode(request_json["audio_bytes"]) == b"fake-audio"
-    assert result[0]["name"] == "Alice"
+    assert request_json["audio_b64"] == [
+        base64.b64encode(b"audio-one").decode(),
+        base64.b64encode(b"audio-two").decode(),
+    ]
+    assert request_json["voiceprints"] == [
+        {"speaker_id": 7, "name": "Alice", "embedding": [1.0, 0.0]}
+    ]
+    assert result["match"]["speaker_id"] == 7
+    assert result["centroid"] == [1.0, 0.0]
 
 
 def test_summarize():

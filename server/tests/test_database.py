@@ -199,21 +199,11 @@ async def test_get_unknown_speakers(mock_conn):
     with patch("lifelog.database.pool", pool):
         result = await get_unknown_speakers(1)
 
+    # speaker_segments is a json column; jsonb functions need the explicit cast
+    sql = mock_conn.fetch.call_args.args[0]
+    assert "jsonb_typeof(speaker_segments::jsonb)" in sql
+    assert "THEN speaker_segments::jsonb ELSE '[]'::jsonb END" in sql
     assert len(result) == 1
-
-
-@pytest.mark.asyncio
-async def test_update_speaker_name(mock_conn):
-    from lifelog.database import update_speaker_name
-
-    pool = _make_mock_pool(mock_conn)
-
-    with patch("lifelog.database.pool", pool):
-        await update_speaker_name(10, "Unknown", "Alice")
-
-    sql = mock_conn.execute.call_args.args[0]
-    assert "UPDATE recordings" in sql
-    assert "jsonb_set" in sql
 
 
 @pytest.mark.asyncio
@@ -221,29 +211,165 @@ async def test_get_all_voiceprints(mock_conn):
     from lifelog.database import get_all_voiceprints
 
     mock_conn.fetch.return_value = [
-        {"id": 1, "name": "Alice", "embedding": b"\x01\x02\x03"},
+        {"id": 1, "speaker_id": 7, "name": "Alice", "embedding": b"\x01\x02\x03"},
     ]
     pool = _make_mock_pool(mock_conn)
 
     with patch("lifelog.database.pool", pool):
         result = await get_all_voiceprints(1)
 
+    sql = mock_conn.fetch.call_args.args[0]
+    assert "JOIN speakers s" in sql
+    assert "vp.speaker_id" in sql
     assert len(result) == 1
+    assert result[0]["speaker_id"] == 7
     assert result[0]["name"] == "Alice"
 
 
 @pytest.mark.asyncio
-async def test_save_voiceprint(mock_conn):
-    from lifelog.database import save_voiceprint
+async def test_create_speaker(mock_conn):
+    from lifelog.database import create_speaker
 
+    mock_conn.fetchrow.return_value = {"id": 9, "name": "Alice Ashford"}
     pool = _make_mock_pool(mock_conn)
 
     with patch("lifelog.database.pool", pool):
-        await save_voiceprint(1, "Alice", b"\x01\x02\x03")
+        result = await create_speaker(1, "Alice Ashford")
 
-    sql = mock_conn.execute.call_args.args[0]
-    assert "INSERT INTO voiceprints" in sql
-    assert "ON CONFLICT" in sql
+    sql = mock_conn.fetchrow.call_args.args[0]
+    assert "INSERT INTO speakers (user_id, name)" in sql
+    assert result == {"id": 9, "name": "Alice Ashford"}
+
+
+@pytest.mark.asyncio
+async def test_add_voiceprint_no_upsert(mock_conn):
+    from lifelog.database import add_voiceprint
+
+    mock_conn.fetchval.return_value = 42
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        result = await add_voiceprint(9, b"\x01\x02\x03")
+
+    sql = mock_conn.fetchval.call_args.args[0]
+    assert "INSERT INTO voiceprints (speaker_id, embedding)" in sql
+    assert "ON CONFLICT" not in sql
+    assert result == 42
+
+
+@pytest.mark.asyncio
+async def test_get_speakers(mock_conn):
+    from lifelog.database import get_speakers
+
+    mock_conn.fetch.return_value = [
+        {"id": 9, "name": "Alice Ashford", "voiceprint_count": 2},
+    ]
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        result = await get_speakers(1)
+
+    sql = mock_conn.fetch.call_args.args[0]
+    assert "FROM speakers s" in sql
+    assert "COUNT(vp.id)" in sql
+    assert result[0]["voiceprint_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_rename_speaker(mock_conn):
+    from lifelog.database import rename_speaker
+
+    mock_conn.fetchrow.return_value = {"name": "Alice Ashford"}
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        result = await rename_speaker(1, 9, "Alicia Ashford")
+
+    assert result is True
+    execute_calls = [call.args[0] for call in mock_conn.execute.call_args_list]
+    assert any("UPDATE speakers SET name" in sql for sql in execute_calls)
+    rewrite = next(sql for sql in execute_calls if "UPDATE recordings" in sql)
+    assert "elem->>'name' = $2" in rewrite
+    assert "jsonb_set(elem, '{name}', $3::jsonb)" in rewrite
+
+
+@pytest.mark.asyncio
+async def test_rename_speaker_missing(mock_conn):
+    from lifelog.database import rename_speaker
+
+    mock_conn.fetchrow.return_value = None
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        result = await rename_speaker(1, 999, "Alicia Ashford")
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_merge_speakers(mock_conn):
+    from lifelog.database import merge_speakers
+
+    mock_conn.fetch.return_value = [
+        {"id": 3, "name": "Bob Brown"},
+        {"id": 9, "name": "Alice Ashford"},
+    ]
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        result = await merge_speakers(1, 3, 9)
+
+    assert result is True
+    execute_calls = [call.args[0] for call in mock_conn.execute.call_args_list]
+    assert any("UPDATE voiceprints SET speaker_id" in sql for sql in execute_calls)
+    rewrite = next(sql for sql in execute_calls if "UPDATE recordings" in sql)
+    assert "'{speaker_id}'" in rewrite
+    assert any("DELETE FROM speakers" in sql for sql in execute_calls)
+
+
+@pytest.mark.asyncio
+async def test_merge_speakers_missing(mock_conn):
+    from lifelog.database import merge_speakers
+
+    mock_conn.fetch.return_value = []
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        result = await merge_speakers(1, 3, 999)
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_delete_speaker(mock_conn):
+    from lifelog.database import delete_speaker
+
+    mock_conn.fetchrow.return_value = {"name": "Alice Ashford"}
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        result = await delete_speaker(1, 9)
+
+    assert result is True
+    execute_calls = [call.args[0] for call in mock_conn.execute.call_args_list]
+    rewrite = next(sql for sql in execute_calls if "UPDATE recordings" in sql)
+    assert "raw_speaker" in rewrite
+    assert "- 'speaker_id'" in rewrite
+    assert any("DELETE FROM voiceprints" in sql for sql in execute_calls)
+    assert any("DELETE FROM speakers" in sql for sql in execute_calls)
+
+
+@pytest.mark.asyncio
+async def test_delete_speaker_missing(mock_conn):
+    from lifelog.database import delete_speaker
+
+    mock_conn.fetchrow.return_value = None
+    pool = _make_mock_pool(mock_conn)
+
+    with patch("lifelog.database.pool", pool):
+        result = await delete_speaker(1, 999)
+
+    assert result is False
 
 
 @pytest.mark.asyncio
@@ -427,19 +553,6 @@ async def test_delete_decision(mock_conn):
 
     sql = mock_conn.execute.call_args.args[0]
     assert "DELETE FROM decisions" in sql
-
-
-@pytest.mark.asyncio
-async def test_update_recording_speakers(mock_conn):
-    from lifelog.database import update_recording_speakers
-
-    pool = _make_mock_pool(mock_conn)
-
-    with patch("lifelog.database.pool", pool):
-        await update_recording_speakers(10, [{"name": "Alice"}])
-
-    sql = mock_conn.execute.call_args.args[0]
-    assert "UPDATE recordings" in sql
 
 
 @pytest.mark.asyncio

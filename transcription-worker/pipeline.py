@@ -63,6 +63,25 @@ def unload_models(models: dict) -> None:
         # on every subsequent job (confirmed 2026-09-01, job 1880+).
 
 
+def release_gpu_cache() -> None:
+    """Return cached-allocator blocks to the driver without unloading models.
+
+    Full-session jobs (CTranslate2 batched ASR, full-waveform wav2vec2
+    alignment, full-waveform pyannote diarization) push torch's caching
+    allocator to a high-water mark near the card's capacity. Workspace
+    tensors freed at the end of a job stay cached in-process, so the
+    driver sees the historical peak reserved forever — starving the
+    other GPU tenants (speaker-id, ollama) until the process exits.
+    ``empty_cache()`` returns the unused blocks while the loaded model
+    weights stay allocated for the next job.
+    """
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
+
 from audio import waveform_to_numpy
 
 
