@@ -1,12 +1,17 @@
-FROM python:3.11-slim
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
 WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+    python3.11 \
+    python3.11-venv \
     ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python
+
+# Install GPU-enabled torch (must precede pip install of speechbrain to link CUDA libs)
+RUN pip install --no-cache-dir torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
 
 # Copy dependency files and install deps via stub
 COPY pyproject.toml .

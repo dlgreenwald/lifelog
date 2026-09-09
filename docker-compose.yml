@@ -24,7 +24,6 @@ services:
     ports:
       - "8444:8443"
     environment:
-
       - SPEAKER_ID_URL=${SPEAKER_ID_URL:-http://speaker-id:8443}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:11434/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-ollama}
@@ -106,6 +105,8 @@ services:
     build: ./speaker-id
     ports:
       - "8445:8443"
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
     deploy:
       resources:
         reservations:
