@@ -7,12 +7,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
     python3.11-venv \
     python3.11-distutils \
+    curl \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.11 /usr/local/bin/python
 
-# Bootstrap pip for Python 3.11
-RUN python3.11 -m ensurepip --upgrade
+# Bootstrap pip for Python 3.11 (ensurepip disabled on Ubuntu/Debian)
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
 
 # Install GPU-enabled torch (must precede pip install of speechbrain to link CUDA libs)
 RUN python3.11 -m pip install --no-cache-dir torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
