@@ -1,4 +1,5 @@
 import time
+from datetime import UTC, datetime
 
 import structlog
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, UploadFile
@@ -88,15 +89,18 @@ def _current_epoch() -> int:
     return int(time.time())
 
 
-async def _finalize_utterance(user_id: int, server_utt_id: int) -> None:
+async def _finalize_utterance(
+    user_id: int, server_utt_id: int, device_timestamp: datetime | None = None
+) -> None:
     """Enqueue a completed utterance for processing if not already queued."""
     async with database.pool.acquire() as conn:
         await conn.execute(
-            """INSERT INTO utterance_queue (user_id, utterance_id, status)
-               VALUES ($1, $2, 'pending')
+            """INSERT INTO utterance_queue (user_id, utterance_id, status, recorded_at)
+               VALUES ($1, $2, 'pending', $3)
                ON CONFLICT (user_id, utterance_id) DO NOTHING""",
             user_id,
             server_utt_id,
+            device_timestamp,
         )
     logger.info("utterance_enqueued", user_id=user_id, utterance_id=server_utt_id)
 
@@ -107,6 +111,7 @@ async def upload_audio(
     utterance_id: int = Form(...),
     chunk_index: int = Form(...),
     is_final: bool = Form(...),
+    recorded_at: int | None = Form(None),
     user: dict = Depends(validate_upload_auth),
 ):
     """Accept Opus audio chunk. Store it; worker processes on is_final.
@@ -122,6 +127,18 @@ async def upload_audio(
     if len(audio_bytes) > MAX_CHUNK_SIZE:
         raise HTTPException(status_code=413, detail="Chunk too large")
     user_id = user["id"]
+
+    # Compute wall-clock timestamp from device, if provided and sane
+    device_timestamp: datetime | None = None
+    if recorded_at is not None:
+        now = _current_epoch()
+        # Reject timestamps obviously wrong (device clock drifted years off)
+        if recorded_at <= now + 300 and recorded_at >= now - 604800:
+            device_timestamp = datetime.fromtimestamp(recorded_at, tz=UTC).replace(
+                tzinfo=None
+            )
+        else:
+            logger.warning("device_time_rejected", recorded_at=recorded_at, now=now)
 
     # Evict stale utterance tracking entries
     _evict_stale_utterances()
@@ -211,7 +228,7 @@ async def upload_audio(
             size_bytes=len(audio_bytes),
             sample_rate=rate,
         )
-        await _finalize_utterance(user_id, server_utt_id)
+        await _finalize_utterance(user_id, server_utt_id, device_timestamp)
         user_utterances.pop(device_utt, None)
         return {"status": "enqueued", "utterance_id": server_utt_id}
 

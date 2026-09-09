@@ -15,6 +15,9 @@ from lifelog.pipeline.llm import summarize
 from lifelog.speaker_names import generate_speaker_name
 
 logger = structlog.get_logger()
+# Naive datetime minimum — all postgres TIMESTAMP columns are naive (no tzinfo).
+# Used as sort fallback; comparisons between naive datetimes are well-defined.
+_NAIVE_MIN = datetime(1900, 1, 1)  # noqa: DTZ001
 POLL_INTERVAL = 60.0
 MAX_RETRY_COUNT = 3
 
@@ -121,7 +124,9 @@ async def process_utterance(user_id: int, utterance_id: int):
 
     queue_entry = await db.get_utterance_queue_entry(user_id, utterance_id)
     utterance_time = (
-        queue_entry["created_at"]
+        queue_entry["recorded_at"]
+        if queue_entry and queue_entry.get("recorded_at")
+        else queue_entry["created_at"]
         if queue_entry
         else datetime.now(UTC).replace(tzinfo=None)
     )
@@ -461,6 +466,9 @@ async def _reprocess_session(session: dict):
         logger.warning("session_no_utterances", session_id=session_id)
         await db.mark_session_processed(session_id)
         return
+    # Sort by created_at (device recording time, not upload order) so chunk_index
+    # reflects true chronological order even when device sends out of order.
+    utterances.sort(key=lambda u: u.get("created_at") or _NAIVE_MIN)
     existing = await db.get_transcription_jobs(session_id)
     existing_by_chunk = {
         job.get("chunk_index"): job
@@ -830,8 +838,11 @@ async def _finalize_completed_sessions() -> None:
             speaker_segments = []
             speaker_map = {}
             seen_windows: set[tuple] = set()
+            # Sort by window_start (UTC audio timestamp) to merge in true chronological
+            # order, regardless of device upload order or chunk_index assignment.
             for job in sorted(
-                full_jobs, key=lambda item: (item.get("chunk_index") or 0, item["id"])
+                full_jobs,
+                key=lambda item: (item.get("window_start") or _NAIVE_MIN, item["id"]),
             ):
                 # Skip duplicate windows (same start/end from reprocess rescheduling)
                 window = (job["window_start"], job["window_end"])

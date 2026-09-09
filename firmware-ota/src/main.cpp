@@ -41,6 +41,8 @@ DeviceSettings deviceSettings;
 KnownNetwork knownNetworks[MAX_KNOWN_NETWORKS];
 int knownNetworkCount = 0;
 
+// Timezone offset in seconds (read from NVS risaldash/tz after dash.begin())
+int32_t gmtOffset = 0;
 // ── Idle hook counters (per-core CPU usage) ────────────────────────
 
 static volatile uint32_t idleCount0 = 0;
@@ -549,6 +551,17 @@ void setup() {
     // - First boot (no saved creds) → captive portal AP, blocks until configured
     // - Saved creds → STA mode, connects to known network
     dash.begin();
+
+    // Requirement 3: read timezone offset from NVS (minutes east of UTC → seconds)
+    {
+        Preferences risalPrefs;
+        risalPrefs.begin("risaldash", true);
+        int32_t tzMinutes = risalPrefs.getInt("tz", 0);
+        risalPrefs.end();
+        gmtOffset = (int32_t)tzMinutes * 60;
+        ESP_LOGI("TIME", "gmtOffset=%ld seconds (%ld minutes east of UTC)", (long)gmtOffset, (long)tzMinutes);
+    }
+
     setupOTA();  // Register AFTER dash.begin() so we override RisalDash's /update routes
 
 #ifdef BUILD_DEVELOPMENT
