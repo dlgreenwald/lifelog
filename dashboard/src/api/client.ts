@@ -112,12 +112,20 @@ export const api = {
     }),
   getDailySummary: (date: string) => fetchApi(`/dashboard/daily-summary/${date}`),
   getActiveRecording: () => fetchApi('/dashboard/active-recording'),
-  labelSpeaker: (recordingId: number, speakerId: string, label: string) =>
-    fetchApi('/speakers/label', {
+  renameSpeaker: (speakerId: number, name: string) =>
+    fetchApi('/speakers/rename', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recording_id: recordingId, speaker_id: speakerId, label }),
+      body: JSON.stringify({ speaker_id: speakerId, name }),
     }),
+  mergeSpeakers: (sourceId: number, targetId: number) =>
+    fetchApi('/speakers/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_id: sourceId, target_id: targetId }),
+    }),
+  deleteSpeaker: (id: number) =>
+    fetchApi(`/speakers/${id}`, { method: 'DELETE' }),
   getSettings: () => fetchApi('/dashboard/settings'),
   saveSettings: (data: { language: string; llm_context: string }) =>
     fetchApi('/dashboard/settings', {

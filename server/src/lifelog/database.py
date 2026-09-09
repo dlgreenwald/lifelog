@@ -368,8 +368,16 @@ async def get_unknown_speakers(user_id: int) -> list[dict]:
             """
             SELECT id, timestamp, speakers, audio_filename, speaker_segments
             FROM recordings
-            WHERE user_id = $1
-              AND (speakers::text LIKE '%Unknown%' OR speakers::text LIKE '%SPEAKER_%')
+            WHERE user_id = $1 AND (
+                EXISTS (SELECT 1 FROM jsonb_array_elements(
+                    CASE WHEN jsonb_typeof(speakers) = 'array'
+                         THEN speakers ELSE '[]'::jsonb END) e
+                    WHERE e->>'name' = 'Unknown' OR e->>'name' LIKE 'SPEAKER_%')
+                OR EXISTS (SELECT 1 FROM jsonb_array_elements(
+                    CASE WHEN jsonb_typeof(speaker_segments) = 'array'
+                         THEN speaker_segments ELSE '[]'::jsonb END) e
+                    WHERE e->>'speaker' = 'Unknown'
+                       OR e->>'speaker' LIKE 'SPEAKER_%'))
             """,
             user_id,
         )
@@ -386,57 +394,188 @@ async def get_all_recordings_with_speakers(user_id: int) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-async def update_speaker_name(recording_id: int, old_name: str, new_name: str):
-    """Update speaker name in a recording."""
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE recordings
-            SET speakers = (
-                SELECT jsonb_agg(
-                    CASE
-                        WHEN elem->>'name' = $1 THEN jsonb_set(elem, '{name}', $3::jsonb)
-                        ELSE elem
-                    END
-                )
-                FROM jsonb_array_elements(speakers) AS elem
-            )
-            WHERE id = $2
-        """,
-            old_name,
-            recording_id,
-            new_name,
-        )
-
-
 async def get_all_voiceprints(user_id: int) -> list[dict]:
-    """Get all voiceprints for a user."""
+    """Get all voiceprints for a user, joined with speaker names."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, name, embedding
-            FROM voiceprints
-            WHERE user_id = $1
+            SELECT vp.id, vp.speaker_id, s.name, vp.embedding
+            FROM voiceprints vp
+            JOIN speakers s ON s.id = vp.speaker_id
+            WHERE s.user_id = $1
         """,
             user_id,
         )
         return [dict(row) for row in rows]
 
 
-async def save_voiceprint(user_id: int, name: str, embedding: bytes):
-    """Save or update a voiceprint."""
+async def create_speaker(user_id: int, name: str) -> dict:
+    """Create a new speaker for a user."""
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO voiceprints (user_id, name, embedding)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (user_id, name)
-            DO UPDATE SET embedding = $3
-        """,
+        row = await conn.fetchrow(
+            "INSERT INTO speakers (user_id, name) VALUES ($1, $2) RETURNING id, name",
             user_id,
             name,
+        )
+        return dict(row)
+
+
+async def add_voiceprint(speaker_id: int, embedding: bytes) -> int:
+    """Append a voiceprint to a speaker (accumulation is the point — no upsert)."""
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "INSERT INTO voiceprints (speaker_id, embedding) VALUES ($1, $2) RETURNING id",
+            speaker_id,
             embedding,
         )
+
+
+async def get_speakers(user_id: int) -> list[dict]:
+    """List a user's speakers with their voiceprint counts."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT s.id, s.name, COUNT(vp.id) AS voiceprint_count
+            FROM speakers s
+            LEFT JOIN voiceprints vp ON vp.speaker_id = s.id
+            WHERE s.user_id = $1
+            GROUP BY s.id, s.name
+            ORDER BY s.name
+        """,
+            user_id,
+        )
+        return [dict(row) for row in rows]
+
+
+async def rename_speaker(user_id: int, speaker_id: int, new_name: str) -> bool:
+    """Rename a speaker and rewrite its display name across recordings."""
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            "SELECT name FROM speakers WHERE id = $2 AND user_id = $1",
+            user_id,
+            speaker_id,
+        )
+        if row is None:
+            return False
+        old_name = row["name"]
+        await conn.execute(
+            "UPDATE speakers SET name = $3 WHERE id = $2",
+            user_id,
+            speaker_id,
+            new_name,
+        )
+        await conn.execute(
+            """
+                UPDATE recordings SET
+                  speakers = (SELECT COALESCE(jsonb_agg(
+                      CASE WHEN elem->>'name' = $2 THEN jsonb_set(elem, '{name}', $3::jsonb)
+                           ELSE elem END), '[]'::jsonb)
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speakers) = 'array'
+                         THEN speakers ELSE '[]'::jsonb END) elem),
+                  speaker_segments = (SELECT COALESCE(jsonb_agg(
+                      CASE WHEN elem->>'speaker' = $2 THEN jsonb_set(elem, '{speaker}', $3::jsonb)
+                           ELSE elem END), '[]'::jsonb)
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speaker_segments) = 'array'
+                         THEN speaker_segments ELSE '[]'::jsonb END) elem)
+                WHERE user_id = $1
+                """,
+            user_id,
+            old_name,
+            new_name,
+        )
+        return True
+
+
+async def merge_speakers(user_id: int, source_id: int, target_id: int) -> bool:
+    """Merge one speaker into another and rewrite recording display names."""
+    async with pool.acquire() as conn, conn.transaction():
+        rows = await conn.fetch(
+            "SELECT id, name FROM speakers WHERE user_id = $1 AND id = ANY($2)",
+            user_id,
+            [source_id, target_id],
+        )
+        by_id = {row["id"]: row["name"] for row in rows}
+        if len(by_id) != 2:
+            return False
+        source_name = by_id[source_id]
+        target_name = by_id[target_id]
+        await conn.execute(
+            "UPDATE voiceprints SET speaker_id = $2 WHERE speaker_id = $1",
+            source_id,
+            target_id,
+        )
+        await conn.execute(
+            """
+                UPDATE recordings SET
+                  speakers = (SELECT COALESCE(jsonb_agg(
+                      CASE WHEN elem->>'name' = $2 THEN jsonb_set(
+                           jsonb_set(elem, '{name}', $3::jsonb),
+                           '{speaker_id}', $4::text::jsonb)
+                           ELSE elem END), '[]'::jsonb)
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speakers) = 'array'
+                         THEN speakers ELSE '[]'::jsonb END) elem),
+                  speaker_segments = (SELECT COALESCE(jsonb_agg(
+                      CASE WHEN elem->>'speaker' = $2 THEN jsonb_set(
+                           jsonb_set(elem, '{speaker}', $3::jsonb),
+                           '{speaker_id}', $4::text::jsonb)
+                           ELSE elem END), '[]'::jsonb)
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speaker_segments) = 'array'
+                         THEN speaker_segments ELSE '[]'::jsonb END) elem)
+                WHERE user_id = $1
+                """,
+            user_id,
+            source_name,
+            target_name,
+            target_id,
+        )
+        await conn.execute(
+            "DELETE FROM speakers WHERE id = $1 AND user_id = $2",
+            source_id,
+            user_id,
+        )
+        return True
+
+
+async def delete_speaker(user_id: int, speaker_id: int) -> bool:
+    """Delete a speaker; recordings revert to raw labels for re-resolution."""
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            "SELECT name FROM speakers WHERE id = $2 AND user_id = $1",
+            user_id,
+            speaker_id,
+        )
+        if row is None:
+            return False
+        name = row["name"]
+        await conn.execute(
+            """
+                UPDATE recordings SET
+                  speakers = (SELECT COALESCE(jsonb_agg(
+                      CASE WHEN elem->>'name' = $2 THEN jsonb_set(
+                           elem, '{name}',
+                           COALESCE(elem->>'raw_speaker', 'Unknown')::jsonb) - 'speaker_id'
+                           ELSE elem END), '[]'::jsonb)
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speakers) = 'array'
+                         THEN speakers ELSE '[]'::jsonb END) elem),
+                  speaker_segments = (SELECT COALESCE(jsonb_agg(
+                      CASE WHEN elem->>'speaker' = $2 THEN jsonb_set(
+                           elem, '{speaker}',
+                           COALESCE(elem->>'raw_speaker', 'Unknown')::jsonb) - 'speaker_id'
+                           ELSE elem END), '[]'::jsonb)
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speaker_segments) = 'array'
+                         THEN speaker_segments ELSE '[]'::jsonb END) elem)
+                WHERE user_id = $1
+                """,
+            user_id,
+            name,
+        )
+        await conn.execute("DELETE FROM voiceprints WHERE speaker_id = $1", speaker_id)
+        await conn.execute(
+            "DELETE FROM speakers WHERE id = $1 AND user_id = $2",
+            speaker_id,
+            user_id,
+        )
+        return True
 
 
 async def get_todos(user_id: int) -> list[dict]:
@@ -710,20 +849,6 @@ async def delete_utterance_chunks(user_id: int, utterance_id: int):
             "DELETE FROM utterance_chunks WHERE user_id = $1 AND utterance_id = $2",
             user_id,
             utterance_id,
-        )
-
-
-async def update_recording_speakers(recording_id: int, speakers: list):
-    """Update speakers for a recording after re-identification."""
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE recordings
-            SET speakers = $1::jsonb
-            WHERE id = $2
-        """,
-            speakers,
-            recording_id,
         )
 
 

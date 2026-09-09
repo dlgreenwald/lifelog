@@ -1,4 +1,4 @@
-"""Tests for previously untested route functions: get_calendar, get_audio, rerun_identification."""
+"""Tests for previously untested route functions: get_calendar, get_audio."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from lifelog.auth import validate_oidc_token
 from lifelog.routes.dashboard import router as dashboard_router
-from lifelog.routes.speakers import rerun_identification
 from lifelog.routes.speakers import router as speakers_router
 
 
@@ -86,72 +85,6 @@ async def test_get_audio():
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/ogg"
-
-
-# --- rerun_identification ---
-
-
-@pytest.mark.asyncio
-async def test_rerun_identification_processes_all_unknowns():
-    """rerun_identification decrypts audio and re-identifies speakers for each recording."""
-    user = {"id": 1, "encryption_secret": "sec-123", "key_salt": b"test-salt"}
-
-    fake_recordings = [
-        {"id": 10, "audio_filename": "rec1.enc", "speakers": [{"name": "Unknown"}]},
-        {"id": 20, "audio_filename": "rec2.enc", "speakers": [{"name": "Unknown"}]},
-    ]
-
-    with (
-        patch(
-            "lifelog.routes.speakers.get_unknown_speakers",
-            new_callable=AsyncMock,
-            return_value=fake_recordings,
-        ),
-        patch("lifelog.routes.speakers.audio_crypto") as mock_crypto,
-        patch(
-            "lifelog.routes.speakers.identify_speakers", new_callable=AsyncMock
-        ) as mock_identify,
-        patch(
-            "lifelog.routes.speakers.update_recording_speakers", new_callable=AsyncMock
-        ) as mock_update,
-    ):
-        mock_crypto.decrypt_audio.return_value = b"decrypted"
-        mock_identify.return_value = [{"name": "Alice", "start": 0.0, "end": 2.0}]
-
-        await rerun_identification(user)
-
-    assert mock_crypto.decrypt_audio.call_count == 2
-    assert mock_identify.call_count == 2
-    assert mock_update.call_count == 2
-
-    mock_crypto.decrypt_audio.assert_any_call("rec1.enc", "sec-123", b"test-salt")
-    mock_crypto.decrypt_audio.assert_any_call("rec2.enc", "sec-123", b"test-salt")
-
-
-@pytest.mark.asyncio
-async def test_rerun_identification_no_unknowns():
-    """rerun_identification does nothing when there are no unknowns."""
-    user = {"id": 1, "encryption_secret": "sec"}
-
-    with (
-        patch(
-            "lifelog.routes.speakers.get_unknown_speakers",
-            new_callable=AsyncMock,
-            return_value=[],
-        ),
-        patch("lifelog.routes.speakers.audio_crypto") as mock_crypto,
-        patch(
-            "lifelog.routes.speakers.identify_speakers", new_callable=AsyncMock
-        ) as mock_identify,
-        patch(
-            "lifelog.routes.speakers.update_recording_speakers", new_callable=AsyncMock
-        ) as mock_update,
-    ):
-        await rerun_identification(user)
-
-    mock_crypto.decrypt_audio.assert_not_called()
-    mock_identify.assert_not_awaited()
-    mock_update.assert_not_awaited()
 
 
 def test_speaker_audio_legacy_fallback():

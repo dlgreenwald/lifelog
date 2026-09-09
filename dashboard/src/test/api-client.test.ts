@@ -244,20 +244,54 @@ describe('api client', () => {
     });
   });
 
-  describe('api.labelSpeaker', () => {
-    it('POSTs speaker label with correct body', async () => {
-      const data = { status: 'labeled', label: 'Alice' };
+  describe('api.renameSpeaker', () => {
+    it('POSTs speaker rename with correct body', async () => {
+      const data = { ok: true, speaker_id: 10, name: 'Alice' };
       mockFetch.mockReturnValueOnce(jsonResponse(data));
 
-      const result = await api.labelSpeaker(10, 'Unknown', 'Alice');
+      const result = await api.renameSpeaker(10, 'Alice');
 
       expect(mockFetch).toHaveBeenCalledWith(
-        '/api/v1/speakers/label',
+        '/api/v1/speakers/rename',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ recording_id: 10, speaker_id: 'Unknown', label: 'Alice' }),
+          body: JSON.stringify({ speaker_id: 10, name: 'Alice' }),
         }
+      );
+      expect(result).toEqual(data);
+    });
+  });
+
+  describe('api.mergeSpeakers', () => {
+    it('POSTs speaker merge with correct body', async () => {
+      const data = { ok: true, speaker_id: 3 };
+      mockFetch.mockReturnValueOnce(jsonResponse(data));
+
+      const result = await api.mergeSpeakers(1, 3);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/speakers/merge',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_id: 1, target_id: 3 }),
+        }
+      );
+      expect(result).toEqual(data);
+    });
+  });
+
+  describe('api.deleteSpeaker', () => {
+    it('DELETEs the speaker by id', async () => {
+      const data = { ok: true };
+      mockFetch.mockReturnValueOnce(jsonResponse(data));
+
+      const result = await api.deleteSpeaker(10);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/v1/speakers/10',
+        { method: 'DELETE', headers: {} }
       );
       expect(result).toEqual(data);
     });

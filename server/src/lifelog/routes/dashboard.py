@@ -25,13 +25,13 @@ from lifelog.database import (
     delete_todo,
     get_active_session_recording,
     get_all_recordings_with_speakers,
-    get_all_voiceprints,
     get_daily_summary,
     get_decision_owner,
     get_decisions,
     get_decisions_for_recording,
     get_recording,
     get_recordings_by_date,
+    get_speakers,
     get_todo_owner,
     get_todos,
     get_todos_for_date,
@@ -405,22 +405,20 @@ async def get_unknown_speakers_route(user: dict = Depends(validate_oidc_token)):
 
 @router.get("/speakers/all")
 async def get_all_speakers_route(user: dict = Depends(validate_oidc_token)):
-    """Get all unique speakers (labeled and unlabeled) across all recordings."""
-    voiceprints = await get_all_voiceprints(user["id"])
-    labeled_names = {vp["name"] for vp in voiceprints}
+    """Get all enrolled speakers with voiceprint counts and a preview recording."""
+    speakers = await get_speakers(user["id"])
     recordings = await get_all_recordings_with_speakers(user["id"])
-    speakers = {}
-    for rec in recordings:
-        for seg in rec.get("speakers") or []:
-            name = seg.get("name", "Unknown")
-            if name not in speakers:
-                speakers[name] = {
-                    "name": name,
-                    "labeled": name in labeled_names,
-                    "recording_id": rec["id"],
-                    "speaker_label": name,
-                }
-    return {"speakers": list(speakers.values())}
+    for speaker in speakers:
+        speaker["recording_id"] = None
+        for rec in recordings:
+            if any(
+                seg.get("name") == speaker["name"]
+                for seg in rec.get("speakers") or []
+                if isinstance(seg, dict)
+            ):
+                speaker["recording_id"] = rec["id"]
+                break
+    return {"speakers": speakers}
 
 
 @router.delete("/recording/{recording_id}")

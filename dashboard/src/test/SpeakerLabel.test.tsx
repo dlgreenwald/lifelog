@@ -7,116 +7,117 @@ import { api } from '../api/client';
 vi.mock('../api/client', () => ({
   api: {
     getAllSpeakers: vi.fn(),
-    labelSpeaker: vi.fn(),
+    renameSpeaker: vi.fn(),
+    mergeSpeakers: vi.fn(),
+    deleteSpeaker: vi.fn(),
   },
 }));
 
 const mockApi = vi.mocked(api);
 
+const alice = { id: 1, name: 'Alice Ashford', voiceprint_count: 2, recording_id: 5 };
+const bob = { id: 2, name: 'Bob Brown', voiceprint_count: 1, recording_id: null };
+
 beforeEach(() => {
   vi.clearAllMocks();
+  mockApi.getAllSpeakers.mockResolvedValue({ speakers: [alice, bob] });
 });
 
 describe('SpeakerLabel', () => {
-  it('loads and displays unlabeled speakers', async () => {
-    mockApi.getAllSpeakers.mockResolvedValue({
-      speakers: [
-        { name: 'SPEAKER_00', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_00' },
-        { name: 'SPEAKER_01', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_01' },
-      ],
-    });
+  it('renders speaker names and voiceprint counts', async () => {
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('SPEAKER_00').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('Alice Ashford')).toBeInTheDocument();
     });
+    expect(screen.getByText('Bob Brown')).toBeInTheDocument();
+    expect(screen.getByText('2 voiceprints')).toBeInTheDocument();
+    expect(screen.getByText('1 voiceprints')).toBeInTheDocument();
     expect(mockApi.getAllSpeakers).toHaveBeenCalled();
   });
 
-  it('shows label form when segment is clicked', async () => {
-    const user = userEvent.setup();
-    mockApi.getAllSpeakers.mockResolvedValue({
-      speakers: [
-        { name: 'SPEAKER_00', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_00' },
-      ],
-    });
+  it('renders audio preview only for speakers with a recording', async () => {
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('SPEAKER_00').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByTestId('speaker-audio-1')).toBeInTheDocument();
     });
-
-    await user.click(screen.getAllByText('SPEAKER_00')[0].closest('div[style], [class*="cursor-pointer"]')!);
-
-    await waitFor(() => {
-      expect(screen.getByText(/Label Speaker: SPEAKER_00/)).toBeInTheDocument();
-    });
-    expect(screen.getByPlaceholderText('Enter speaker name')).toBeInTheDocument();
+    const audio = screen.getByTestId('speaker-audio-1') as HTMLAudioElement;
+    expect(audio.getAttribute('src')).toBe(
+      '/api/v1/dashboard/recording/5/speaker/Alice%20Ashford/audio'
+    );
+    expect(screen.queryByTestId('speaker-audio-2')).not.toBeInTheDocument();
   });
 
-  it('disables label button when input is empty', async () => {
+  it('rename flow calls renameSpeaker with the speaker id and new name', async () => {
     const user = userEvent.setup();
-    mockApi.getAllSpeakers.mockResolvedValue({
-      speakers: [
-        { name: 'SPEAKER_00', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_00' },
-      ],
-    });
+    mockApi.renameSpeaker.mockResolvedValue({ ok: true });
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('SPEAKER_00').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('Alice Ashford')).toBeInTheDocument();
     });
-
-    await user.click(screen.getAllByText('SPEAKER_00')[0].closest('[class*="cursor-pointer"]')!);
+    await user.click(screen.getByTestId('rename-button-1'));
+    const input = screen.getByTestId('rename-input-1');
+    await user.clear(input);
+    await user.type(input, 'Alicia Ashford');
+    await user.click(screen.getByTestId('rename-save-1'));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /label/i })).toBeInTheDocument();
+      expect(mockApi.renameSpeaker).toHaveBeenCalledWith(1, 'Alicia Ashford');
     });
-    const button = screen.getByRole('button', { name: /label/i });
-    expect(button).toBeDisabled();
+    // refresh via a second getAllSpeakers call
+    await waitFor(() => {
+      expect(mockApi.getAllSpeakers).toHaveBeenCalledTimes(2);
+    });
   });
 
-  it('enables label button when input has text', async () => {
+  it('delete confirm calls deleteSpeaker and refreshes', async () => {
     const user = userEvent.setup();
-    mockApi.getAllSpeakers.mockResolvedValue({
-      speakers: [
-        { name: 'SPEAKER_00', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_00' },
-      ],
-    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mockApi.deleteSpeaker.mockResolvedValue({ ok: true });
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('SPEAKER_00').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('Bob Brown')).toBeInTheDocument();
     });
+    await user.click(screen.getByTestId('delete-button-2'));
 
-    await user.click(screen.getAllByText('SPEAKER_00')[0].closest('[class*="cursor-pointer"]')!);
-    await user.type(screen.getByPlaceholderText('Enter speaker name'), 'Alice');
-
-    const button = screen.getByRole('button', { name: /label/i });
-    expect(button).toBeEnabled();
+    await waitFor(() => {
+      expect(mockApi.deleteSpeaker).toHaveBeenCalledWith(2);
+    });
+    await waitFor(() => {
+      expect(mockApi.getAllSpeakers).toHaveBeenCalledTimes(2);
+    });
   });
 
-  it('submits label and refreshes list', async () => {
+  it('delete cancelled does not call deleteSpeaker', async () => {
     const user = userEvent.setup();
-    mockApi.labelSpeaker.mockResolvedValue({ status: 'labeled', label: 'Alice' });
-    mockApi.getAllSpeakers
-      .mockResolvedValueOnce({
-        speakers: [{ name: 'SPEAKER_00', labeled: false, recording_id: 5, speaker_label: 'SPEAKER_00' }],
-      })
-      .mockResolvedValueOnce({ speakers: [] });
-
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('SPEAKER_00').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('Bob Brown')).toBeInTheDocument();
     });
+    await user.click(screen.getByTestId('delete-button-2'));
 
-    await user.click(screen.getAllByText('SPEAKER_00')[0].closest('[class*="cursor-pointer"]')!);
-    await user.type(screen.getByPlaceholderText('Enter speaker name'), 'Alice');
-    await user.click(screen.getByRole('button', { name: /label/i }));
+    expect(mockApi.deleteSpeaker).not.toHaveBeenCalled();
+  });
+
+  it('selecting two speakers and merging calls mergeSpeakers', async () => {
+    const user = userEvent.setup();
+    mockApi.mergeSpeakers.mockResolvedValue({ ok: true });
+    render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(mockApi.labelSpeaker).toHaveBeenCalledWith(5, 'SPEAKER_00', 'Alice');
+      expect(screen.getByText('Alice Ashford')).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId('merge-check-1'));
+    await user.click(screen.getByTestId('merge-check-2'));
+    await user.click(screen.getByTestId('merge-button'));
+
+    await waitFor(() => {
+      expect(mockApi.mergeSpeakers).toHaveBeenCalledWith(1, 2);
     });
     await waitFor(() => {
       expect(mockApi.getAllSpeakers).toHaveBeenCalledTimes(2);
@@ -125,26 +126,10 @@ describe('SpeakerLabel', () => {
 
   it('shows empty state when no speakers', async () => {
     mockApi.getAllSpeakers.mockResolvedValue({ speakers: [] });
-
     render(<SpeakerLabel />);
 
     await waitFor(() => {
-      expect(screen.queryByText('Label Speaker')).not.toBeInTheDocument();
-    });
-  });
-
-  it('displays labeled speakers', async () => {
-    mockApi.getAllSpeakers.mockResolvedValue({
-      speakers: [
-        { name: 'Alice', labeled: true, recording_id: 5, speaker_label: 'SPEAKER_00' },
-      ],
-    });
-
-    render(<SpeakerLabel />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Labeled (1)')).toBeInTheDocument();
-      expect(screen.getByText('Alice')).toBeInTheDocument();
+      expect(screen.getByText(/No speakers enrolled yet/)).toBeInTheDocument();
     });
   });
 });
