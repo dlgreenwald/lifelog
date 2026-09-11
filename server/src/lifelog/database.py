@@ -1529,8 +1529,14 @@ async def save_session_recording(
     created_at: datetime | None = None,
     title: str | None = None,
     long_summary: str | None = None,
+    partition_index: int = -1,
 ) -> int:
-    """Create or update a recording linked to a session."""
+    """Create or update a session-level recording (partition_index=-1).
+
+    partition_index=-1 distinguishes session-level rows from partition rows
+    (partition_index>=0), preventing unique constraint collisions on
+    (session_id, partition_index).
+    """
     ts = session_timestamp.replace(tzinfo=None) if session_timestamp else None
     stored_segments = speaker_segments or []
     # Derive audio range from segments if not provided
@@ -1555,8 +1561,10 @@ async def save_session_recording(
         except (ValueError, TypeError):
             pass
     async with pool.acquire() as conn:
+        # Session-level rows use partition_index=-1 to distinguish from partitions (0+)
         existing = await conn.fetchrow(
-            "SELECT id FROM recordings WHERE session_id = $1", session_id
+            "SELECT id FROM recordings WHERE session_id = $1 AND partition_index = $2",
+            session_id, partition_index,
         )
         if existing:
             if ts is not None:
@@ -1566,9 +1574,10 @@ async def save_session_recording(
                     SET transcript = $1, speakers = $2, summary = $3, todos = $4::json,
                         calendar = $5::json, notes = $6, conversation_changes = $7::json,
                         audio_filename = $8, speaker_segments = $9::json, timestamp = $10,
-                        category = $11, audio_range_start = $13, audio_range_end = $14,
+                        category = $11, partition_index = $18,
+                        audio_range_start = $13, audio_range_end = $14,
                         created_at = $15, title = $16, long_summary = $17
-                    WHERE id = $12
+                    WHERE id = $12 AND partition_index = $18
                     """,
                     transcript,
                     speakers,
@@ -1586,8 +1595,10 @@ async def save_session_recording(
                     audio_range_end,
                     created_at,
                     title,
-                    long_summary,
+                    json.dumps(long_summary) if isinstance(long_summary, list) else long_summary,
+                    partition_index,
                 )
+                row = existing
             else:
                 await conn.execute(
                     """
@@ -1595,10 +1606,10 @@ async def save_session_recording(
                     SET transcript = $1, speakers = $2, summary = $3, todos = $4::json,
                         calendar = $5::json, notes = $6, conversation_changes = $7::json,
                         audio_filename = $8, speaker_segments = $9::json,
-                        timestamp = NOW(), category = $10,
+                        timestamp = NOW(), category = $10, partition_index = $17,
                         audio_range_start = $12, audio_range_end = $13,
                         created_at = $14, title = $15, long_summary = $16
-                    WHERE id = $11
+                    WHERE id = $11 AND partition_index = $17
                     """,
                     transcript,
                     speakers,
@@ -1615,69 +1626,74 @@ async def save_session_recording(
                     audio_range_end,
                     created_at,
                     title,
-                    long_summary,
+                    json.dumps(long_summary) if isinstance(long_summary, list) else long_summary,
+                    partition_index,
                 )
-        if ts is not None:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO recordings
-                    (user_id, session_id, timestamp, transcript, speakers,
-                     summary, todos, calendar, notes, conversation_changes,
-                     audio_filename, speaker_segments, category,
-                     audio_range_start, audio_range_end, created_at,
-                     title, long_summary)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13, $14, $15, $16, $17, $18)
-                RETURNING id
-                """,
-                user_id,
-                session_id,
-                ts,
-                transcript,
-                speakers,
-                result["summary"],
-                result["todos"],
-                result["calendar"],
-                result["notes"],
-                json.dumps(result.get("conversation_changes", [])),
-                audio_filename,
-                stored_segments,
-                category,
-                audio_range_start,
-                audio_range_end,
-                created_at,
-                title,
-                long_summary,
-            )
+                row = existing
         else:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO recordings
-                    (user_id, session_id, timestamp, transcript, speakers,
-                     summary, todos, calendar, notes, conversation_changes,
-                     audio_filename, speaker_segments, category,
-                     audio_range_start, audio_range_end, created_at,
-                     title, long_summary)
-                VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11::json, $12, $13, $14, $15, $16, $17)
-                RETURNING id
-                """,
-                user_id,
-                session_id,
-                transcript,
-                speakers,
-                result["summary"],
-                result["todos"],
-                result["calendar"],
-                result["notes"],
-                json.dumps(result.get("conversation_changes", [])),
-                audio_filename,
-                stored_segments,
-                category,
-                audio_range_start,
-                audio_range_end,
-                created_at,
-                title,
-                long_summary,
-            )
+            if ts is not None:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO recordings
+                        (user_id, session_id, partition_index, timestamp, transcript, speakers,
+                         summary, todos, calendar, notes, conversation_changes,
+                         audio_filename, speaker_segments, category,
+                         audio_range_start, audio_range_end, created_at,
+                         title, long_summary)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::json, $14, $15, $16, $17, $18, $19)
+                    RETURNING id
+                    """,
+                    user_id,
+                    session_id,
+                    partition_index,
+                    ts,
+                    transcript,
+                    speakers,
+                    result["summary"],
+                    result["todos"],
+                    result["calendar"],
+                    result["notes"],
+                    json.dumps(result.get("conversation_changes", [])),
+                    audio_filename,
+                    stored_segments,
+                    category,
+                    audio_range_start,
+                    audio_range_end,
+                    created_at,
+                    title,
+                    json.dumps(long_summary) if isinstance(long_summary, list) else long_summary,
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO recordings
+                        (user_id, session_id, partition_index, timestamp, transcript, speakers,
+                         summary, todos, calendar, notes, conversation_changes,
+                         audio_filename, speaker_segments, category,
+                         audio_range_start, audio_range_end, created_at,
+                         title, long_summary)
+                    VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13, $14, $15, $16, $17, $18)
+                    RETURNING id
+                    """,
+                    user_id,
+                    session_id,
+                    partition_index,
+                    transcript,
+                    speakers,
+                    result["summary"],
+                    result["todos"],
+                    result["calendar"],
+                    result["notes"],
+                    json.dumps(result.get("conversation_changes", [])),
+                    audio_filename,
+                    stored_segments,
+                    category,
+                    audio_range_start,
+                    audio_range_end,
+                    created_at,
+                    title,
+                    json.dumps(long_summary) if isinstance(long_summary, list) else long_summary,
+                )
         return row["id"]
 
 
@@ -1714,6 +1730,24 @@ async def save_partition_recording(
                  audio_range_start, audio_range_end, title, long_summary)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::json, $14,
                     $15, $16, $17, $18)
+            ON CONFLICT (session_id, partition_index)
+                WHERE session_id IS NOT NULL AND partition_index IS NOT NULL
+                DO UPDATE SET
+                    timestamp = EXCLUDED.timestamp,
+                    transcript = EXCLUDED.transcript,
+                    speakers = EXCLUDED.speakers,
+                    summary = EXCLUDED.summary,
+                    todos = EXCLUDED.todos,
+                    calendar = EXCLUDED.calendar,
+                    notes = EXCLUDED.notes,
+                    conversation_changes = EXCLUDED.conversation_changes,
+                    audio_filename = EXCLUDED.audio_filename,
+                    speaker_segments = EXCLUDED.speaker_segments,
+                    category = EXCLUDED.category,
+                    audio_range_start = EXCLUDED.audio_range_start,
+                    audio_range_end = EXCLUDED.audio_range_end,
+                    title = EXCLUDED.title,
+                    long_summary = EXCLUDED.long_summary
             RETURNING id
             """,
             user_id,
@@ -1733,7 +1767,7 @@ async def save_partition_recording(
             partition_start,
             partition_end,
             title,
-            long_summary,
+            json.dumps(long_summary) if isinstance(long_summary, list) else long_summary,
         )
         return row["id"]
 
