@@ -24,8 +24,9 @@ void ledLoop() {
     if (now - lastToggle < 100) return;
 
     // Non-blocking mutex take: SD ops holding the mutex block us, preempting LED.
-    if (xSemaphoreTakeRecursive(sdMutex, pdMS_TO_TICKS(0)) != pdTRUE) return;
-
+    // sdTake/sdGive are NULL-safe guards.
+    if (sdMutex != NULL &&
+        xSemaphoreTakeRecursive(sdMutex, pdMS_TO_TICKS(0)) != pdTRUE) return;
     if (audioActivity == AUDIO_IDLE) {
         // Solid off — drive low once, then skip ticks.
         if (ledOn) {
