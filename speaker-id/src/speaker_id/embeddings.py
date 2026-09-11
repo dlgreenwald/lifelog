@@ -20,8 +20,8 @@ class SpeakerEncoder:
     def __init__(self):
         self.encoder = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb",
-            hparams_file="",
-            use_auth_token=settings.hf_token,
+            # hparams_file="",
+            # use_auth_token=settings.hf_token,
             run_opts={"device": settings.device},
         )
 

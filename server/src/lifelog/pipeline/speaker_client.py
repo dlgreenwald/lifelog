@@ -54,6 +54,8 @@ async def resolve_speaker(user: dict, segment_audios: list[bytes]) -> dict:
                 "voiceprints": voiceprint_data,
             },
         )
+        if response.status_code == 400:
+            logger.warning("speaker_resolve_400", response_body=response.text)
         response.raise_for_status()
         result = response.json()
     duration = time.monotonic() - start
