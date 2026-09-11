@@ -26,6 +26,7 @@ class RecordingResponse(BaseModel):
     notes: list | None = None
     conversation_changes: list | None = None
 
+
 class UtteranceSpan(BaseModel):
     """Per-utterance range in combined-stream seconds.
 

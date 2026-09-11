@@ -657,7 +657,9 @@ async def get_todos_for_recording(recording_id: int) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-async def save_todos(recording_id: int, user_id: int, todos: list[dict], speaker_id: int | None = None):
+async def save_todos(
+    recording_id: int, user_id: int, todos: list[dict], speaker_id: int | None = None
+):
     """Insert todos for a recording. Called only on first processing."""
     async with pool.acquire() as conn:
         for todo in todos:
@@ -727,7 +729,13 @@ async def get_todo_owner(todo_id: int) -> int | None:
         row = await conn.fetchrow("SELECT user_id FROM todos WHERE id = $1", todo_id)
         return row["user_id"] if row else None
 
-async def save_decisions(recording_id: int, user_id: int, decisions: list[dict], speaker_id: int | None = None):
+
+async def save_decisions(
+    recording_id: int,
+    user_id: int,
+    decisions: list[dict],
+    speaker_id: int | None = None,
+):
     """Insert decisions for a recording. Always overwrites existing decisions."""
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute(
@@ -745,6 +753,7 @@ async def save_decisions(recording_id: int, user_id: int, decisions: list[dict],
                 d.get("reason"),
                 d.get("speaker_id") or speaker_id,
             )
+
 
 async def create_decision(
     user_id: int,
@@ -1564,7 +1573,8 @@ async def save_session_recording(
         # Session-level rows use partition_index=-1 to distinguish from partitions (0+)
         existing = await conn.fetchrow(
             "SELECT id FROM recordings WHERE session_id = $1 AND partition_index = $2",
-            session_id, partition_index,
+            session_id,
+            partition_index,
         )
         if existing:
             if ts is not None:
@@ -1595,7 +1605,9 @@ async def save_session_recording(
                     audio_range_end,
                     created_at,
                     title,
-                    json.dumps(long_summary) if isinstance(long_summary, list) else long_summary,
+                    json.dumps(long_summary)
+                    if isinstance(long_summary, list)
+                    else long_summary,
                     partition_index,
                 )
                 row = existing
@@ -1626,7 +1638,9 @@ async def save_session_recording(
                     audio_range_end,
                     created_at,
                     title,
-                    json.dumps(long_summary) if isinstance(long_summary, list) else long_summary,
+                    json.dumps(long_summary)
+                    if isinstance(long_summary, list)
+                    else long_summary,
                     partition_index,
                 )
                 row = existing
@@ -1661,7 +1675,9 @@ async def save_session_recording(
                     audio_range_end,
                     created_at,
                     title,
-                    json.dumps(long_summary) if isinstance(long_summary, list) else long_summary,
+                    json.dumps(long_summary)
+                    if isinstance(long_summary, list)
+                    else long_summary,
                 )
             else:
                 row = await conn.fetchrow(
@@ -1692,7 +1708,9 @@ async def save_session_recording(
                     audio_range_end,
                     created_at,
                     title,
-                    json.dumps(long_summary) if isinstance(long_summary, list) else long_summary,
+                    json.dumps(long_summary)
+                    if isinstance(long_summary, list)
+                    else long_summary,
                 )
         return row["id"]
 
@@ -1767,7 +1785,9 @@ async def save_partition_recording(
             partition_start,
             partition_end,
             title,
-            json.dumps(long_summary) if isinstance(long_summary, list) else long_summary,
+            json.dumps(long_summary)
+            if isinstance(long_summary, list)
+            else long_summary,
         )
         return row["id"]
 
