@@ -461,6 +461,16 @@ def _window_ranges(utterances: list[dict]) -> list[tuple[datetime, datetime]]:
 async def _reprocess_session(session: dict):
     """Queue missing full transcription jobs for an ended session."""
     session_id = session["id"]
+    # Resolve user_id if the caller only passed {"id": ...}
+    user_id = session.get("user_id")
+    if user_id is None:
+        row = await db.pool.fetchrow(
+            "SELECT user_id FROM sessions WHERE id = $1", session_id
+        )
+        if row is None:
+            logger.warning("session_not_found", session_id=session_id)
+            return
+        user_id = row["user_id"]
     utterances = await db.get_session_all_utterances(session_id)
     if not utterances:
         logger.warning("session_no_utterances", session_id=session_id)

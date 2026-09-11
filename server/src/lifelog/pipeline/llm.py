@@ -339,7 +339,9 @@ def summarize_partition(segments: list[dict], llm_context: str = "") -> dict:
     result.setdefault("long_summary", "")
     result.setdefault("decisions", [])
     result.setdefault("todos", [])
-
+    result.setdefault("calendar", [])
+    result.setdefault("notes", [])
+    result.setdefault("conversation_changes", [])
     todos = result.get("todos", [])
     decisions = result.get("decisions", [])
     logger.info(
