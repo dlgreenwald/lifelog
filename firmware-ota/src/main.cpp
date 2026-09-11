@@ -451,8 +451,10 @@ static void setupMDNS() {
 // ── SD Card ────────────────────────────────────────────────────────
 
 static void setupSD() {
-    // Initialize SD like the guide: SD.begin(21)
-    if (!SD.begin(SD_CS_PIN, SPI, 25000000)) {
+    // Initialize SD — 10MHz (down from 25MHz) to reduce CRC/token errors on
+    // marginal card slots and long cable runs. ESP32-S3 SPI bus is shared with
+    // other peripherals; lower speed improves signal integrity.
+    if (!SD.begin(SD_CS_PIN, SPI, 10000000)) {
         ESP_LOGE("SD", "Mount failed");
         return;
     }
