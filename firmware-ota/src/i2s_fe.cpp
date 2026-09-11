@@ -112,7 +112,7 @@ static void afeInit() {
     afe_config->agc_init = false;
     afe_config->agc_compression_gain_db = 6;   // compression gain (lower = less noise amplification)
     afe_config->agc_target_level_dbfs = 3;     // target -3 dBFS envelope
-    afe_config->afe_linear_gain = 3.0;         // output multiplier (default 1.0)
+    afe_config->afe_linear_gain = 5.0;         // output multiplier (default 1.0)
 
     afe_handle = esp_afe_handle_from_config(afe_config);
     if (!afe_handle) {
