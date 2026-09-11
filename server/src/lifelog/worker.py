@@ -630,8 +630,7 @@ def _filter_low_quality_segments(segments: list[dict]) -> list[dict]:
     return [
         seg
         for seg in segments
-        if seg.get("no_speech_prob", 0) <= 0.8
-        and seg.get("avg_logprob", 0) > -1.0
+        if seg.get("no_speech_prob", 0) <= 0.8 and seg.get("avg_logprob", 0) > -1.0
     ]
 
 
@@ -1067,7 +1066,9 @@ async def _finalize_completed_sessions() -> None:
                     try:
                         await db.save_decisions(recording_id, uid, valid)
                     except Exception:  # noqa: BLE001
-                        logger.warning("decisions_save_failed", recording_id=recording_id)
+                        logger.warning(
+                            "decisions_save_failed", recording_id=recording_id
+                        )
 
             all_recording_ids: list[int] = []
             for part_idx, partition in enumerate(final_partitions):
@@ -1093,8 +1094,14 @@ async def _finalize_completed_sessions() -> None:
                         title=llm_result.get("title"),
                         long_summary=llm_result.get("long_summary"),
                     )
-                    await _save_todos(recording_id, session["user_id"], llm_result.get("todos", []))
-                    await _save_decisions(recording_id, session["user_id"], llm_result.get("decisions", []))
+                    await _save_todos(
+                        recording_id, session["user_id"], llm_result.get("todos", [])
+                    )
+                    await _save_decisions(
+                        recording_id,
+                        session["user_id"],
+                        llm_result.get("decisions", []),
+                    )
                     logger.info(
                         "session_finalized",
                         session_id=session["id"],
@@ -1107,10 +1114,16 @@ async def _finalize_completed_sessions() -> None:
                     # Gap/LLM-split partition recording
                     partition_offset = partition[0]["start"]
                     rebased = [
-                        {**seg, "start": seg["start"] - partition_offset, "end": seg["end"] - partition_offset}
+                        {
+                            **seg,
+                            "start": seg["start"] - partition_offset,
+                            "end": seg["end"] - partition_offset,
+                        }
                         for seg in persisted_part
                     ]
-                    audio_range_start = _offset_to_datetime(partition_offset, session_start)
+                    audio_range_start = _offset_to_datetime(
+                        partition_offset, session_start
+                    )
                     audio_range_end = _offset_to_datetime(
                         partition[-1]["end"], session_start
                     )
@@ -1129,8 +1142,14 @@ async def _finalize_completed_sessions() -> None:
                         title=llm_result.get("title"),
                         long_summary=llm_result.get("long_summary"),
                     )
-                    await _save_todos(recording_id, session["user_id"], llm_result.get("todos", []))
-                    await _save_decisions(recording_id, session["user_id"], llm_result.get("decisions", []))
+                    await _save_todos(
+                        recording_id, session["user_id"], llm_result.get("todos", [])
+                    )
+                    await _save_decisions(
+                        recording_id,
+                        session["user_id"],
+                        llm_result.get("decisions", []),
+                    )
                     logger.info(
                         "partition_recording_saved",
                         session_id=session["id"],
@@ -1163,12 +1182,11 @@ async def _finalize_completed_sessions() -> None:
                     user["id"], session_date, llm_context=llm_context
                 )
             except Exception:
-                logger.exception(
-                    "daily_summary_update_error", session_id=session["id"]
-                )
+                logger.exception("daily_summary_update_error", session_id=session["id"])
 
         except Exception:
             logger.exception("session_finalize_error", session_id=session["id"])
+
 
 async def worker_loop():
     """Poll uploads, apply quick results, and orchestrate full jobs."""
