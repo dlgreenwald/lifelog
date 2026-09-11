@@ -18,12 +18,13 @@ class RecordingResponse(BaseModel):
     id: int
     timestamp: str
     summary: str | None = None
+    title: str | None = None
+    long_summary: str | None = None
     speakers: list | None = None
     todos: list | None = None
     calendar: list | None = None
     notes: list | None = None
     conversation_changes: list | None = None
-
 
 class UtteranceSpan(BaseModel):
     """Per-utterance range in combined-stream seconds.
@@ -70,6 +71,7 @@ class CreateTodo(BaseModel):
     due: str | None = Field(default=None, max_length=10)
     priority: str = Field(default="medium")
     recording_id: int | None = None
+    speaker_id: int | None = None
 
     @field_validator("priority")
     @classmethod
@@ -85,6 +87,7 @@ class CreateDecision(BaseModel):
     context: str | None = Field(default=None, max_length=2000)
     reason: str | None = Field(default=None, max_length=2000)
     recording_id: int | None = None
+    speaker_id: int | None = None
 
 
 class UploadResponse(BaseModel):

@@ -13,74 +13,169 @@ client = OpenAI(
     api_key=settings.openai_api_key,
 )
 
-PROMPT = """You are a life journal assistant analyzing a conversation transcript with speaker identification.
+# ---------------------------------------------------------------------------
+# Pass 1 – topic-split detection
+# ---------------------------------------------------------------------------
 
-Your task is to analyze the conversation and produce a structured JSON output with the following:
+SPLIT_PROMPT = """\
+You are a life journal assistant analyzing a conversation transcript.
 
-1. **summary**: A concise summary (3-5 sentences) of the entire conversation, identifying who spoke and what was discussed.
+Your task is to detect genuine topic shifts — conversational boundaries where \
+the discussion moves to a substantially different subject, not mere tangents \
+that return to the original thread.
 
-2. **conversation_changes**: Detect any changes or transitions in the conversation topic. For each change:
-   - "from_topic": What was being discussed before
-   - "to_topic": What the conversation shifted to
-   - "speaker": Who initiated the change
-   - "timestamp": Approximate time if available (or null)
+When evaluating whether to split at a point, consider:
+- A greeting or introduction followed by a topic change → genuine split
+- A question answered and then the original topic continues → no split
+- A clear, sustained topic change that occupies the rest of the conversation \
+  → genuine split
+- A brief aside that returns to the prior topic → no split
 
-3. **decisions**: List any decisions that were made during the conversation:
-   - "decision": What was decided
-   - "made_by": Who made or agreed to the decision
-   - "context": Brief context around the decision
-   - "reason": Brief explanation of why this decision was made or what factors influenced it
+Return a JSON object with this exact key:
+- "topic_splits": list of {{ "at_seconds": float, "reason": str }} objects, \
+  sorted ascending by at_seconds
 
-4. **todos**: List any action items or tasks that were discussed or assigned:
-   - "task": The action item
-   - "owner": Who is responsible (use speaker name if known, otherwise "Unassigned")
-   - "due": Any mentioned deadline (or null if not specified)
-   - "priority": "high", "medium", or "low" based on urgency cues
-
-5. **calendar**: List any meetings, appointments, or time-bound events mentioned:
-   - "event": Description of the event
-   - "time": When it should happen (verbatim if mentioned, or parsed datetime)
-   - "participants": Who is involved
-
-6. **notes**: Key points, ideas, or important information worth remembering.
-
-7. **category**: Classify this conversation as one of:
-   - "personal" — family, friends, errands, plans, health, hobbies, life admin
-   - "work" — meetings, projects, technical discussions, colleague interactions, work tasks
-   - "not_meaningful" — silence, noise, garbled speech, no substantive content, or audio from an audiobook, podcast, movie, TV show, or other entertainment source
-
-Format your response as valid JSON with these exact keys: category, summary, conversation_changes, decisions, todos, calendar, notes.
+If there are no genuine topic shifts, return: {{ "topic_splits": [] }}
 
 ---
-
 USER CONTEXT:
 {llm_context}
 
 ---
-
 TRANSCRIPT:
 {transcript}"""
 
 
-DAILY_PROMPT = """You are a life journal assistant. Below are all conversation transcripts from a single day.
+# ---------------------------------------------------------------------------
+# Pass 2 – per-partition analysis
+# ---------------------------------------------------------------------------
 
-Produce a JSON object with a single key "daily_summary" containing a structured summary of the day divided into two sections:
+PARTITION_PROMPT = """\
+You are a life journal assistant analyzing a conversation transcript that has \
+been isolated to a single coherent topic partition. Your task is to produce a \
+structured analysis of this partition.
 
-1. **Work**: Summarize all work-related conversations — meetings, projects, decisions, tasks, technical discussions, colleague interactions. Be specific about what was discussed and any outcomes.
+Output format — return a JSON object with ALL of these keys (use empty \
+defaults when a field has nothing to report):
 
-2. **Personal**: Summarize all personal conversations — family, friends, errands, plans, health, hobbies, life admin. Be specific about what was discussed and any outcomes.
+{{
+  "category": "personal" | "work" | "not_meaningful",
+  "title": "5-7 word title",
+  "summary": "1-2 sentence prose summary",
+  "long_summary": "prose or outline+prose if long",
+  "decisions": [
+    {{
+      "decision": "What was decided",
+      "made_by": "Display name (or null)",
+      "context": "Brief context (or null)",
+      "reason": "Brief explanation of why (or null)"
+    }}
+  ],
+  "todos": [
+    {{
+      "task": "The action item",
+      "owner": "Display name (or null)",
+      "due": "YYYY-MM-DD or null",
+      "priority": "high" | "medium" | "low"
+    }}
+  ]
+}}
+
+=== CATEGORY ===
+
+Classify this conversation partition as one of:
+- "personal" — family, friends, errands, plans, health, hobbies, life admin
+- "work" — meetings, projects, technical discussions, colleague interactions, \
+  work tasks
+- "not_meaningful" — silence, noise, garbled speech, no substantive content, \
+  or audio from an audiobook, podcast, movie, TV show, or other entertainment \
+  source
+
+Heuristics:
+- Time-of-day matters: standard work hours (roughly 09:00–17:00 on weekdays) \
+  tilt toward "work"; late-night / early-morning hours tilt toward \
+  "not_meaningful".
+- Longer recordings and multi-speaker conversations tend to be more important \
+  and are more likely "personal" or "work".
+- A single speaker with brief or fragmented utterances is rarely important.
+
+=== SUMMARY STYLE ===
+
+Write like a journalist composing a brief: focus on *what happened* and *what \
+was decided*, not on who said what. Never write "Speaker_0 said X" or similar \
+attribution-heavy sentences. Capture the substance, outcomes, and context in \
+concise prose.
+
+=== LONG SUMMARY ===
+
+The long_summary should be roughly one page (≈400 words) of prose per hour of \
+transcribed audio. If the content exceeds a single page, prepend a brief \
+bullet-point outline before the prose. When the partition is short (under a \
+few minutes), the long_summary may be identical to the summary.
+
+=== TODO EXTRACTION ===
+
+Extract only clear, explicit action items — things like:
+- "Bob, you take care of X"
+- "I'll handle that by Friday"
+- "Someone should follow up on Y"
+
+Do NOT extract casual language, offhand suggestions, or vague intentions. If \
+there are no concrete action items, return an empty list.
+
+=== DECISION EXTRACTION ===
+
+Extract only explicit decisions — language such as:
+- "Let's go with option A"
+- "Agreed, we'll do X"
+- "We should use framework Y"
+- "I decided to switch to Z"
+
+Do NOT extract tentative preferences or unconfirmed plans. If no decisions \
+were made, return an empty list.
+
+=== NOTE ON TRANSCRIPT QUALITY ===
+
+These transcripts come from automatic speech recognition (ASR). They may \
+contain minor errors caused by background noise, overlapping speech, or \
+accented speech. Do your best to interpret meaning despite imperfections.
+
+---
+USER CONTEXT:
+{llm_context}
+
+---
+TRANSCRIPT:
+{transcript}"""
+
+
+# ---------------------------------------------------------------------------
+# Daily roll-up (unchanged)
+# ---------------------------------------------------------------------------
+
+DAILY_PROMPT = """\
+You are a life journal assistant. Below are all conversation transcripts from a single day.
+
+Produce a JSON object with a single key "daily_summary" containing a structured \
+summary of the day divided into two sections:
+
+1. **Work**: Summarize all work-related conversations — meetings, projects, \
+   decisions, tasks, technical discussions, colleague interactions. Be specific \
+   about what was discussed and any outcomes.
+
+2. **Personal**: Summarize all personal conversations — family, friends, errands, \
+   plans, health, hobbies, life admin. Be specific about what was discussed and \
+   any outcomes.
 
 If one section has no content, state "No {{section}} conversations recorded today."
 
 Format your response as valid JSON with this exact key: daily_summary
 
 ---
-
 USER CONTEXT:
 {llm_context}
 
 ---
-
 TRANSCRIPTS:
 {transcripts}"""
 
@@ -120,29 +215,98 @@ def summarize_day(transcripts: str, llm_context: str = "") -> dict:
     return {"daily_summary": summary}
 
 
-def summarize(segments: list[dict], llm_context: str = "") -> dict:
-    """Send named transcript to LLM for analysis."""
+# ---------------------------------------------------------------------------
+# Pass 1 – detect topic splits
+# ---------------------------------------------------------------------------
+
+
+def _format_transcript(segments: list[dict]) -> str:
+    """Format segments into a readable transcript string."""
+    lines: list[str] = []
+    for seg in segments:
+        timestamp = f"[{seg.get('start', '?'):.1f}s]" if "start" in seg else ""
+        lines.append(f"{timestamp} {seg['name']}: {seg['text']}")
+    return "\n".join(lines)
+
+
+def detect_splits(segments: list[dict], llm_context: str = "") -> dict:
+    """Pass 1: detect topic splits in the full conversation.
+
+    Returns ``{"topic_splits": [{"at_seconds": float, "reason": str}]}``.
+    On error or when no splits are found, returns an empty list.
+    """
+    if not segments:
+        return {"topic_splits": []}
+
+    start = time.monotonic()
+    formatted = _format_transcript(segments)
+    logger.info(
+        "Detecting topic splits in %d segments (%d chars) with model %s",
+        len(segments),
+        len(formatted),
+        settings.openai_model,
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a life journal assistant that detects topic boundaries in conversation transcripts.",
+                },
+                {
+                    "role": "user",
+                    "content": SPLIT_PROMPT.format(
+                        transcript=formatted, llm_context=llm_context
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        result = json.loads(response.choices[0].message.content)
+        duration = time.monotonic() - start
+
+        splits = result.get("topic_splits", [])
+        logger.info(
+            "Split detection complete in %.2fs: %d splits found",
+            duration,
+            len(splits),
+        )
+        return {"topic_splits": splits}
+
+    except Exception:
+        logger.exception("Split detection failed; assuming no splits")
+        return {"topic_splits": []}
+
+
+# ---------------------------------------------------------------------------
+# Pass 2 – per-partition summarization
+# ---------------------------------------------------------------------------
+
+
+def summarize_partition(segments: list[dict], llm_context: str = "") -> dict:
+    """Pass 2: analyze a single topic partition.
+
+    Returns a dict with keys: category, title, summary, long_summary,
+    decisions, todos. On error or when segments are empty, returns safe
+    defaults.
+    """
     if not segments:
         return {
             "category": "not_meaningful",
+            "title": "",
             "summary": "",
-            "conversation_changes": [],
+            "long_summary": "",
             "decisions": [],
             "todos": [],
-            "calendar": [],
-            "notes": [],
         }
 
     start = time.monotonic()
-
-    formatted_lines = []
-    for seg in segments:
-        timestamp = f"[{seg.get('start', '?'):.1f}s]" if "start" in seg else ""
-        formatted_lines.append(f"{timestamp} {seg['name']}: {seg['text']}")
-
-    formatted = "\n".join(formatted_lines)
+    formatted = _format_transcript(segments)
     logger.info(
-        "Summarizing %d segments (%d chars) with model %s",
+        "Summarizing partition (%d segments, %d chars) with model %s",
         len(segments),
         len(formatted),
         settings.openai_model,
@@ -157,7 +321,9 @@ def summarize(segments: list[dict], llm_context: str = "") -> dict:
             },
             {
                 "role": "user",
-                "content": PROMPT.format(transcript=formatted, llm_context=llm_context),
+                "content": PARTITION_PROMPT.format(
+                    transcript=formatted, llm_context=llm_context
+                ),
             },
         ],
         response_format={"type": "json_object"},
@@ -168,21 +334,26 @@ def summarize(segments: list[dict], llm_context: str = "") -> dict:
 
     # Normalize: ensure all expected keys exist (models may omit empty ones)
     result.setdefault("category", "not_meaningful")
+    result.setdefault("title", "")
     result.setdefault("summary", "")
-    result.setdefault("conversation_changes", [])
+    result.setdefault("long_summary", "")
     result.setdefault("decisions", [])
     result.setdefault("todos", [])
-    result.setdefault("calendar", [])
-    result.setdefault("notes", [])
 
     todos = result.get("todos", [])
     decisions = result.get("decisions", [])
     logger.info(
-        "LLM summary complete in %.2fs: %d todos, %d decisions, %d notes",
+        "Partition summary complete in %.2fs: %d todos, %d decisions",
         duration,
         len(todos),
         len(decisions),
-        len(result.get("notes", [])),
     )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compatible alias
+# ---------------------------------------------------------------------------
+
+summarize = summarize_partition

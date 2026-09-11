@@ -11,7 +11,7 @@ import lifelog.database as db
 from lifelog.config import settings
 from lifelog.crypto import audio_crypto
 from lifelog.database import delete_utterance_chunks, get_utterance_chunks
-from lifelog.pipeline.llm import summarize
+from lifelog.pipeline.llm import detect_splits, summarize_partition
 from lifelog.speaker_names import generate_speaker_name
 
 logger = structlog.get_logger()
@@ -612,6 +612,56 @@ def _normalise_summary(result: dict) -> dict:
     return result
 
 
+def _filter_low_quality_segments(segments: list[dict]) -> list[dict]:
+    """Drop Whisper segments with low confidence (noise, silence, or overlap).
+
+    Drops segments where ``no_speech_prob > 0.8`` or ``avg_logprob < -1.0``.
+    """
+    return [
+        seg
+        for seg in segments
+        if seg.get("no_speech_prob", 0) <= 0.8
+        and seg.get("avg_logprob", 0) > -1.0
+    ]
+
+
+def _apply_topic_splits(
+    flat_segments: list[dict], topic_splits: list[dict]
+) -> list[list[dict]]:
+    """Split a flat ordered segment list at LLM-detected topic boundaries.
+
+    ``topic_splits`` is a list of ``{"at_seconds": float, "reason": str}`` from
+    ``detect_splits()``, sorted ascending by ``at_seconds``.
+    """
+    if not topic_splits:
+        return [flat_segments]
+
+    # Collect all unique boundary timestamps (segment starts)
+    split_times = sorted({s["at_seconds"] for s in topic_splits})
+
+    partitions: list[list[dict]] = []
+    current: list[dict] = []
+    next_split_idx = 0
+
+    for seg in flat_segments:
+        seg_start = seg.get("start", 0)
+        # Advance past any split boundaries this segment is at or past
+        while (
+            next_split_idx < len(split_times)
+            and seg_start >= split_times[next_split_idx]
+        ):
+            if current:
+                partitions.append(current)
+                current = []
+            next_split_idx += 1
+        current.append(seg)
+
+    if current:
+        partitions.append(current)
+
+    return partitions if partitions else [flat_segments]
+
+
 RAW_LABEL_RE = re.compile(r"^SPEAKER_\d+$")
 
 
@@ -729,9 +779,13 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
 async def _finalize_completed_sessions() -> None:
     """Persist sessions after every required full job is complete.
 
-    If a session has >5-minute gaps in its speaker_segments, the session is
-    split into multiple recordings (one per partition). The gap audio is
-    discarded — only the transcribed content is preserved.
+    Two-pass LLM pipeline:
+    1. Pass 1 — detect topic splits in the full conversation via ``detect_splits()``.
+    2. Pass 2 — per-partition analysis via ``summarize_partition()``.
+
+    Pre-filter (Python): skip LLM for solo-speaker recordings shorter than ~2
+    minutes and for single-utterance recordings. Mark as ``not_meaningful`` and
+    store the quick transcript for searchability.
     """
     sessions = await db.get_sessions_for_reprocessing()
     for session in sessions:
@@ -822,14 +876,16 @@ async def _finalize_completed_sessions() -> None:
                     {
                         "summary": "Transcription failed — see notes.",
                         "todos": [],
-                        "calendar": {},
+                        "decisions": [],
+                        "title": "",
+                        "long_summary": "",
                         "notes": error_messages,
-                        "conversation_changes": [],
                     },
                     "",
                     speaker_segments=[],
                     session_timestamp=session_start,
                     category="transcription_failed",
+                    created_at=session_start,
                 )
                 await db.mark_session_processed(session["id"])
                 continue
@@ -867,15 +923,14 @@ async def _finalize_completed_sessions() -> None:
                 speaker_map.update(result.get("speaker_map", {}))
             speaker_segments.sort(key=lambda item: item.get("start", 0))
 
-            # Detect gap splits (>5-minute gaps between segments)
-            partitions = _partition_segments(speaker_segments)
-            if not partitions:
+            if not speaker_segments:
                 logger.warning(
                     "session_no_speaker_segments",
                     session_id=session["id"],
                 )
                 await db.mark_session_processed(session["id"])
                 continue
+
             user = await get_user_secret(session["user_id"])
             settings_row = await db.get_user_settings(session["user_id"])
             llm_context = settings_row.get("llm_context", "")
@@ -884,217 +939,226 @@ async def _finalize_completed_sessions() -> None:
             if session_start is None:
                 session_start = datetime.now(tz=UTC)
 
-            if len(partitions) == 1:
-                # No split — existing single-recording path
-                partition = partitions[0]
-                persisted = _persist_partition_segments(partition, user)
-                named = _named_from_persisted(persisted)
-                llm_result = _normalise_summary(
-                    summarize(named, llm_context=llm_context)
+            # ── Pre-filter: solo speaker + short OR single utterance → skip LLM ──
+            unique_speakers = {seg.get("speaker") for seg in speaker_segments}
+            duration = (
+                speaker_segments[-1]["end"] - speaker_segments[0]["start"]
+                if len(speaker_segments) >= 2
+                else 0.0
+            )
+            is_solo = len(unique_speakers) <= 1
+            is_short = duration < 120.0  # 2 minutes
+
+            if is_solo and is_short:
+                logger.info(
+                    "session_skipped_solo_short",
+                    session_id=session["id"],
+                    speakers=len(unique_speakers),
+                    duration_s=duration,
                 )
-                recording_id = await db.save_session_recording(
+                persisted = _persist_partition_segments(speaker_segments, user)
+                named = _named_from_persisted(persisted)
+                await db.save_session_recording(
                     session["user_id"],
                     session["id"],
                     {"segments": transcript_segments},
                     named,
-                    llm_result,
+                    {
+                        "summary": "",
+                        "todos": [],
+                        "decisions": [],
+                        "title": "",
+                        "long_summary": "",
+                    },
                     audio_files[0] if audio_files else "",
                     speaker_segments=persisted,
                     session_timestamp=session_start,
-                    category=llm_result.get("category", "not_meaningful"),
+                    category="not_meaningful",
                     created_at=session_start,
                 )
-                if llm_result.get("todos"):
-                    try:
-                        valid = [
-                            t
-                            for t in llm_result["todos"]
-                            if isinstance(t, dict) and t.get("text")
-                        ]
-                        if valid:
-                            await db.save_todos(recording_id, session["user_id"], valid)
-                    except Exception:  # noqa: BLE001
-                        # LLM results are best-effort; log and continue
-                        logger.warning("todos_save_failed", recording_id=recording_id)
-                if llm_result.get("decisions"):
-                    try:
-                        valid = [
-                            d
-                            for d in llm_result["decisions"]
-                            if isinstance(d, dict) and d.get("text")
-                        ]
-                        if valid:
-                            await db.save_decisions(
-                                recording_id, session["user_id"], valid
-                            )
-                    except Exception:  # noqa: BLE001
-                        # LLM results are best-effort; log and continue
-                        logger.warning(
-                            "decisions_save_failed", recording_id=recording_id
-                        )
-                logger.info(
-                    "session_finalized",
-                    session_id=session["id"],
-                    recording_id=recording_id,
-                    category=llm_result.get("category"),
-                    segment_count=len(persisted),
-                    partition_count=1,
-                )
                 await db.mark_session_processed(session["id"])
-                current = await db.get_recording(user["id"], recording_id)
-                if current:
-                    await _reidentify_recording(user, current)
-                for prior in await db.get_unknown_speakers(user["id"]):
-                    if prior.get("id") != recording_id:
-                        prior["encryption_secret"] = user["encryption_secret"]
-                        prior["key_salt"] = user["key_salt"]
-                        await _reidentify_recording(user, prior)
-                try:
-                    session_date = session["started_at"]
-                    if isinstance(session_date, datetime):
-                        session_date = session_date.date()
-                    await _daily_reprocess_user(
-                        user["id"], session_date, llm_context=llm_context
-                    )
-                except Exception:
-                    logger.exception(
-                        "daily_summary_update_error", session_id=session["id"]
-                    )
-            else:
-                # Gap split — create one recording per partition
-                logger.info(
-                    "session_split_into_partitions",
+                continue
+
+            # ── Audio quality filter: drop Whisper's low-confidence segments ──
+            clean_segments = _filter_low_quality_segments(speaker_segments)
+            if not clean_segments:
+                logger.warning(
+                    "session_all_segments_low_quality",
                     session_id=session["id"],
-                    partition_count=len(partitions),
                 )
-                # First partition gets the existing session-level summary + todos/decisions
-                partition_0 = partitions[0]
-                persisted_0 = _persist_partition_segments(partition_0, user)
-                named_0 = _named_from_persisted(persisted_0)
-                llm_0 = _normalise_summary(summarize(named_0, llm_context=llm_context))
-                recording_id = await db.save_session_recording(
+                persisted = _persist_partition_segments(speaker_segments, user)
+                named = _named_from_persisted(persisted)
+                await db.save_session_recording(
                     session["user_id"],
                     session["id"],
                     {"segments": transcript_segments},
-                    named_0,
-                    llm_0,
+                    named,
+                    {
+                        "summary": "",
+                        "todos": [],
+                        "decisions": [],
+                        "title": "",
+                        "long_summary": "",
+                    },
                     audio_files[0] if audio_files else "",
-                    speaker_segments=persisted_0,
+                    speaker_segments=persisted,
                     session_timestamp=session_start,
-                    category=llm_0.get("category", "not_meaningful"),
+                    category="not_meaningful",
                     created_at=session_start,
                 )
-                if llm_0.get("todos"):
-                    try:
-                        valid = [
-                            t
-                            for t in llm_0["todos"]
-                            if isinstance(t, dict) and t.get("text")
-                        ]
-                        if valid:
-                            await db.save_todos(recording_id, session["user_id"], valid)
-                    except Exception:  # noqa: BLE001
-                        # LLM results are best-effort; log and continue
-                        logger.warning("todos_save_failed", recording_id=recording_id)
-                if llm_0.get("decisions"):
-                    try:
-                        valid = [
-                            d
-                            for d in llm_0["decisions"]
-                            if isinstance(d, dict) and d.get("text")
-                        ]
-                        if valid:
-                            await db.save_decisions(
-                                recording_id, session["user_id"], valid
-                            )
-                    except Exception:  # noqa: BLE001
-                        # LLM results are best-effort; log and continue
-                        logger.warning(
-                            "decisions_save_failed", recording_id=recording_id
-                        )
-                logger.info(
-                    "session_finalized",
-                    session_id=session["id"],
-                    recording_id=recording_id,
-                    category=llm_0.get("category"),
-                    segment_count=len(persisted_0),
-                    partition_count=len(partitions),
-                )
                 await db.mark_session_processed(session["id"])
-                all_persisted = [persisted_0]
+                continue
 
-                # Subsequent partitions — one new recording each, no todos/decisions
-                for idx, partition in enumerate(partitions[1:], start=1):
-                    persisted = _persist_partition_segments(partition, user)
-                    all_persisted.append(persisted)
-                    named = _named_from_persisted(persisted)
-                    llm_n = _normalise_summary(
-                        summarize(named, llm_context=llm_context)
+            # ── Pass 1: detect topic splits in the full conversation ──
+            all_persisted = _persist_partition_segments(clean_segments, user)
+            all_named = _named_from_persisted(all_persisted)
+            splits_result = detect_splits(all_named, llm_context=llm_context)
+            topic_splits = splits_result.get("topic_splits", [])
+            logger.info(
+                "split_detection_complete",
+                session_id=session["id"],
+                splits=len(topic_splits),
+            )
+
+            # ── Build final partitions: topic splits → sub-partitions ──
+            if topic_splits:
+                # Apply LLM-detected topic boundaries
+                final_partitions = _apply_topic_splits(clean_segments, topic_splits)
+                logger.info(
+                    "topic_splits_applied",
+                    session_id=session["id"],
+                    partition_count=len(final_partitions),
+                )
+            else:
+                # Fall back to gap-based partitions
+                final_partitions = _partition_segments(clean_segments)
+                logger.info(
+                    "gap_partitions_used",
+                    session_id=session["id"],
+                    partition_count=len(final_partitions),
+                )
+
+            # ── Pass 2: per-partition summarization ──
+            async def _save_todos(recording_id: int, uid: int, todos: list) -> None:
+                valid = [t for t in todos if isinstance(t, dict) and t.get("task")]
+                if valid:
+                    try:
+                        await db.save_todos(recording_id, uid, valid)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("todos_save_failed", recording_id=recording_id)
+
+            async def _save_decisions(
+                recording_id: int, uid: int, decisions: list
+            ) -> None:
+                valid = [
+                    d for d in decisions if isinstance(d, dict) and d.get("decision")
+                ]
+                if valid:
+                    try:
+                        await db.save_decisions(recording_id, uid, valid)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("decisions_save_failed", recording_id=recording_id)
+
+            all_recording_ids: list[int] = []
+            for part_idx, partition in enumerate(final_partitions):
+                persisted_part = _persist_partition_segments(partition, user)
+                named_part = _named_from_persisted(persisted_part)
+
+                llm_result = summarize_partition(named_part, llm_context=llm_context)
+                category = llm_result.get("category") or "not_meaningful"
+
+                if part_idx == 0:
+                    # Session-level recording (partition_index=0 via session_id match)
+                    recording_id = await db.save_session_recording(
+                        session["user_id"],
+                        session["id"],
+                        {"segments": transcript_segments},
+                        named_part,
+                        llm_result,
+                        audio_files[0] if audio_files else "",
+                        speaker_segments=persisted_part,
+                        session_timestamp=session_start,
+                        category=category,
+                        created_at=session_start,
+                        title=llm_result.get("title"),
+                        long_summary=llm_result.get("long_summary"),
                     )
-                    # Rebase segment start/end relative to this partition
+                    await _save_todos(recording_id, session["user_id"], llm_result.get("todos", []))
+                    await _save_decisions(recording_id, session["user_id"], llm_result.get("decisions", []))
+                    logger.info(
+                        "session_finalized",
+                        session_id=session["id"],
+                        recording_id=recording_id,
+                        category=category,
+                        partition_index=0,
+                        partition_count=len(final_partitions),
+                    )
+                else:
+                    # Gap/LLM-split partition recording
                     partition_offset = partition[0]["start"]
-                    rebased = []
-                    for seg in persisted:
-                        item = dict(seg)
-                        item["start"] = seg["start"] - partition_offset
-                        item["end"] = seg["end"] - partition_offset
-                        rebased.append(item)
-                    audio_range_start = _offset_to_datetime(
-                        partition_offset, session_start
-                    )
+                    rebased = [
+                        {**seg, "start": seg["start"] - partition_offset, "end": seg["end"] - partition_offset}
+                        for seg in persisted_part
+                    ]
+                    audio_range_start = _offset_to_datetime(partition_offset, session_start)
                     audio_range_end = _offset_to_datetime(
                         partition[-1]["end"], session_start
                     )
-                    try:
-                        await db.save_partition_recording(
-                            session["user_id"],
-                            session["id"],
-                            idx,
-                            {"segments": []},  # no quick-transcript for partitions
-                            named,
-                            llm_n,
-                            audio_files[0] if audio_files else "",
-                            rebased,
-                            audio_range_start,
-                            audio_range_end,
-                        )
-                        logger.info(
-                            "partition_recording_saved",
-                            session_id=session["id"],
-                            partition_idx=idx,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "partition_recording_error",
-                            partition_idx=idx,
-                            session_id=session["id"],
-                        )
-
-                # Re-identify and daily summary after all partitions created
-                current = await db.get_recording(user["id"], recording_id)
-                if current:
-                    await _reidentify_recording(user, current)
-                for prior in await db.get_unknown_speakers(user["id"]):
-                    if prior.get("id") != recording_id:
-                        prior["encryption_secret"] = user["encryption_secret"]
-                        prior["key_salt"] = user["key_salt"]
-                        await _reidentify_recording(user, prior)
-                try:
-                    session_date = session["started_at"]
-                    if isinstance(session_date, datetime):
-                        session_date = session_date.date()
-                    await _daily_reprocess_user(
-                        user["id"], session_date, llm_context=llm_context
+                    recording_id = await db.save_partition_recording(
+                        session["user_id"],
+                        session["id"],
+                        part_idx,
+                        {"segments": []},
+                        named_part,
+                        llm_result,
+                        audio_files[0] if audio_files else "",
+                        rebased,
+                        audio_range_start,
+                        audio_range_end,
+                        category=category,
+                        title=llm_result.get("title"),
+                        long_summary=llm_result.get("long_summary"),
                     )
-                except Exception:
-                    logger.exception(
-                        "daily_summary_update_error_after_finalize",
+                    await _save_todos(recording_id, session["user_id"], llm_result.get("todos", []))
+                    await _save_decisions(recording_id, session["user_id"], llm_result.get("decisions", []))
+                    logger.info(
+                        "partition_recording_saved",
                         session_id=session["id"],
+                        partition_idx=part_idx,
+                        recording_id=recording_id,
+                        category=category,
                     )
+
+                all_recording_ids.append(recording_id)
+
+            await db.mark_session_processed(session["id"])
+
+            # ── Speaker re-identification ──
+            for rid in all_recording_ids:
+                recording = await db.get_recording(user["id"], rid)
+                if recording:
+                    await _reidentify_recording(user, recording)
+            for prior in await db.get_unknown_speakers(user["id"]):
+                if prior.get("id") not in all_recording_ids:
+                    prior["encryption_secret"] = user["encryption_secret"]
+                    prior["key_salt"] = user["key_salt"]
+                    await _reidentify_recording(user, prior)
+
+            # ── Daily summary ──
+            try:
+                session_date = session["started_at"]
+                if isinstance(session_date, datetime):
+                    session_date = session_date.date()
+                await _daily_reprocess_user(
+                    user["id"], session_date, llm_context=llm_context
+                )
+            except Exception:
+                logger.exception(
+                    "daily_summary_update_error", session_id=session["id"]
+                )
 
         except Exception:
             logger.exception("session_finalize_error", session_id=session["id"])
-
 
 async def worker_loop():
     """Poll uploads, apply quick results, and orchestrate full jobs."""

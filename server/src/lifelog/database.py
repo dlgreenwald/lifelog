@@ -483,6 +483,18 @@ async def rename_speaker(user_id: int, speaker_id: int, new_name: str) -> bool:
             old_name,
             new_name,
         )
+        await conn.execute(
+            "UPDATE todos SET owner = $3 WHERE user_id = $1 AND owner = $2",
+            user_id,
+            old_name,
+            new_name,
+        )
+        await conn.execute(
+            "UPDATE decisions SET made_by = $3 WHERE user_id = $1 AND made_by = $2",
+            user_id,
+            old_name,
+            new_name,
+        )
         return True
 
 
@@ -526,6 +538,16 @@ async def merge_speakers(user_id: int, source_id: int, target_id: int) -> bool:
             user_id,
             source_name,
             target_name,
+            target_id,
+        )
+        await conn.execute(
+            "UPDATE todos SET speaker_id = $2 WHERE speaker_id = $1",
+            source_id,
+            target_id,
+        )
+        await conn.execute(
+            "UPDATE decisions SET speaker_id = $2 WHERE speaker_id = $1",
+            source_id,
             target_id,
         )
         await conn.execute(
@@ -635,14 +657,14 @@ async def get_todos_for_recording(recording_id: int) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-async def save_todos(recording_id: int, user_id: int, todos: list[dict]):
+async def save_todos(recording_id: int, user_id: int, todos: list[dict], speaker_id: int | None = None):
     """Insert todos for a recording. Called only on first processing."""
     async with pool.acquire() as conn:
         for todo in todos:
             await conn.execute(
                 """
-                INSERT INTO todos (user_id, recording_id, task, owner, due, priority)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO todos (user_id, recording_id, task, owner, due, priority, speaker_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 """,
                 user_id,
                 recording_id,
@@ -650,6 +672,7 @@ async def save_todos(recording_id: int, user_id: int, todos: list[dict]):
                 todo.get("owner") or "Unassigned",
                 todo.get("due"),
                 todo.get("priority", "medium"),
+                todo.get("speaker_id") or speaker_id,
             )
 
 
@@ -660,18 +683,20 @@ async def create_todo(
     due: str | None,
     priority: str,
     recording_id: int | None,
+    speaker_id: int | None = None,
 ) -> int:
     """Create a single todo. recording_id is None for standalone todos."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO todos (user_id, recording_id, task, owner, due, priority)
-               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
+            """INSERT INTO todos (user_id, recording_id, task, owner, due, priority, speaker_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id""",
             user_id,
             recording_id,
             task,
             owner,
             due,
             priority,
+            speaker_id,
         )
         return row["id"]
 
@@ -702,8 +727,7 @@ async def get_todo_owner(todo_id: int) -> int | None:
         row = await conn.fetchrow("SELECT user_id FROM todos WHERE id = $1", todo_id)
         return row["user_id"] if row else None
 
-
-async def save_decisions(recording_id: int, user_id: int, decisions: list[dict]):
+async def save_decisions(recording_id: int, user_id: int, decisions: list[dict], speaker_id: int | None = None):
     """Insert decisions for a recording. Always overwrites existing decisions."""
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute(
@@ -711,16 +735,16 @@ async def save_decisions(recording_id: int, user_id: int, decisions: list[dict])
         )
         for d in decisions:
             await conn.execute(
-                """INSERT INTO decisions (user_id, recording_id, decision, made_by, context, reason)
-                       VALUES ($1, $2, $3, $4, $5, $6)""",
+                """INSERT INTO decisions (user_id, recording_id, decision, made_by, context, reason, speaker_id)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)""",
                 user_id,
                 recording_id,
                 d["decision"],
                 d.get("made_by") or "Unknown",
                 d.get("context"),
                 d.get("reason"),
+                d.get("speaker_id") or speaker_id,
             )
-
 
 async def create_decision(
     user_id: int,
@@ -729,18 +753,20 @@ async def create_decision(
     context: str | None,
     reason: str | None,
     recording_id: int | None,
+    speaker_id: int | None = None,
 ) -> int:
     """Create a single decision. recording_id is None for standalone decisions."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO decisions (user_id, recording_id, decision, made_by, context, reason)
-               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
+            """INSERT INTO decisions (user_id, recording_id, decision, made_by, context, reason, speaker_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id""",
             user_id,
             recording_id,
             decision,
             made_by,
             context,
             reason,
+            speaker_id,
         )
         return row["id"]
 
@@ -1501,6 +1527,8 @@ async def save_session_recording(
     audio_range_start: datetime | None = None,
     audio_range_end: datetime | None = None,
     created_at: datetime | None = None,
+    title: str | None = None,
+    long_summary: str | None = None,
 ) -> int:
     """Create or update a recording linked to a session."""
     ts = session_timestamp.replace(tzinfo=None) if session_timestamp else None
@@ -1539,7 +1567,7 @@ async def save_session_recording(
                         calendar = $5, notes = $6, conversation_changes = $7,
                         audio_filename = $8, speaker_segments = $9::json, timestamp = $10,
                         category = $11, audio_range_start = $13, audio_range_end = $14,
-                        created_at = $15
+                        created_at = $15, title = $16, long_summary = $17
                     WHERE id = $12
                     """,
                     transcript,
@@ -1557,6 +1585,8 @@ async def save_session_recording(
                     audio_range_start,
                     audio_range_end,
                     created_at,
+                    title,
+                    long_summary,
                 )
             else:
                 await conn.execute(
@@ -1567,7 +1597,7 @@ async def save_session_recording(
                         audio_filename = $8, speaker_segments = $9::json,
                         timestamp = NOW(), category = $10,
                         audio_range_start = $12, audio_range_end = $13,
-                        created_at = $14
+                        created_at = $14, title = $15, long_summary = $16
                     WHERE id = $11
                     """,
                     transcript,
@@ -1584,6 +1614,8 @@ async def save_session_recording(
                     audio_range_start,
                     audio_range_end,
                     created_at,
+                    title,
+                    long_summary,
                 )
         if ts is not None:
             row = await conn.fetchrow(
@@ -1592,8 +1624,9 @@ async def save_session_recording(
                     (user_id, session_id, timestamp, transcript, speakers,
                      summary, todos, calendar, notes, conversation_changes,
                      audio_filename, speaker_segments, category,
-                     audio_range_start, audio_range_end, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13, $14, $15, $16)
+                     audio_range_start, audio_range_end, created_at,
+                     title, long_summary)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13, $14, $15, $16, $17, $18)
                 RETURNING id
                 """,
                 user_id,
@@ -1612,6 +1645,8 @@ async def save_session_recording(
                 audio_range_start,
                 audio_range_end,
                 created_at,
+                title,
+                long_summary,
             )
         else:
             row = await conn.fetchrow(
@@ -1620,8 +1655,9 @@ async def save_session_recording(
                     (user_id, session_id, timestamp, transcript, speakers,
                      summary, todos, calendar, notes, conversation_changes,
                      audio_filename, speaker_segments, category,
-                     audio_range_start, audio_range_end, created_at)
-                VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11::json, $12, $13, $14, $15)
+                     audio_range_start, audio_range_end, created_at,
+                     title, long_summary)
+                VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11::json, $12, $13, $14, $15, $16, $17)
                 RETURNING id
                 """,
                 user_id,
@@ -1639,6 +1675,8 @@ async def save_session_recording(
                 audio_range_start,
                 audio_range_end,
                 created_at,
+                title,
+                long_summary,
             )
         return row["id"]
 
@@ -1655,6 +1693,8 @@ async def save_partition_recording(
     partition_start: datetime,
     partition_end: datetime,
     category: str | None = None,
+    title: str | None = None,
+    long_summary: str | None = None,
 ) -> int:
     """Insert a new partition recording for an existing session (gap-split path).
 
@@ -1671,9 +1711,9 @@ async def save_partition_recording(
                 (user_id, session_id, partition_index, timestamp, transcript, speakers,
                  summary, todos, calendar, notes, conversation_changes,
                  audio_filename, speaker_segments, category,
-                 audio_range_start, audio_range_end)
+                 audio_range_start, audio_range_end, title, long_summary)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::json, $14,
-                    $15, $16)
+                    $15, $16, $17, $18)
             RETURNING id
             """,
             user_id,
@@ -1692,6 +1732,8 @@ async def save_partition_recording(
             category,
             partition_start,
             partition_end,
+            title,
+            long_summary,
         )
         return row["id"]
 
