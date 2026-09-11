@@ -289,6 +289,12 @@ static void autoUploadTask(void *pvParameters) {
         sdTake();
         root.close();
         sdGive();
+        if (count == 0) {
+            ESP_LOGI(TAG, "Auto-upload: no files on SD, queue=%lu", (unsigned long)getUploadQueueDepth());
+            continue;
+        }
+        ESP_LOGI(TAG, "Auto-upload: found %d files on SD, queue=%lu", count,
+                 (unsigned long)getUploadQueueDepth());
 
         uint32_t orphanId = 0x80000000;
         for (int i = 0; i < count; i++) {

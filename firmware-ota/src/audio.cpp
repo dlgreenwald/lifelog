@@ -50,10 +50,12 @@ uint32_t getRingFillLevel() {
 // ── SD card mutex ─────────────────────────────────────────────────
 
 void sdTake() {
+    if (sdMutex == NULL) return;
     xSemaphoreTakeRecursive(sdMutex, portMAX_DELAY);
 }
 
 void sdGive() {
+    if (sdMutex == NULL) return;
     xSemaphoreGiveRecursive(sdMutex);
 }
 

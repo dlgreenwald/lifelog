@@ -198,6 +198,10 @@ static void opus_init_stream() {
 }
 static void mem_flush_to_sd() {
     if (mem_buf_pos == 0 || mem_to_sd) return;
+    if (sdMutex == NULL) {
+        ESP_LOGE(TAG, "mem_flush_to_sd: sdMutex is NULL, cannot flush");
+        return;
+    }
 
     time_t now = time(nullptr);
     if (now > 0) {
