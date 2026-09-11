@@ -556,9 +556,19 @@ class TestHourlyReprocessing:
                 "lifelog.worker.audio_crypto.encrypt_audio", return_value="segment.enc"
             ),
             patch(
-                "lifelog.worker.summarize",
-                return_value={"summary": "s", "todos": [], "calendar": [], "notes": []},
+                "lifelog.worker.summarize_partition",
+                return_value={
+                    "category": "not_meaningful",
+                    "title": "Test session",
+                    "summary": "s",
+                    "long_summary": "",
+                    "decisions": [],
+                    "todos": [],
+                    "calendar": [],
+                    "notes": [],
+                },
             ),
+            patch("lifelog.worker.detect_splits", return_value={"topic_splits": []}),
             patch("lifelog.worker._reidentify_recording", new_callable=AsyncMock),
             patch("lifelog.worker._daily_reprocess_user", new_callable=AsyncMock),
         ):
