@@ -1563,8 +1563,8 @@ async def save_session_recording(
                 await conn.execute(
                     """
                     UPDATE recordings
-                    SET transcript = $1, speakers = $2, summary = $3, todos = $4,
-                        calendar = $5, notes = $6, conversation_changes = $7,
+                    SET transcript = $1, speakers = $2, summary = $3, todos = $4::json,
+                        calendar = $5::json, notes = $6, conversation_changes = $7::json,
                         audio_filename = $8, speaker_segments = $9::json, timestamp = $10,
                         category = $11, audio_range_start = $13, audio_range_end = $14,
                         created_at = $15, title = $16, long_summary = $17
@@ -1576,7 +1576,7 @@ async def save_session_recording(
                     result["todos"],
                     result["calendar"],
                     result["notes"],
-                    result.get("conversation_changes", []),
+                    json.dumps(result.get("conversation_changes", [])),
                     audio_filename,
                     stored_segments,
                     ts,
@@ -1592,8 +1592,8 @@ async def save_session_recording(
                 await conn.execute(
                     """
                     UPDATE recordings
-                    SET transcript = $1, speakers = $2, summary = $3, todos = $4,
-                        calendar = $5, notes = $6, conversation_changes = $7,
+                    SET transcript = $1, speakers = $2, summary = $3, todos = $4::json,
+                        calendar = $5::json, notes = $6, conversation_changes = $7::json,
                         audio_filename = $8, speaker_segments = $9::json,
                         timestamp = NOW(), category = $10,
                         audio_range_start = $12, audio_range_end = $13,
@@ -1606,7 +1606,7 @@ async def save_session_recording(
                     result["todos"],
                     result["calendar"],
                     result["notes"],
-                    result.get("conversation_changes", []),
+                    json.dumps(result.get("conversation_changes", [])),
                     audio_filename,
                     stored_segments,
                     category,
@@ -1638,7 +1638,7 @@ async def save_session_recording(
                 result["todos"],
                 result["calendar"],
                 result["notes"],
-                result.get("conversation_changes", []),
+                json.dumps(result.get("conversation_changes", [])),
                 audio_filename,
                 stored_segments,
                 category,
@@ -1668,7 +1668,7 @@ async def save_session_recording(
                 result["todos"],
                 result["calendar"],
                 result["notes"],
-                result.get("conversation_changes", []),
+                json.dumps(result.get("conversation_changes", [])),
                 audio_filename,
                 stored_segments,
                 category,
@@ -1726,7 +1726,7 @@ async def save_partition_recording(
             result["todos"],
             result["calendar"],
             result["notes"],
-            result.get("conversation_changes", []),
+            json.dumps(result.get("conversation_changes", [])),
             audio_filename,
             stored_segments_json,
             category,
