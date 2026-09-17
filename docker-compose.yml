@@ -139,6 +139,9 @@ services:
       - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
     depends_on:
       - server
+    # Restart when a new :latest image is pulled by the deploy pipeline,
+    # or after a host reboot. "no" would leave a stale container running.
+    restart: unless-stopped
 
 volumes:
   postgres-data:

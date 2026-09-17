@@ -27,7 +27,9 @@ const mockApi = vi.mocked(api);
 const mockRecording: Recording = {
   id: 10,
   timestamp: '2024-01-15T10:30:00',
-  summary: 'Discussed Q1 roadmap and assigned tasks.',
+  summary: null,
+  title: 'Discussed Q1 roadmap and assigned tasks.',
+  long_summary: 'We reviewed Q1 status, assigned action items to each team member, and set timeline for the kickoff.',
   speakers: [
     { id: 0, name: 'Alice', start: 0.0, end: 3.0, text: 'Let us plan Q1.' },
     { id: 1, name: 'Bob', start: 3.0, end: 6.0, text: 'Sounds good.' },

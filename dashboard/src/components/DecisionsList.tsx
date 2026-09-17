@@ -56,6 +56,7 @@ export default function DecisionsList() {
         archived: false,
         recording_id: null,
         recording_timestamp: null,
+        speaker_id: null,
         created_at: new Date().toISOString(),
       },
       ...prev,

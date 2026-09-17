@@ -1,0 +1,27 @@
+# Dependencies — never copy host node_modules into the image
+node_modules/
+npm-debug.log*
+
+# Build artifacts (generated during build)
+dist/
+dist-ssr/
+
+# Dev / editor artifacts
+.git/
+.env
+.env.*
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test & coverage (not needed at runtime)
+coverage/
+*.test.ts
+*.test.tsx
+src/test/
+
+# CI / Docker files (not needed in image)
+Dockerfile
+docker-compose*.yml
+.dockerignore

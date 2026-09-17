@@ -9,6 +9,8 @@ const mockRecordings: Recording[] = [
     id: 1,
     timestamp: '2024-01-15T10:30:00',
     summary: 'Morning standup',
+    title: null,
+    long_summary: null,
     speakers: [
       { id: 0, name: 'Alice', start: 0, end: 5, text: 'Hi' },
       { id: 1, name: 'Bob', start: 5, end: 10, text: 'Hello' },
@@ -18,19 +20,21 @@ const mockRecordings: Recording[] = [
     notes: null,
     conversation_changes: null,
     audio_filename: 'rec1.opus',
-  decisions: null,
+    decisions: null,
   },
   {
     id: 2,
     timestamp: '2024-01-15T14:00:00',
     summary: null,
+    title: null,
+    long_summary: null,
     speakers: null,
     todos: null,
     calendar: null,
     notes: null,
     conversation_changes: null,
     audio_filename: null,
-  decisions: null,
+    decisions: null,
   },
 ];
 
