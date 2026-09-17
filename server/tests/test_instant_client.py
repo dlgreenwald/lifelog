@@ -172,22 +172,22 @@ class TestPerSessionFallback:
         mock_task.cancel()
 
 
-class TestGetTranscriptEvents:
-    """get_transcript_events drains the queue correctly."""
+class TestWaitForEvent:
+    """wait_for_event returns a single event or None on timeout."""
 
     @pytest.mark.asyncio
-    async def test_get_transcript_events_empty_when_no_session(self):
-        """Returns empty list when session doesn't exist."""
+    async def test_wait_for_event_returns_none_when_no_session(self):
+        """Returns None when session doesn't exist."""
         from lifelog import instant_client
 
         instant_client._sessions.clear()
 
-        events = await instant_client.get_transcript_events(999)
-        assert events == []
+        result = await instant_client.wait_for_event(999, timeout=0.1)
+        assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_transcript_events_drains_queue(self):
-        """Drains all pending events from the session queue."""
+    async def test_wait_for_event_returns_one_event(self):
+        """Returns one event from the queue, or None if empty."""
         from lifelog import instant_client
 
         # Reset
@@ -202,25 +202,37 @@ class TestGetTranscriptEvents:
         )
         instant_client._sessions[3] = mock_handle
 
-        # Enqueue some events
+        # Enqueue an event
         await mock_queue.put(
             {
                 "type": "segment",
                 "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}],
             }
         )
-        await mock_queue.put(
-            {
-                "type": "segment",
-                "segments": [{"start": 1.0, "end": 2.0, "text": "world"}],
-            }
+
+        result = await instant_client.wait_for_event(3, timeout=0.1)
+
+        assert result is not None
+        assert result["segments"][0]["text"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_wait_for_event_timeout_returns_none(self):
+        """Returns None when queue is empty within the timeout window."""
+        from lifelog import instant_client
+
+        instant_client._sessions.clear()
+
+        mock_ws = AsyncMock()
+        mock_queue = asyncio.Queue()
+        mock_handle = instant_client._SessionHandle(
+            session_id=4,
+            ws=mock_ws,
+            queue=mock_queue,
         )
+        instant_client._sessions[4] = mock_handle
 
-        events = await instant_client.get_transcript_events(3, timeout=1.0)
-
-        assert len(events) == 2
-        assert events[0]["segments"][0]["text"] == "hello"
-        assert events[1]["segments"][0]["text"] == "world"
+        result = await instant_client.wait_for_event(4, timeout=0.2)
+        assert result is None
 
 
 class TestFeedAudio:
@@ -246,10 +258,13 @@ class TestFeedAudio:
 
         mock_ws = AsyncMock()
         mock_queue = asyncio.Queue()
+        ready_event = asyncio.Event()
+        ready_event.set()  # simulate already-open WebSocket
         mock_handle = instant_client._SessionHandle(
             session_id=7,
             ws=mock_ws,
             queue=mock_queue,
+            ready_event=ready_event,
         )
         instant_client._sessions[7] = mock_handle
 
@@ -272,16 +287,21 @@ class TestFeedAudio:
         dead_ws = AsyncMock()
         dead_ws.send.side_effect = websockets.ConnectionClosedError(None, None)
         dead_queue = asyncio.Queue()
+        dead_ready = asyncio.Event()
+        dead_ready.set()  # let feed_audio proceed past ready_event.wait()
         dead_handle = instant_client._SessionHandle(
             session_id=3,
             ws=dead_ws,
             queue=dead_queue,
+            ready_event=dead_ready,
         )
         instant_client._sessions[3] = dead_handle
 
         # Fresh WS that works
         fresh_ws = AsyncMock()
         fresh_queue = asyncio.Queue()
+        fresh_ready = asyncio.Event()
+        fresh_ready.set()
 
         call_count = 0
 
@@ -292,6 +312,7 @@ class TestFeedAudio:
                 session_id=session_id,
                 ws=fresh_ws,
                 queue=fresh_queue,
+                ready_event=fresh_ready,
             )
             instant_client._sessions[session_id] = fresh_handle
             return fresh_handle
