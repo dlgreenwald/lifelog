@@ -466,6 +466,11 @@ class TestHourlyReprocessing:
         timestamp = datetime(2025, 1, 1, 10)
         with (
             patch(
+                "lifelog.worker.claim_utterance",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
                 "lifelog.worker.get_utterance_chunks",
                 new_callable=AsyncMock,
                 return_value=[{"audio_bytes": b"opus"}],
@@ -481,6 +486,11 @@ class TestHourlyReprocessing:
             patch("lifelog.worker.delete_utterance_chunks", new_callable=AsyncMock),
             patch("lifelog.worker.complete_utterance", new_callable=AsyncMock),
             patch("lifelog.worker.db") as mock_db,
+            patch("lifelog.worker.instant_open_session"),
+            patch("lifelog.worker.instant_feed_audio"),
+            patch("lifelog.worker.instant_get_transcript_events"),
+            patch("lifelog.worker.instant_uses_fallback"),
+            patch("lifelog.worker.instant_mark_fallback"),
         ):
             mock_db.get_utterance_queue_entry = AsyncMock(
                 return_value={"created_at": timestamp}
@@ -488,6 +498,7 @@ class TestHourlyReprocessing:
             mock_db.get_active_session = AsyncMock(return_value=None)
             mock_db.create_session = AsyncMock(return_value=7)
             mock_db.append_session_utterance = AsyncMock()
+            mock_db.get_user_settings = AsyncMock(return_value={"language": "auto"})
             await process_utterance(1, 9)
         mock_db.append_session_utterance.assert_awaited_once()
         mock_db.create_session.assert_awaited_once_with(1, timestamp)

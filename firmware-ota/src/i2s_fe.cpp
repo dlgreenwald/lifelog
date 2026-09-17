@@ -105,14 +105,16 @@ static void afeInit() {
         free(afe_config->vad_model_name);
         afe_config->vad_model_name = NULL;
     }
-    // Cache 512ms of audio before VAD reports speech onset — fixes front-of-clip truncation
-    afe_config->vad_delay_ms = 512;
+    // Cache 32ms of pre-speech audio (fits in one RING_ITEM_BYTES ring item).
+    // 512ms was too large — the cache was silently dropped whenever it didn't fit,
+    // causing the first word of every utterance to be lost.
+    afe_config->vad_delay_ms = 32;
 
-    // Enable AGC — default is off, audio too faint without it
-    afe_config->agc_init = false;
-    afe_config->agc_compression_gain_db = 6;   // compression gain (lower = less noise amplification)
-    afe_config->agc_target_level_dbfs = 3;     // target -3 dBFS envelope
-    afe_config->afe_linear_gain = 5.0;         // output multiplier (default 1.0)
+    // Enable AGC — drives signal to target level adaptively
+    afe_config->agc_init = true;
+    afe_config->agc_compression_gain_db = 12;  // max boost AGC can apply to quiet signals (esp-sr default 9)
+    afe_config->agc_target_level_dbfs = 3;    // target -3 dBFS envelope (industry standard for speech)
+    afe_config->afe_linear_gain = 1.0;         // no manual boost — AGC controls gain adaptively
 
     afe_handle = esp_afe_handle_from_config(afe_config);
     if (!afe_handle) {

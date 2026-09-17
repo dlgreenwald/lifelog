@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import logging
 import os
 import threading
@@ -11,7 +12,10 @@ import time
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+import numpy as np
+import soundfile as sf
+import structlog
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from audio import concatenate_segments, concatenate_segments_with_spans
@@ -20,12 +24,18 @@ from pipeline import (  # load_models called via model_manager.load()
     transcribe_audio,
 )
 
-logger = logging.getLogger("transcription-worker")
-
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+structlog.configure(
+    processors=[
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    context_class=dict,
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=False,
 )
+logger = structlog.get_logger()
 
 SERVER_URL = os.getenv("SERVER_URL", "http://server:8443").rstrip("/")
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "5"))
@@ -235,6 +245,203 @@ async def health():
         "models_loaded": bool(model_manager.get_models()),
         "last_activity": model_manager._last_activity,
     }
+
+
+@app.websocket("/ws/instant/{session_id}")
+async def ws_instant(websocket: WebSocket, session_id: int):
+    """Receive Opus audio from server, transcribe with faster-whisper, stream partial results.
+
+    Uses the existing model_manager (same GPU context and model weights as finalize-path jobs).
+    Server sends compressed Opus bytes; transcription-worker decodes internally via soundfile.
+    Partial transcripts sent as JSON:
+        {"type": "segment", "segments": [{start, end, text}, ...]}
+    """
+    await websocket.accept()
+    model_manager.record_activity()
+    import time
+
+    # Per-session language cache — detect once, reuse for all subsequent utterances
+    session_language: str | None = os.getenv("INSTANT_ASR_LANGUAGE") or None
+
+    try:
+        while True:
+            opus_data = await websocket.receive_bytes()
+            model_manager.begin_job()
+            chunk_start = time.monotonic()
+            try:
+                # Decode Opus/OGG to float32 numpy via soundfile (in-process, no subprocess)
+                audio_np, sr = sf.read(io.BytesIO(opus_data), dtype="float32")
+                audio_duration_s = len(audio_np) / sr if sr else 0.0
+
+                # Audio metrics (float32 normalized to [-1.0, 1.0])
+                if audio_np.size > 0:
+                    rms = float(np.sqrt(np.mean(audio_np.astype(np.float64) ** 2)))
+                    rms_dbfs = (20 * np.log10(rms)) if rms > 0 else -96.0
+                    peak = float(np.max(np.abs(audio_np)))
+                    peak_dbfs = (20 * np.log10(peak)) if peak > 0 else -96.0
+                    clipping_samples = int(np.sum(np.abs(audio_np) > 0.99))
+                    clipping_pct = round(100 * clipping_samples / audio_np.size, 2)
+                else:
+                    rms_dbfs = peak_dbfs = -96.0
+                    clipping_pct = 0.0
+
+                logger.debug(
+                    "instant_audio_received",
+                    session_id=session_id,
+                    audio_duration_s=round(audio_duration_s, 2),
+                    rms_dbfs=round(rms_dbfs, 1),
+                    peak_dbfs=round(peak_dbfs, 1),
+                    clipping_pct=clipping_pct,
+                )
+
+                # Guard against Whisper hallucinating on near-silence.
+                # Silent audio (rms_dbfs < -70) is rejected before hitting the ASR model.
+                # This prevents the common faster-whisper artefact of producing
+                # "Thank you" / "Thanks" on dead-air chunks.
+                SILENCE_RMS_DBFS_THRESHOLD = -70.0
+                SILENCE_MAX_DURATION_S = 3.0
+                if (
+                    rms_dbfs < SILENCE_RMS_DBFS_THRESHOLD
+                    and audio_duration_s < SILENCE_MAX_DURATION_S
+                ):
+                    logger.info(
+                        "instant_silence_rejected",
+                        session_id=session_id,
+                        audio_duration_s=round(audio_duration_s, 2),
+                        rms_dbfs=round(rms_dbfs, 1),
+                    )
+                    # Tell the server this utterance is silent so it can:
+                    # - Skip inserting into session_utterances (preserves gap detection)
+                    # - Skip starting/continuing a session with silence
+                    await websocket.send_json(
+                        {"type": "segment", "segments": [], "is_silent": True}
+                    )
+                    model_manager.end_job()
+                    continue
+
+                # Get the already-loaded faster-whisper model
+                models = model_manager.get_models()
+                whisper_model = models.get("asr") if models else None
+                if not whisper_model:
+                    # Models not loaded yet — load now (triggers watchdog keepalive)
+                    models = model_manager.load()
+                    whisper_model = models.get("asr")
+
+                if not whisper_model:
+                    raise RuntimeError("ASR model not available after load")
+
+                # Transcribe — use cached session language; detect on first utterance only
+                segments = []
+                transcript_error = None
+                try:
+                    result = whisper_model.transcribe(
+                        audio_np,
+                        language=session_language,
+                    )
+                    # whisperx may return a named tuple or dict depending on version
+                    if hasattr(result, "get"):
+                        segments = result.get("segments", []) if result else []
+                    elif isinstance(result, (list, tuple)) and len(result) > 0:
+                        first = result[0]
+                        if isinstance(first, list):
+                            segments = first
+                        elif isinstance(first, dict):
+                            segments = first.get("segments", [])
+                        else:
+                            segments = []
+                    else:
+                        segments = []
+                except Exception as e:
+                    transcript_error = f"{type(e).__name__}: {e}"
+
+                elapsed_s = time.monotonic() - chunk_start
+                full_text = " ".join(
+                    s["text"].strip() for s in segments if s.get("text", "").strip()
+                )
+
+                # On first successful transcription, cache detected language for session
+                if session_language is None and segments:
+                    detected = None
+                    if hasattr(result, "get"):
+                        detected = result.get("language", None)
+                    if (
+                        not detected
+                        and isinstance(result, (list, tuple))
+                        and len(result) > 1
+                    ):
+                        second = result[1]
+                        if isinstance(second, dict):
+                            detected = second.get("language", None)
+                    if detected:
+                        session_language = detected
+                        logger.info(
+                            "instant_language_detected",
+                            session_id=session_id,
+                            language=detected,
+                        )
+
+                print(
+                    f"[DEBUG ws_instant] session={session_id} BEFORE instant_transcribe logger.info",
+                    flush=True,
+                )
+                logger.info(
+                    "instant_transcribe",
+                    session_id=session_id,
+                    audio_duration_s=round(audio_duration_s, 2),
+                    rms_dbfs=round(rms_dbfs, 1),
+                    peak_dbfs=round(peak_dbfs, 1),
+                    clipping_pct=clipping_pct,
+                    segment_count=len(segments),
+                    transcript=full_text[:500],
+                    language=session_language or "auto",
+                    elapsed_s=round(elapsed_s, 3),
+                    rt_factor=round(audio_duration_s / elapsed_s, 2)
+                    if elapsed_s > 0
+                    else 0,
+                    transcript_error=transcript_error,
+                )
+
+                if transcript_error:
+                    logger.warning(
+                        "instant_transcribe_warning",
+                        session_id=session_id,
+                        audio_duration_s=round(audio_duration_s, 2),
+                        rms_dbfs=round(rms_dbfs, 1),
+                        peak_dbfs=round(peak_dbfs, 1),
+                        error=transcript_error,
+                    )
+                else:
+                    await websocket.send_json(
+                        {
+                            "type": "segment",
+                            "segments": [
+                                {
+                                    "start": s["start"],
+                                    "end": s["end"],
+                                    "text": s["text"],
+                                }
+                                for s in segments
+                            ],
+                            # Also flag as silent if Whisper ran but found no speech.
+                            # This catches audio that passed the RMS guard but produced
+                            # no transcript segments (e.g. very quiet real speech).
+                            "is_silent": len(segments) == 0,
+                        }
+                    )
+            except Exception as e:
+                # Catch unexpected errors so the websocket stays open
+                logger.error(
+                    "instant_transcribe_error",
+                    session_id=session_id,
+                    audio_duration_s=round(audio_duration_s, 2),
+                    rms_dbfs=round(rms_dbfs, 1),
+                    peak_dbfs=round(peak_dbfs, 1),
+                    error=f"{type(e).__name__}: {e}",
+                )
+            finally:
+                model_manager.end_job()
+    except WebSocketDisconnect:
+        pass
 
 
 async def _post_stage(client: httpx.AsyncClient, job_id: int, stage: str) -> None:

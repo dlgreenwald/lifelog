@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     quick_window_minutes: int = 5
     transcription_worker_poll_interval: int = 5
 
+    # Instant (per-utterance) transcription via WebSocket to transcription-worker
+    instant_transcribe_enabled: bool = True
+    transcription_worker_url: str = "http://transcription-worker:9000"
+    # Minimum audio duration (seconds) required before feeding to Whisper via instant pipeline.
+    # Short utterances are hallucination-prone. The finalize path (full WhisperX + diarization)
+    # still processes all utterances regardless of this setting.
+    instant_min_utterance_duration_seconds: float = 1.5
+
     class Config:
         env_file = ".env"
 

@@ -11,7 +11,8 @@ extern "C" esp_err_t esp_crt_bundle_attach(void *conf);
 
 static const char* TAG = "UPLOAD";
 
-bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool final, time_t recordedAt) {
+bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool isFinal,
+                time_t recordedAt, uint32_t startMs, uint32_t endMs) {
     if (WiFi.status() != WL_CONNECTED) {
         ESP_LOGW(TAG, "No WiFi connection");
         return false;
@@ -24,11 +25,6 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     uint32_t fileSize = probe.size();
     probe.close();
     sdGive();
-
-    if (fileSize < 4096) {
-        ESP_LOGD(TAG, "Discarded short clip: %s (%luB)", filename, (unsigned long)fileSize);
-        return true;
-    }
 
     uint32_t uploadStart = millis();
     ESP_LOGD(TAG, "Upload start: %s %luKB", filename, (unsigned long)(fileSize / 1024));
@@ -45,7 +41,7 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
                 file.close();
                 SD.remove(filename);
                 sdGive();
-                bool ok = uploadFileFromMemory(buf, fileSize, filename, uttId, chunkIdx, final, recordedAt);
+                bool ok = uploadFileFromMemory(buf, fileSize, filename, uttId, chunkIdx, isFinal, recordedAt, startMs, endMs);
                 free(buf);
                 return ok;
             }
@@ -71,7 +67,7 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     prefix += String(chunkIdx) + "\r\n";
     prefix += "--" + boundary + "\r\n";
     prefix += "Content-Disposition: form-data; name=\"is_final\"\r\n\r\n";
-    prefix += final ? "true" : "false";
+    prefix += isFinal ? "true" : "false";
     prefix += "\r\n";
     if (recordedAt > 0) {
         char recordedAtStr[32];
@@ -81,6 +77,13 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
         prefix += recordedAtStr;
         prefix += "\r\n";
     }
+    // System uptime ms for gap analysis between utterances
+    prefix += "--" + boundary + "\r\n";
+    prefix += "Content-Disposition: form-data; name=\"utterance_start_ms\"\r\n\r\n";
+    prefix += String(startMs) + "\r\n";
+    prefix += "--" + boundary + "\r\n";
+    prefix += "Content-Disposition: form-data; name=\"utterance_end_ms\"\r\n\r\n";
+    prefix += String(endMs) + "\r\n";
 
     // File part header
     String fileHeader = "--" + boundary + "\r\n";
@@ -199,9 +202,10 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool fi
     uint32_t elapsed = millis() - uploadStart;
     if (httpStatus == 200) {
         uint32_t rate = (elapsed > 0) ? (fileSize * 1000) / elapsed : 0;
-        ESP_LOGI(TAG, "Upload done: %s %lums %luB/s q=%lu", filename,
-                   (unsigned long)elapsed, (unsigned long)rate,
-                   (unsigned long)getUploadQueueDepth());
+        ESP_LOGI(TAG, "Upload done: %s %lums %luB/s q=%lu voice=%lu-%lums",
+                   filename, (unsigned long)elapsed, (unsigned long)rate,
+                   (unsigned long)getUploadQueueDepth(),
+                   (unsigned long)startMs, (unsigned long)endMs);
         return true;
     } else {
         ESP_LOGE(TAG, "Upload failed: %s %lums q=%lu status=%d", filename,
@@ -242,7 +246,7 @@ void uploadAllRecordings() {
     uint32_t orphanId = 0x80000000;
     int uploaded = 0;
     for (int i = 0; i < count; i++) {
-        if (uploadFile(paths[i], orphanId++, 0, true, 0)) {
+        if (uploadFile(paths[i], orphanId++, 0, true, 0, 0, 0)) {
             sdTake();
             SD.remove(paths[i]);
             sdGive();
@@ -298,7 +302,7 @@ static void autoUploadTask(void *pvParameters) {
 
         uint32_t orphanId = 0x80000000;
         for (int i = 0; i < count; i++) {
-            if (uploadFile(paths[i], orphanId++, 0, true, 0)) {
+            if (uploadFile(paths[i], orphanId++, 0, true, 0, 0, 0)) {
                 sdTake();
                 SD.remove(paths[i]);
                 sdGive();
@@ -314,16 +318,12 @@ void startAutoUploadTask() {
     ESP_LOGI(TAG, "Auto-upload task started (every 30s, core 1, stack 12288)");
 }
 bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
-                          const char *filename, uint32_t uttId,
-                          uint32_t chunkIdx, bool final, time_t recordedAt) {
+                          const char* filename, uint32_t uttId,
+                          uint32_t chunkIdx, bool isFinal, time_t recordedAt,
+                          uint32_t startMs, uint32_t endMs) {
     if (WiFi.status() != WL_CONNECTED) {
         ESP_LOGW(TAG, "No WiFi connection");
         return false;
-    }
-
-    if (size < 4096) {
-        ESP_LOGD(TAG, "Discarded short clip: %s (%luB)", filename, (unsigned long)size);
-        return true;
     }
 
     uint32_t uploadStart = millis();
@@ -346,7 +346,7 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
     prefix += String(chunkIdx) + "\r\n";
     prefix += "--" + boundary + "\r\n";
     prefix += "Content-Disposition: form-data; name=\"is_final\"\r\n\r\n";
-    prefix += final ? "true" : "false";
+    prefix += isFinal ? "true" : "false";
     prefix += "\r\n";
     if (recordedAt > 0) {
         char recordedAtStr[32];
@@ -356,6 +356,13 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
         prefix += recordedAtStr;
         prefix += "\r\n";
     }
+    // System uptime ms for gap analysis between utterances
+    prefix += "--" + boundary + "\r\n";
+    prefix += "Content-Disposition: form-data; name=\"utterance_start_ms\"\r\n\r\n";
+    prefix += String(startMs) + "\r\n";
+    prefix += "--" + boundary + "\r\n";
+    prefix += "Content-Disposition: form-data; name=\"utterance_end_ms\"\r\n\r\n";
+    prefix += String(endMs) + "\r\n";
 
     // File part header
     String fileHeader = "--" + boundary + "\r\n";
@@ -424,6 +431,7 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
             if (chunk > 4096) chunk = 4096;
             oauth2Client().write(data + totalSent, chunk);
             totalSent += chunk;
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
 
         // Write suffix
@@ -447,9 +455,10 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
     uint32_t elapsed = millis() - uploadStart;
     if (httpStatus == 200) {
         uint32_t rate = (elapsed > 0) ? (size * 1000) / elapsed : 0;
-        ESP_LOGI(TAG, "Upload done: %s %lums %luB/s q=%lu", filename,
-                   (unsigned long)elapsed, (unsigned long)rate,
-                   (unsigned long)getUploadQueueDepth());
+        ESP_LOGI(TAG, "Upload done: %s %lums %luB/s q=%lu voice=%lu-%lums",
+                   filename, (unsigned long)elapsed, (unsigned long)rate,
+                   (unsigned long)getUploadQueueDepth(),
+                   (unsigned long)startMs, (unsigned long)endMs);
         return true;
     } else {
         ESP_LOGE(TAG, "Upload failed: %s %lums q=%lu status=%d", filename,
