@@ -133,4 +133,29 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     }),
+  search: (params: {
+    q: string;
+    kind?: string;
+    status?: string;
+    speaker?: string;
+    date_from?: string;
+    date_to?: string;
+    participants?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const sp = new URLSearchParams();
+    sp.set('q', params.q);
+    if (params.kind) sp.set('kind', params.kind);
+    if (params.status) sp.set('status', params.status);
+    if (params.speaker) sp.set('speaker', params.speaker);
+    if (params.date_from) sp.set('date_from', params.date_from);
+    if (params.date_to) sp.set('date_to', params.date_to);
+    if (params.participants) sp.set('participants', params.participants);
+    if (params.limit !== undefined) sp.set('limit', String(params.limit));
+    if (params.offset !== undefined) sp.set('offset', String(params.offset));
+    return fetchApi(`/search?${sp.toString()}`);
+  },
+  getSearchFacets: () => fetchApi('/search/facets'),
+  reindexSearch: () => fetchApi('/search/reindex', { method: 'POST' }),
 };

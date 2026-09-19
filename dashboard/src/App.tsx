@@ -10,11 +10,14 @@ import TodoList from './components/TodoList';
 import DecisionsList from './components/DecisionsList';
 import SpeakerLabel from './components/SpeakerLabel';
 import SettingsPage from './pages/SettingsPage';
+import SearchPage from './pages/SearchPage';
 import { ThemeProvider } from './components/theme-provider';
 import { MobileNav } from './components/MobileNav';
 import { setAuthProvider } from './api/client';
 import { useEffect } from 'react';
 import { useIsMobile } from './hooks/use-mobile';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faSearch } from '@fortawesome/free-solid-svg-icons';
 
 function AppRoutes() {
   const { user, getAccessToken, userManager } = useAuth();
@@ -35,6 +38,9 @@ function AppRoutes() {
             <Link to="/decisions">Decisions</Link>
             <Link to="/speakers">Speakers</Link>
             <Link to="/settings">Settings</Link>
+            <Link to="/search" className="search-trigger">
+              <FontAwesomeIcon icon={faSearch} />
+            </Link>
           </nav>
         </header>
       )}
@@ -48,6 +54,7 @@ function AppRoutes() {
           <Route path="/decisions" element={<ProtectedRoute><DecisionsList /></ProtectedRoute>} />
           <Route path="/speakers" element={<ProtectedRoute><SpeakerLabel /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+          <Route path="/search" element={<ProtectedRoute><SearchPage /></ProtectedRoute>} />
         </Routes>
       </main>
       {user && isMobile && (

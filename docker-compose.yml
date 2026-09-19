@@ -39,6 +39,8 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - LOG_LEVEL=DEBUG
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - MEILI_HOST=${MEILI_HOST:-http://meilisearch:7700}
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -51,6 +53,8 @@ services:
       start_period: 30s
     depends_on:
       postgres:
+        condition: service_healthy
+      meilisearch:
         condition: service_healthy
       speaker-id:
         condition: service_started
@@ -145,6 +149,23 @@ services:
     # or after a host reboot. "no" would leave a stale container running.
     restart: unless-stopped
 
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    container_name: lifelog-meilisearch
+    ports:
+      - "7700:7700"
+    volumes:
+      - meilisearch_data:/meili_data
+    environment:
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-searchdevkey}
+      - MEILI_ENV=development
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--spider", "http://127.0.0.1:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres-data:
   audio-data:
+  meilisearch_data:

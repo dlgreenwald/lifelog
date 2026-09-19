@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faCalendar, faCheckSquare, faLightbulb, faUsers, faCog } from '@fortawesome/free-solid-svg-icons';
+import { faCalendar, faCheckSquare, faLightbulb, faUsers, faCog, faSearch } from '@fortawesome/free-solid-svg-icons';
 import { Button } from '@/components/ui/button';
 import { useIsMobile } from '@/hooks/use-mobile';
 
@@ -41,6 +41,10 @@ export default function MobileNavBar({ calendarOpen, onCalendarToggle }: MobileN
       <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/settings')}>
         <FontAwesomeIcon icon={faCog} />
         <span>Settings</span>
+      </Button>
+      <Button variant="ghost" size="sm" className="mobile-nav-btn" onClick={() => navigate('/search')}>
+        <FontAwesomeIcon icon={faSearch} />
+        <span>Search</span>
       </Button>
     </nav>
   );

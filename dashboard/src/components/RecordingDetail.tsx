@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { formatDateTime } from '../utils/format';
 import AudioPlayer from './AudioPlayer';
@@ -27,6 +27,9 @@ export default function RecordingDetail() {
   const [decisionFormMadeBy, setDecisionFormMadeBy] = useState('Me');
   const [decisionFormContext, setDecisionFormContext] = useState('');
   const [decisionFormReason, setDecisionFormReason] = useState('');
+
+  const [searchParams] = useSearchParams();
+  const highlightSegment = searchParams.get('segment');
 
   const isLive = id?.startsWith('active-');
   const numericRecordingId = id && !isLive ? Number(id) : undefined;
@@ -132,6 +135,19 @@ export default function RecordingDetail() {
       }).catch(() => setRecordingDecisions([]));
     }
   }, [recording, isLive, id]);
+
+  // Scroll-to-segment and highlight from search deep-link
+  useEffect(() => {
+    if (highlightSegment === null || !recording) return;
+    const segmentIdx = parseInt(highlightSegment, 10);
+    const el = document.getElementById(`segment-${segmentIdx}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('segment-highlight');
+      const timer = setTimeout(() => el.classList.remove('segment-highlight'), 2500);
+      return () => clearTimeout(timer);
+    }
+  }, [highlightSegment, recording]);
 
   const handleTodoToggle = async (todo: Todo) => {
     const newCompleted = !todo.completed;
@@ -311,7 +327,7 @@ export default function RecordingDetail() {
             <h3>Transcript</h3>
             <ul>
               {displaySpeakers.map((speaker, i) => (
-                <li key={i} className={!isLive && speaker.name === 'Unknown' ? 'unknown' : ''}>
+                <li key={i} id={`segment-${i}`} className={!isLive && speaker.name === 'Unknown' ? 'unknown' : ''}>
                   {!isLive && <span className="speaker-name">{speaker.name}: </span>}
                   {speaker.text}
                 </li>

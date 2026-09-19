@@ -102,3 +102,32 @@ export interface UserSettings {
     language: string;
     llm_context: string;
 }
+
+export interface SearchHit {
+  id: string;
+  conversation_id: number;
+  turn: number;
+  text: string;
+  title: string;
+  speaker: string;
+  kind: 'turn' | 'summary' | 'decision' | 'todo';
+  date: string;
+  status?: 'open' | 'done';
+  _matchesPosition?: Record<string, Array<{ start: number; length: number }>>;
+}
+
+export interface SearchResponse {
+  hits: SearchHit[];
+  total: number;
+  limit: number;
+  offset: number;
+  processingTimeMs: number;
+  query: string;
+}
+
+export interface Facets {
+  kinds: string[];
+  speakers: string[];
+  statuses: string[];
+  participants: string[];
+}

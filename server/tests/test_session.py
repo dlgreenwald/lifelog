@@ -555,6 +555,8 @@ class TestHourlyReprocessing:
         ]
         with (
             patch("lifelog.worker.db") as mock_db,
+            patch("lifelog.ingest.db", mock_db),
+            patch("lifelog.ingest.ingest_recording", new_callable=AsyncMock),
             patch(
                 "lifelog.worker.get_user_secret",
                 new_callable=AsyncMock,
