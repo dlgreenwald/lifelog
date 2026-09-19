@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import io
 import os
+import subprocess
+import tempfile
 import wave
 from typing import Any
 
@@ -348,13 +350,13 @@ def group_into_speaker_segments(segments: list[dict]) -> list[dict]:
     return groups
 
 
-def _extract_segment_wav(
+def _extract_segment_opus(
     audio_np: np.ndarray,
     sample_rate: int,
     segments: list[dict],
     indices: list[int],
 ) -> str:
-    """Extract selected segment ranges as base64-encoded mono PCM WAV."""
+    """Extract selected segment ranges as base64-encoded Opus."""
     audio_np = waveform_to_numpy(audio_np)
     if sample_rate <= 0:
         return ""
@@ -375,13 +377,32 @@ def _extract_segment_wav(
         return ""
     samples = np.concatenate(slices)
     pcm = np.clip(samples * 32768.0, -32768, 32767).astype("<i2").tobytes()
-    output = io.BytesIO()
-    with wave.open(output, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(pcm)
-    return base64.b64encode(output.getvalue()).decode("ascii")
+    with tempfile.TemporaryDirectory(prefix="opus-seg-") as tmpdir:
+        wav_path = os.path.join(tmpdir, "input.wav")
+        opus_path = os.path.join(tmpdir, "output.opus")
+        with wave.open(wav_path, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(pcm)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                wav_path,
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "24k",
+                opus_path,
+            ],
+            capture_output=True,
+            timeout=60,
+            check=True,
+        )
+        with open(opus_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("ascii")
 
 
 def _as_segment_dicts(segments: Any) -> list[dict]:
@@ -489,7 +510,7 @@ def transcribe_audio(
         segment = {
             key: value for key, value in group.items() if key != "segment_indices"
         }
-        segment["audio"] = _extract_segment_wav(
+        segment["audio"] = _extract_segment_opus(
             audio_np, sample_rate, segments, group["segment_indices"]
         )
         speaker_segments.append(segment)

@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from datetime import UTC, datetime
 
 import asyncpg
@@ -1010,7 +1011,7 @@ async def mark_session_processed(session_id: int):
         await conn.execute(
             """
             UPDATE sessions
-            SET status = 'processed'
+            SET status = 'processed', session_processed_at = NOW()
             WHERE id = $1
             """,
             session_id,
@@ -1911,6 +1912,64 @@ async def get_recording_audio_filenames(session_id: int) -> list[str]:
             session_id,
         )
         return [row["audio_filename"] for row in rows]
+
+
+async def get_oldest_session_recordings(user_id: int) -> list[dict]:
+    """Oldest recordings first for quota enforcement."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            "SELECT r.id, r.session_id, r.created_at FROM recordings r "
+            "WHERE r.user_id = $1 AND r.session_id IS NOT NULL "
+            "ORDER BY r.created_at ASC",
+            user_id,
+        )
+
+
+async def get_audio_files_for_session(session_id: int) -> list[str]:
+    """All .enc filenames for a session (utterances + speaker_segments)."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT audio_filename FROM session_utterances "
+            "WHERE session_id = $1 AND audio_filename != ''",
+            session_id,
+        )
+        seg_rows = await conn.fetch(
+            "SELECT ss.audio_filename FROM speaker_segments ss "
+            "JOIN recordings r ON r.id = ss.recording_id "
+            "WHERE r.session_id = $1 AND ss.audio_filename != ''",
+            session_id,
+        )
+    names = {r["audio_filename"] for r in rows} | {
+        r["audio_filename"] for r in seg_rows
+    }
+    return list(names)
+
+
+async def get_audio_files_for_user(user_id: int) -> list[tuple[str, int]]:
+    """All .enc filenames with sizes for a user."""
+    files = []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT s.id FROM sessions s WHERE s.user_id = $1", user_id
+        )
+    for row in rows:
+        session_files = await get_audio_files_for_session(row["id"])
+        for fname in session_files:
+            fpath = os.path.join(settings.audio_storage_path, fname)
+            try:
+                size = os.path.getsize(fpath)
+            except OSError:
+                size = 0
+            files.append((fname, size))
+    return files
+
+
+async def get_session_processed_at(session_id: int) -> datetime | None:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT session_processed_at FROM sessions WHERE id = $1", session_id
+        )
+    return row["session_processed_at"] if row else None
 
 
 # ── Daily summaries ────────────────────────────────────────────────
