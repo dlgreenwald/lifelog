@@ -13,14 +13,14 @@ import MobileNavBar from '@/components/MobileNavBar';
 import { useIsMobile } from '@/hooks/use-mobile';
 
 const KIND_OPTIONS = [
-  { value: 'turn', label: 'Turn' },
+  { value: 'transcript', label: 'Transcript' },
   { value: 'summary', label: 'Summary' },
   { value: 'decision', label: 'Decision' },
   { value: 'todo', label: 'Todo' },
 ];
 
 const KIND_COLORS: Record<string, string> = {
-  turn: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
+  transcript: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
   summary: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
   decision: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
   todo: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
@@ -428,9 +428,13 @@ export default function SearchPage() {
                 <SearchHitCard
                   key={hit.id}
                   hit={hit}
-                  onNavigate={() =>
-                    navigate(`/recording/${hit.conversation_id}?segment=${hit.turn}&q=${encodeURIComponent(query)}`)
-                  }
+                  onNavigate={() => {
+                    const params = new URLSearchParams({ q: query });
+                    if (hit._matchesPosition) {
+                      params.set('matches', btoa(JSON.stringify(hit._matchesPosition)));
+                    }
+                    navigate(`/recording/${hit.conversation_id}?${params}`);
+                  }}
                 />
               ))}
 

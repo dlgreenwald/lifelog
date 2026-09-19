@@ -2,22 +2,21 @@
 Meilisearch client for full-text search across conversation content.
 
 Searchable content types (kinds):
-  - "turn"     — individual transcript turns
-  - "summary"  — session/conversation summary
-  - "decision" — extracted decisions
-  - "todo"     — extracted todos
+  - "transcript" — full transcript text for a recording (one doc per recording)
+  - "summary"    — session/conversation summary (one doc per recording)
+  - "decision"   — extracted decisions (one doc per decision)
+  - "todo"       — extracted todos (one doc per todo)
 
 Document shape (shared across all kinds):
   {
-    "id": "u{user_id}_c{conversation_id}_t{turn}",  # unique doc id
+    "id": "u{user_id}_c{conversation_id}_transcript",  # unique doc id
     "conversation_id": int,
-    "turn": int,            # segment/turn index within the conversation; 0 for summaries/decisions/todos
-    "text": str,            # primary searchable text (transcript turn, decision text, todo task, summary)
+    "text": str,            # primary searchable text (transcript, summary, decision, todo)
     "title": str,           # conversation/session title; "" if unavailable
-    "speaker": str,         # speaker name for turn docs; "" for non-turn docs
-    "kind": str,            # "turn" | "summary" | "decision" | "todo"
-    "date": "YYYY-MM-DD",  # extracted from timestamp; "" for non-turn docs
-    "participants": [],      # list of speaker names for summary docs
+    "speaker": str,         # speaker name for transcript docs; "" for other kinds
+    "kind": str,            # "transcript" | "summary" | "decision" | "todo"
+    "date": "YYYY-MM-DD",  # date of the recording; "" for decisions/todos without dates
+    "participants": [],      # list of speaker names for transcript/summary docs
     "status": str,          # "open" | "done" for todos; "" otherwise
     "topics": str,          # comma-separated topics for summary docs
   }
@@ -35,7 +34,7 @@ from lifelog.config import settings
 # ── Constants ────────────────────────────────────────────────────────
 
 INDEX_NAME = "conversations"
-KIND_TURN = "turn"
+KIND_TRANSCRIPT = "transcript"
 KIND_SUMMARY = "summary"
 KIND_DECISION = "decision"
 KIND_TODO = "todo"
@@ -82,7 +81,7 @@ def build_index() -> None:
         {
             "enabled": True,
             "minWordSizeForTypos": {
-                "oneTypo": 4,   # words >= 4 chars: up to 1 typo
+                "oneTypo": 4,  # words >= 4 chars: up to 1 typo
                 "twoTypos": 8,  # words >= 8 chars: up to 2 typos
             },
         }
@@ -101,26 +100,26 @@ def delete_index() -> None:
 # ── Document upserts ────────────────────────────────────────────────
 
 
-def upsert_turn(
+def upsert_recording(
     user_id: int,
     conversation_id: int,
-    turn: int,
-    text: str,
-    speaker: str,
-    timestamp: str,
+    full_text: str,
     title: str = "",
+    date: str = "",
+    participants: list[str] | None = None,
 ) -> None:
-    """Upsert a single transcript turn document."""
+    """Upsert a single document for a recording's full transcript."""
+    if not full_text.strip():
+        return
     doc = {
-        "id": f"u{user_id}_c{conversation_id}_t{turn}",
+        "id": f"u{user_id}_c{conversation_id}_transcript",
         "conversation_id": conversation_id,
-        "turn": turn,
-        "text": text,
+        "text": full_text,
         "title": title,
-        "speaker": speaker,
-        "kind": KIND_TURN,
-        "date": timestamp[:10] if timestamp else "",
-        "participants": [],
+        "speaker": "",
+        "kind": KIND_TRANSCRIPT,
+        "date": date[:10] if date else "",
+        "participants": participants or [],
         "status": "",
         "topics": "",
     }
@@ -140,7 +139,6 @@ def upsert_summary(
     doc = {
         "id": f"u{user_id}_c{conversation_id}_summary",
         "conversation_id": conversation_id,
-        "turn": 0,
         "text": text,
         "title": title,
         "speaker": "",
@@ -156,15 +154,14 @@ def upsert_summary(
 def upsert_decision(
     user_id: int,
     conversation_id: int,
-    turn: int,
+    idx: int,
     text: str,
     title: str = "",
 ) -> None:
     """Upsert a decision document."""
     doc = {
-        "id": f"u{user_id}_c{conversation_id}_decision_{turn}",
+        "id": f"u{user_id}_c{conversation_id}_decision_{idx}",
         "conversation_id": conversation_id,
-        "turn": turn,
         "text": text,
         "title": title,
         "speaker": "",
@@ -180,16 +177,15 @@ def upsert_decision(
 def upsert_todo(
     user_id: int,
     conversation_id: int,
-    turn: int,
+    idx: int,
     text: str,
     status: str,
     title: str = "",
 ) -> None:
     """Upsert a todo document."""
     doc = {
-        "id": f"u{user_id}_c{conversation_id}_todo_{turn}",
+        "id": f"u{user_id}_c{conversation_id}_todo_{idx}",
         "conversation_id": conversation_id,
-        "turn": turn,
         "text": text,
         "title": title,
         "speaker": "",
@@ -253,7 +249,6 @@ def search(
             "attributesToRetrieve": [
                 "id",
                 "conversation_id",
-                "turn",
                 "text",
                 "title",
                 "speaker",

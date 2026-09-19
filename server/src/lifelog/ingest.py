@@ -6,13 +6,12 @@ Used to:
   - Rebuild the full index for a user (reindex endpoint).
 
 Each recording/session produces one document per:
-  - Transcript turn  (kind="turn")
-  - Summary          (kind="summary")
-  - Decision         (kind="decision")
-  - Todo             (kind="todo")
+  - Full transcript   (kind="transcript", one per recording)
+  - Summary           (kind="summary", one per recording)
+  - Decision          (kind="decision", one per decision)
+  - Todo              (kind="todo", one per todo)
 
-The conversation_id is the recording.id.  The turn index for kind="turn" documents
-is the sequential segment index within that recording's transcript.
+The conversation_id is the recording.id.
 """
 
 import json
@@ -56,25 +55,31 @@ def _speaker_names_from_recording(recording: dict) -> list[str]:
     return names
 
 
-def _extract_turns(recording: dict) -> list[dict]:
-    """Yield turn dicts with index from a recording's transcript JSONB.
+def _build_full_transcript(recording: dict) -> str:
+    """Concatenate all transcript segments into a single searchable text string.
 
-    Each turn: { "index": int, "text": str, "speaker": str }
+    Each segment is prefixed with its speaker name so speaker attributions
+    are also searchable.
     """
     transcript = recording.get("transcript") or {}
     if isinstance(transcript, str):
         try:
             transcript = json.loads(transcript)
         except (json.JSONDecodeError, ValueError):
-            return []
+            return ""
     segments = (
         transcript if isinstance(transcript, list) else transcript.get("segments") or []
     )
-    for i, seg in enumerate(segments):
+    parts = []
+    for seg in segments:
         text = seg.get("text") or ""
         speaker = seg.get("speaker") or seg.get("name") or ""
         if text.strip():
-            yield {"index": i, "text": text.strip(), "speaker": speaker}
+            if speaker:
+                parts.append(f"{speaker}: {text.strip()}")
+            else:
+                parts.append(text.strip())
+    return " ".join(parts)
 
 
 async def ingest_recording(user_id: int, recording_id: int) -> int:
@@ -108,16 +113,16 @@ async def ingest_recording(user_id: int, recording_id: int) -> int:
 
     count = 0
 
-    # ── Turns ────────────────────────────────────────────────────────
-    for turn in _extract_turns(recording):
-        search.upsert_turn(
+    # ── Full transcript ─────────────────────────────────────────────
+    full_text = _build_full_transcript(recording)
+    if full_text:
+        search.upsert_recording(
             user_id=user_id,
             conversation_id=recording_id,
-            turn=turn["index"],
-            text=turn["text"],
-            speaker=turn["speaker"],
-            timestamp=timestamp,
+            full_text=full_text,
             title=title,
+            date=timestamp,
+            participants=speakers,
         )
         count += 1
 
@@ -152,7 +157,7 @@ async def ingest_recording(user_id: int, recording_id: int) -> int:
             search.upsert_decision(
                 user_id=user_id,
                 conversation_id=recording_id,
-                turn=i,
+                idx=i,
                 text=text,
                 title=title,
             )
@@ -176,7 +181,7 @@ async def ingest_recording(user_id: int, recording_id: int) -> int:
             search.upsert_todo(
                 user_id=user_id,
                 conversation_id=recording_id,
-                turn=i,
+                idx=i,
                 text=text,
                 status=status,
                 title=title,

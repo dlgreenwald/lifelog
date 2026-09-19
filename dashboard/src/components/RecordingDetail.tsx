@@ -29,7 +29,73 @@ export default function RecordingDetail() {
   const [decisionFormReason, setDecisionFormReason] = useState('');
 
   const [searchParams] = useSearchParams();
-  const highlightSegment = searchParams.get('segment');
+  const highlightQuery = searchParams.get('q') || '';
+  /** Meilisearch _matchesPosition: field name → [{start, length}, ...] */
+  const highlightMatches: Record<string, Array<{ start: number; length: number }>> | null = (() => {
+    const raw = searchParams.get('matches');
+    if (!raw) return null;
+    try { return JSON.parse(atob(raw)); } catch { return null; }
+  })();
+
+  /**
+   * Apply Meilisearch _matchesPosition highlights to a segment's text.
+   * Offsets are relative to the full indexed transcript; we adjust them
+   * to be relative to this segment's position within the full text.
+   */
+  function highlightSegment(
+    rawText: string,
+    range: { start: number; end: number },
+  ): React.ReactNode {
+    const text = rawText;
+    if (!highlightMatches) {
+      // Fallback: word-boundary regex on query terms
+      if (!highlightQuery.trim()) return text;
+      const terms = highlightQuery.trim().split(/\s+/).filter(Boolean);
+      if (!terms.length) return text;
+      const pattern = new RegExp(
+        `\\b(${terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'gi'
+      );
+      const parts = text.split(pattern);
+      if (parts.length === 1) return text;
+      return <>{parts.map((part, i) =>
+        i % 2 === 1 ? <mark key={i} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{part}</mark> : part
+      )}</>;
+    }
+    const allRanges = highlightMatches['text'];
+    if (!allRanges || allRanges.length === 0) return text;
+
+    // Filter ranges that fall within this segment's character span
+    const localRanges: Array<{ start: number; end: number }> = [];
+    for (const r of allRanges) {
+      const rStart = r.start;
+      const rEnd = r.start + r.length;
+      if (rEnd < range.start || rStart >= range.end) continue; // outside this segment
+      localRanges.push({
+        start: Math.max(0, rStart - range.start),
+        end: Math.min(text.length, rEnd - range.start),
+      });
+    }
+    if (localRanges.length === 0) return text;
+
+    // Sort and merge overlapping ranges
+    const sorted = [...localRanges].sort((a, b) => a.start - b.start);
+    const merged: Array<{ start: number; end: number }> = [];
+    for (const r of sorted) {
+      const last = merged[merged.length - 1];
+      if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
+      else merged.push({ start: r.start, end: r.end });
+    }
+
+    const parts: React.ReactNode[] = [];
+    let pos = 0;
+    for (const { start, end } of merged) {
+      if (start > pos) parts.push(text.slice(pos, start));
+      parts.push(<mark key={pos} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{text.slice(start, end)}</mark>);
+      pos = end;
+    }
+    if (pos < text.length) parts.push(text.slice(pos));
+    return <>{parts}</>;
+  }
 
   const isLive = id?.startsWith('active-');
   const numericRecordingId = id && !isLive ? Number(id) : undefined;
@@ -136,18 +202,7 @@ export default function RecordingDetail() {
     }
   }, [recording, isLive, id]);
 
-  // Scroll-to-segment and highlight from search deep-link
-  useEffect(() => {
-    if (highlightSegment === null || !recording) return;
-    const segmentIdx = parseInt(highlightSegment, 10);
-    const el = document.getElementById(`segment-${segmentIdx}`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      el.classList.add('segment-highlight');
-      const timer = setTimeout(() => el.classList.remove('segment-highlight'), 2500);
-      return () => clearTimeout(timer);
-    }
-  }, [highlightSegment, recording]);
+
 
   const handleTodoToggle = async (todo: Todo) => {
     const newCompleted = !todo.completed;
@@ -265,18 +320,33 @@ export default function RecordingDetail() {
     setRecording(prev => prev ? { ...prev, category } : null);
   };
 
-  const displaySpeakers: Speaker[] = recording?.speakers?.length
-    ? recording.speakers
-    : (recording?.transcript?.segments ?? []).map((segment, index) => ({
-      id: index,
-      name: segment.name ?? segment.speaker ?? 'Unknown',
-      start: typeof segment.start === 'number' ? segment.start : 0,
-      end: typeof segment.end === 'number' ? segment.end : 0,
-      text: segment.text ?? '',
-    }));
+  // Build the full concatenated transcript text (matches how it's indexed in Meilisearch)
+  // so character offsets from _matchesPosition map correctly.
+  const rawSegments: Array<{ name: string; text: string }> = (
+    recording?.transcript?.segments ?? []
+  ).map(seg => ({
+    name: seg.name ?? seg.speaker ?? 'Unknown',
+    text: seg.text ?? '',
+  }));
 
-  const uniqueSpeakers = displaySpeakers.reduce<Speaker[]>((acc, s) => {
-    if (!acc.some(a => a.name === s.name)) acc.push(s);
+
+  const segmentCharRanges: Array<{ start: number; end: number }> = (() => {
+    const ranges: Array<{ start: number; end: number }> = [];
+    let pos = 0;
+    for (const seg of rawSegments) {
+      const prefix = seg.text.trim() ? `${seg.name}: ` : '';
+      const text = seg.text.trim();
+      const segText = prefix + text;
+      ranges.push({ start: pos, end: pos + segText.length });
+      pos += segText.length + 1; // +1 for space separator
+    }
+    return ranges;
+  })();
+
+  const uniqueSpeakers = rawSegments.reduce<Speaker[]>((acc, seg, i) => {
+    if (!acc.some(a => a.name === seg.name)) {
+      acc.push({ id: i, name: seg.name, start: 0, end: 0, text: seg.text });
+    }
     return acc;
   }, []);
 
@@ -321,17 +391,21 @@ export default function RecordingDetail() {
         </div>
       )}
 
-      {displaySpeakers.length > 0 && (
+      {rawSegments.length > 0 && (
         <>
           <div className="speakers">
             <h3>Transcript</h3>
             <ul>
-              {displaySpeakers.map((speaker, i) => (
-                <li key={i} id={`segment-${i}`} className={!isLive && speaker.name === 'Unknown' ? 'unknown' : ''}>
-                  {!isLive && <span className="speaker-name">{speaker.name}: </span>}
-                  {speaker.text}
-                </li>
-              ))}
+              {rawSegments.map((seg, i) => {
+                const text = seg.text.trim();
+                const range = segmentCharRanges[i] ?? { start: 0, end: 0 };
+                return (
+                  <li key={i} className={!isLive && seg.name === 'Unknown' ? 'unknown' : ''}>
+                    {!isLive && <span className="speaker-name">{seg.name}: </span>}
+                    {highlightSegment(text, range)}
+                  </li>
+                );
+              })}
             </ul>
           </div>
           {!isLive && uniqueSpeakers.filter(s => s.name === 'Unknown' || s.name.startsWith('SPEAKER_')).length > 0 && (
@@ -359,7 +433,13 @@ export default function RecordingDetail() {
           <h3>Audio</h3>
           <AudioPlayer
             sources={audioUrls}
-            segments={displaySpeakers}
+            segments={rawSegments.map((s, i) => ({
+              id: i,
+              name: s.name,
+              text: s.text,
+              start: 0,
+              end: 0,
+            }))}
           />
         </div>
       )}

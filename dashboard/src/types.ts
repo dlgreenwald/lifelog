@@ -106,11 +106,10 @@ export interface UserSettings {
 export interface SearchHit {
   id: string;
   conversation_id: number;
-  turn: number;
   text: string;
   title: string;
   speaker: string;
-  kind: 'turn' | 'summary' | 'decision' | 'todo';
+  kind: 'transcript' | 'summary' | 'decision' | 'todo';
   date: string;
   status?: 'open' | 'done';
   _matchesPosition?: Record<string, Array<{ start: number; length: number }>>;
