@@ -65,6 +65,25 @@ class AudioEncryption:
 
         return fernet.decrypt(encrypted_data)
 
+    def delete_audio(self, filename: str) -> bool:
+        """Delete an encrypted audio file from disk. Returns True if deleted."""
+        safe_name = os.path.basename(filename)
+        if not re.match(r"^[a-f0-9\-]{36}\.enc$", safe_name):
+            return False
+        filepath = os.path.join(self.storage_path, safe_name)
+        real_storage = os.path.realpath(self.storage_path)
+        real_filepath = os.path.realpath(filepath)
+        if (
+            not real_filepath.startswith(real_storage + os.sep)
+            and real_filepath != real_storage
+        ):
+            return False
+        try:
+            os.remove(filepath)
+            return True
+        except OSError:
+            return False
+
 
 from lifelog.config import settings
 

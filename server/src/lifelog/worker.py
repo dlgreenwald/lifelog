@@ -37,6 +37,7 @@ logger = structlog.get_logger()
 # Used as sort fallback; comparisons between naive datetimes are well-defined.
 _NAIVE_MIN = datetime(1900, 1, 1)  # noqa: DTZ001
 POLL_INTERVAL = 60.0
+CLEANUP_INTERVAL = 3600.0
 MAX_RETRY_COUNT = 3
 
 # Out-of-order utterance tracking: session_id -> highest processed utterance_id
@@ -50,6 +51,7 @@ _session_queues: dict[int, asyncio.Queue] = {}
 _session_workers: dict[int, asyncio.Task] = {}
 # (session_id, utterance_id) -> asyncio.Event for signaling worker completion
 _session_item_events: dict[tuple[int, int], asyncio.Event] = {}
+_last_cleanup: float = 0.0
 
 
 async def _session_worker(session_id: int) -> None:
@@ -1561,6 +1563,7 @@ async def _finalize_completed_sessions() -> None:
                 all_recording_ids.append(recording_id)
 
             await db.mark_session_processed(session["id"])
+            await _cleanup_raw_audio(session["id"])
 
             # ── Speaker re-identification ──
             for rid in all_recording_ids:
@@ -1586,6 +1589,84 @@ async def _finalize_completed_sessions() -> None:
 
         except Exception:
             logger.exception("session_finalize_error", session_id=session["id"])
+
+
+async def _cleanup_raw_audio(session_id: int) -> None:
+    """Delete session_utterance audio files 24h after session is processed."""
+    processed_at = await db.get_session_processed_at(session_id)
+    if not processed_at:
+        return
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=24)
+    if processed_at > cutoff:
+        return  # less than 24h since processed
+    files = await db.get_audio_files_for_session(session_id)
+    deleted = 0
+    for fname in files:
+        if audio_crypto.delete_audio(fname):
+            deleted += 1
+    if deleted:
+        logger.info("cleanup_raw_audio_deleted", session_id=session_id, count=deleted)
+
+
+async def _cleanup_user_audio(user_id: int) -> None:
+    """Enforce audio_retention_days and audio_storage_limit_gb for one user."""
+    # Age-based cleanup
+    if settings.audio_retention_days > 0:
+        cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+            days=settings.audio_retention_days
+        )
+        async with db.pool.acquire() as conn:
+            old_sessions = await conn.fetch(
+                "SELECT id FROM sessions WHERE user_id = $1 AND created_at < $2",
+                user_id,
+                cutoff,
+            )
+        for session in old_sessions:
+            files = await db.get_audio_files_for_session(session["id"])
+            for fname in files:
+                audio_crypto.delete_audio(fname)
+            logger.info(
+                "cleanup_age_deleted_session",
+                user_id=user_id,
+                session_id=session["id"],
+                file_count=len(files),
+            )
+    # Storage-quota cleanup
+    if settings.audio_storage_limit_gb > 0:
+        limit_bytes = settings.audio_storage_limit_gb * 1024 * 1024 * 1024
+        files = await db.get_audio_files_for_user(user_id)
+        total = sum(size for _, size in files)
+        if total <= limit_bytes:
+            return
+        recordings = await db.get_oldest_session_recordings(user_id)
+        for rec in recordings:
+            if total <= limit_bytes:
+                break
+            files_to_delete = await db.get_audio_files_for_session(rec["session_id"])
+            for fname in files_to_delete:
+                if audio_crypto.delete_audio(fname):
+                    file_size = next((size for f, size in files if f == fname), 0)
+                    total -= file_size
+                    logger.info(
+                        "cleanup_quota_deleted_file",
+                        user_id=user_id,
+                        filename=fname,
+                        size=file_size,
+                        remaining=total,
+                    )
+
+
+async def _cleanup_audio() -> None:
+    """Enforce audio_retention_days and audio_storage_limit_gb per user."""
+    if settings.audio_retention_days == 0 and settings.audio_storage_limit_gb == 0:
+        return
+    async with db.pool.acquire() as conn:
+        rows = await conn.fetch("SELECT DISTINCT user_id FROM users")
+    for row in rows:
+        try:
+            await _cleanup_user_audio(row["user_id"])
+        except Exception:
+            logger.exception("user_audio_cleanup_error", user_id=row["user_id"])
 
 
 async def worker_loop():
@@ -1649,6 +1730,15 @@ async def worker_loop():
                 await _finalize_completed_sessions()
             except Exception:
                 logger.exception("completed_sessions_finalize_error")
+            # Periodic audio cleanup (storage limits + age limits)
+            global _last_cleanup
+            now = time.monotonic()
+            if now - _last_cleanup >= CLEANUP_INTERVAL:
+                _last_cleanup = now
+                try:
+                    await _cleanup_audio()
+                except Exception:
+                    logger.exception("cleanup_audio_error")
         except Exception:
             logger.exception("worker_poll_error")
         await asyncio.sleep(POLL_INTERVAL)

@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from pipeline import (
-    _extract_segment_wav,
+    _extract_segment_opus,
     _patch_huggingface_hub_use_auth_token,
     _register_omegaconf_safe_globals,
     group_into_speaker_segments,
@@ -48,10 +48,10 @@ def test_missing_speaker_defaults_unknown():
 
 
 def test_wav_extraction_is_bounded():
-    encoded = _extract_segment_wav(
+    encoded = _extract_segment_opus(
         np.arange(10, dtype=np.float32), 10, [{"start": -1, "end": 0.5}], [0]
     )
-    assert base64.b64decode(encoded).startswith(b"RIFF")
+    assert base64.b64decode(encoded).startswith(b"OggS")
 
 
 def test_quick_transcribe_only_calls_asr():
