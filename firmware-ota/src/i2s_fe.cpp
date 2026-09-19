@@ -90,7 +90,7 @@ static void afeInit() {
         return;
     }
     // Use official defaults — let afe_config_init set everything
-    afe_config_t *afe_config = afe_config_init("M", models, AFE_TYPE_VC, AFE_MODE_LOW_COST);
+    afe_config_t *afe_config = afe_config_init("M", models, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
     if (!afe_config) {
         ESP_LOGE(TAG, "afe_config_init failed");
         return;
@@ -99,20 +99,21 @@ static void afeInit() {
     afe_config->wakenet_init = false;
     afe_config->aec_init = false;
 
-    // Switch to WebRTC VAD (simpler, more reliable than VADNet)
-    // Setting vad_model_name to NULL triggers WebRTC fallback
-    if (afe_config->vad_model_name) {
-        free(afe_config->vad_model_name);
-        afe_config->vad_model_name = NULL;
-    }
-    // Cache 512ms of audio before VAD reports speech onset — fixes front-of-clip truncation
-    afe_config->vad_delay_ms = 512;
+    // Enable Noise Suprression as VADNet expects it
+    afe_config->ns_init = true;   // put nsnet2 in front of VADNet
 
-    // Enable AGC — default is off, audio too faint without it
-    afe_config->agc_init = false;
-    afe_config->agc_compression_gain_db = 6;   // compression gain (lower = less noise amplification)
-    afe_config->agc_target_level_dbfs = 3;     // target -3 dBFS envelope
-    afe_config->afe_linear_gain = 5.0;         // output multiplier (default 1.0)
+    // --- VAD (VADNet) ---
+    afe_config->vad_init = true;              // default is true [^c13304#34-38]
+    afe_config->vad_mode = VAD_MODE_3;        // higher mode = more trigger-happy
+    afe_config->vad_min_speech_ms = 128;      // min continuous speech before VAD triggers
+    afe_config->vad_min_noise_ms = 1000;      // min silence before VAD declares end of speech
+    afe_config->vad_delay_ms = 128;
+
+    // Enable AGC — drives signal to target level adaptively
+    afe_config->agc_init = true;
+    afe_config->agc_compression_gain_db = 12;  // max boost AGC can apply to quiet signals (esp-sr default 9)
+    afe_config->agc_target_level_dbfs = 3;    // target -3 dBFS envelope (industry standard for speech)
+    afe_config->afe_linear_gain = 1.0;         // no manual boost — AGC controls gain adaptively
 
     afe_handle = esp_afe_handle_from_config(afe_config);
     if (!afe_handle) {
@@ -179,6 +180,34 @@ static void flushBuffer() {
 // ── AFE fetch result handler ──────────────────────────────────────
 
 static void processAfeResult(afe_fetch_result_t *result) {
+
+    static uint32_t rawStartMs = 0;
+    uint32_t elapsed = millis() - rawStartMs;
+
+    /* --- energy logging (temp debug) --- */
+    if (result != NULL && result->data != NULL && result->data_size > 0) {
+        size_t n_samples = result->data_size / sizeof(int16_t);
+        const int16_t *samples = (const int16_t *)result->data;
+
+        float sum_sq = 0.0f;
+        for (size_t i = 0; i < n_samples; i++) {
+            float s = (float)samples[i];
+            sum_sq += s * s;
+        }
+        float rms = sqrtf(sum_sq / (float)n_samples);
+        float dbfs = 20.0f * log10f(rms / 32768.0f);
+
+        static int log_count = 0;
+        if ((log_count++ % 50) == 0) {
+            ESP_LOGD("ENERGY", "t=%lus rms=%.0f dbfs=%.1f (floor -60.0) state=%d cache=%d n=%u",
+                     (unsigned long)(elapsed / 1000), rms, dbfs,
+                     result->vad_state, result->vad_cache_size,
+                     (unsigned)n_samples);
+        }
+    }
+    /* --- end debug insert --- */
+    
+    /* --- normal VAD-driven logic (unchanged below) --- */
     static bool wasVoice = false;
     bool isVoice = (result->vad_state == VAD_SPEECH);
 

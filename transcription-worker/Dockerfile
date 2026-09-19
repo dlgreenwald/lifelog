@@ -33,7 +33,8 @@ RUN python3 -m pip install --no-cache-dir \
 
 RUN python3 -m pip install --no-cache-dir \
         "fastapi>=0.104.0" "uvicorn[standard]>=0.24.0" "httpx>=0.25.0" \
-        "numpy>=1.24.0" "whisperx>=3.3.0" "transformers>=5.5.0" "pydantic-settings>=2.1.0"
+        "numpy>=1.24.0" "soundfile>=0.12.0" "whisperx>=3.3.0" "transformers>=5.5.0" \
+        "pydantic-settings>=2.1.0" "structlog>=24.0.0"
 
 COPY audio.py pipeline.py main.py ./
 

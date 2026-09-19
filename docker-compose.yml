@@ -79,6 +79,8 @@ services:
       # CTranslate2 + pyannote pinned GPU buffers (which the in-process
       # unload cannot free) are reclaimed on a clean cold start.
       - IDLE_PROCESS_RESTART_SECONDS=${TRANSCRIPTION_IDLE_PROCESS_RESTART_SECONDS:-900}
+      - INSTANT_ASR_MODEL=${INSTANT_ASR_MODEL:-large-v3}
+      - INSTANT_ASR_LANGUAGE=${INSTANT_ASR_LANGUAGE:-}
     volumes:
       - ./whisper-asr/hf-cache:/root/.cache/huggingface
     healthcheck:

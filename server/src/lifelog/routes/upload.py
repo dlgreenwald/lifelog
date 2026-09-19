@@ -1,3 +1,4 @@
+import asyncio
 import time
 from datetime import UTC, datetime
 
@@ -103,6 +104,11 @@ async def _finalize_utterance(
             device_timestamp,
         )
     logger.info("utterance_enqueued", user_id=user_id, utterance_id=server_utt_id)
+    # Trigger transcription immediately — don't wait for the 60s poll loop.
+    # Import lazily to avoid circular import.
+    from lifelog.worker import process_utterance
+
+    asyncio.create_task(process_utterance(user_id, server_utt_id))
 
 
 @router.post("/upload")

@@ -48,6 +48,8 @@ struct UploadRequest {
     bool isFinal;
     bool from_sd;
     time_t recorded_at;      // UTC epoch seconds; 0 if clock invalid
+    uint32_t start_ms;      // system uptime ms when voice start was detected
+    uint32_t end_ms;        // system uptime ms when voice end was detected
 };
 
 // ── Forward declarations ──────────────────────────────────────────
@@ -425,12 +427,14 @@ static void persistFile(const UploadRequest &req) {
     bool ok = false;
     if (!req.from_sd && req.mem_ptr) {
         // Memory path — try server, fall back to SD on failure
-        ESP_LOGD(TAG, "persistFile: uploading from memory: %s (%luKB, utt=%lu chunk=%lu)...",
+        ESP_LOGD(TAG, "persistFile: uploading from memory: %s (%luKB, utt=%lu chunk=%lu, voice=%lu-%lums)...",
                  req.filename, (unsigned long)(req.mem_size / 1024),
-                 (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex);
+                 (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex,
+                 (unsigned long)req.start_ms, (unsigned long)req.end_ms);
         ok = uploadFileFromMemory(req.mem_ptr, req.mem_size,
                                  req.filename, req.utteranceId,
-                                 req.chunkIndex, req.isFinal, req.recorded_at);
+                                 req.chunkIndex, req.isFinal, req.recorded_at,
+                                 req.start_ms, req.end_ms);
         if (!ok) {
             // Server down — flush to SD; autoUploadTask picks it up
             ESP_LOGW(TAG, "persistFile: server error, flushing to SD for retry...");
@@ -439,9 +443,11 @@ static void persistFile(const UploadRequest &req) {
         free(req.mem_ptr);
     } else {
         // SD path — file already on SD, just upload
-        ESP_LOGD(TAG, "persistFile: uploading from SD: %s (utt=%lu chunk=%lu)...",
-                 req.filename, (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex);
-        ok = uploadFile(req.filename, req.utteranceId, req.chunkIndex, req.isFinal, req.recorded_at);
+        ESP_LOGD(TAG, "persistFile: uploading from SD: %s (utt=%lu chunk=%lu, voice=%lu-%lums)...",
+                 req.filename, (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex,
+                 (unsigned long)req.start_ms, (unsigned long)req.end_ms);
+        ok = uploadFile(req.filename, req.utteranceId, req.chunkIndex, req.isFinal, req.recorded_at,
+                        req.start_ms, req.end_ms);
         if (ok) {
             sdTake();
             SD.remove(req.filename);
@@ -521,6 +527,33 @@ void writerTask(void *pvParameters) {
         if (prev_recording && !recording) {
             ESP_LOGD(TAG, "writer: voice ended, finalizing");
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
+            // Drain any remaining ring items before finalizing.
+            // Bug fix: voice-end skipped the ring drain loop, stranding up to 64ms
+            // of audio that was still in the ring when silence was detected.
+            int drain_count = 0;
+            if (frame_rem > 0) {
+                // Carry over stale PCM remainder from previous drain (bug fix:
+                // frame_rem was never reset — up to 19.9ms of tail audio was lost).
+                memcpy(pcm_buf, frame_buf, frame_rem * sizeof(int16_t));
+                drain_count = frame_rem;
+                frame_rem = 0;
+            }
+            while (drain_count < pcm_buf_capacity) {
+                size_t itemSize;
+                void *item = xRingbufferReceive(audioRingBuf, &itemSize, 0);
+                if (!item) break;
+                int samples = itemSize / sizeof(int16_t);
+                if (drain_count + samples > pcm_buf_capacity) {
+                    vRingbufferReturnItem(audioRingBuf, item);
+                    break;
+                }
+                memcpy(pcm_buf + drain_count, item, itemSize);
+                drain_count += samples;
+                vRingbufferReturnItem(audioRingBuf, item);
+            }
+            if (drain_count > 0) {
+                opus_encode_to_buffer(pcm_buf, drain_count);
+            }
             opus_file_end();
 
             // Requirement 1: flush to SD if WiFi is offline and data is in PSRAM
@@ -556,6 +589,8 @@ void writerTask(void *pvParameters) {
                 req.isFinal = isFinal;
                 // Requirement 3: correct recorded_at to UTC epoch
                 req.recorded_at = time(nullptr) - gmtOffset;
+                req.start_ms = listenStartMs;   // system uptime ms at voice start
+                req.end_ms = millis();          // system uptime ms at voice end
                 chunkIndex++;
                 if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
                     ESP_LOGW(TAG, "Upload queue full (%lu/%d), skipping %s",

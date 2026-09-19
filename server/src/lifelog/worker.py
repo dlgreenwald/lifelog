@@ -11,6 +11,24 @@ import lifelog.database as db
 from lifelog.config import settings
 from lifelog.crypto import audio_crypto
 from lifelog.database import delete_utterance_chunks, get_utterance_chunks
+from lifelog.instant_client import (
+    close_session as instant_close_session,
+)
+from lifelog.instant_client import (
+    feed_audio as instant_feed_audio,
+)
+from lifelog.instant_client import (
+    mark_fallback as instant_mark_fallback,
+)
+from lifelog.instant_client import (
+    open_session as instant_open_session,
+)
+from lifelog.instant_client import (
+    uses_fallback as instant_uses_fallback,
+)
+from lifelog.instant_client import (
+    wait_for_event as instant_wait_for_event,
+)
 from lifelog.pipeline.llm import detect_splits, summarize_partition
 from lifelog.speaker_names import generate_speaker_name
 
@@ -20,6 +38,340 @@ logger = structlog.get_logger()
 _NAIVE_MIN = datetime(1900, 1, 1)  # noqa: DTZ001
 POLL_INTERVAL = 60.0
 MAX_RETRY_COUNT = 3
+
+# Out-of-order utterance tracking: session_id -> highest processed utterance_id
+_session_high_water: dict[int, int] = {}
+
+# Per-session ordered queue for instant transcription.
+# One worker task per session drains its queue in order, feeding audio to the
+# WebSocket and waiting for transcripts before processing the next utterance.
+# Key: session_id
+_session_queues: dict[int, asyncio.Queue] = {}
+_session_workers: dict[int, asyncio.Task] = {}
+# (session_id, utterance_id) -> asyncio.Event for signaling worker completion
+_session_item_events: dict[tuple[int, int], asyncio.Event] = {}
+
+
+async def _session_worker(session_id: int) -> None:
+    """Continuously drain the session's utterance queue, feeding audio to the
+    WebSocket as items arrive, and polling for transcript events in parallel.
+
+    Design principles:
+    - Never block the feed loop waiting for transcript results.  Feed the next
+      audio item as soon as it is in the queue.
+    - Poll for events from the WebSocket in a tight non-blocking loop so they
+      are applied as they arrive.
+    - When the queue is empty, drain any remaining events then exit.  The
+      session is closed by _drain_session_queue() / process_utterance gap
+      detection — not by this worker.
+
+    Each queue item is a dict:
+        user_id, utterance_id, audio_opus (bytes), utterance_timestamp (datetime),
+        language (str|None), done_event (asyncio.Event)
+    """
+    queue = _session_queues.get(session_id)
+    if queue is None:
+        logger.warning("session_worker_no_queue", session_id=session_id)
+        return
+    logger.info("session_worker_started", session_id=session_id)
+
+    try:
+        # Open (or reuse) the session WebSocket.
+        await instant_open_session(session_id)
+    except Exception:
+        logger.exception("session_worker_ws_open_error", session_id=session_id)
+        return
+
+    while True:
+        # ------------------------------------------------------------------
+        # 1. Wait for the next item in the queue.
+        # ------------------------------------------------------------------
+        try:
+            item = await queue.get()
+        except asyncio.CancelledError:
+            logger.info("session_worker_cancelled", session_id=session_id)
+            break
+
+        utt_id = item["utterance_id"]
+        audio_opus = item["audio_opus"]
+        utterance_time = item["utterance_timestamp"]
+        language = item.get("language", "auto")
+        done_event = item["done_event"]
+
+        logger.info(
+            "session_worker_dequeue",
+            session_id=session_id,
+            utterance_id=utt_id,
+            audio_bytes=len(audio_opus),
+        )
+
+        hwm = _session_high_water.get(session_id, 0)
+        if utt_id <= hwm:
+            logger.warning(
+                "utterance_skipped_below_high_water",
+                session_id=session_id,
+                utterance_id=utt_id,
+                high_water=hwm,
+            )
+            done_event.set()
+            queue.task_done()
+            continue
+
+        if instant_uses_fallback(session_id):
+            done_event.set()
+            queue.task_done()
+            continue
+
+        # ------------------------------------------------------------------
+        # 2. Feed audio to WebSocket immediately — do NOT wait for transcript.
+        # ------------------------------------------------------------------
+        try:
+            await instant_feed_audio(session_id, audio_opus)
+        except Exception:
+            logger.exception(
+                "session_worker_feed_error",
+                session_id=session_id,
+                utterance_id=utt_id,
+            )
+            done_event.set()
+            queue.task_done()
+            # Fall back to quick job and stop this session's instant pipeline.
+            try:
+                await db.create_session_quick_job(
+                    session_id,
+                    [utt_id],
+                    utterance_time,
+                    utterance_time,
+                    language=language,
+                )
+                instant_mark_fallback(session_id)
+            except Exception:
+                logger.exception(
+                    "session_worker_fallback_error",
+                    session_id=session_id,
+                    utterance_id=utt_id,
+                )
+            await instant_close_session(session_id)
+            _drain_session_queue(session_id)
+            return
+
+        # Default to silent until proven otherwise.
+        item["is_silent"] = True
+
+        # ------------------------------------------------------------------
+        # 3. Drain all queued transcript events for this utterance.
+        #    Non-blocking poll — do not wait for events before feeding the
+        #    next audio item.
+        # ------------------------------------------------------------------
+        while True:
+            event = await instant_wait_for_event(session_id, timeout=0.5)
+            if event is None:
+                # No event waiting; check if the queue has more items.
+                if queue.empty():
+                    # Queue is drained — wait up to session_gap_minutes for the next
+                    # utterance before closing the WebSocket.  This keeps the socket
+                    # alive across normal inter-utterance gaps (VAD brief pauses).
+                    # If the timeout fires, the queue is stale; the next
+                    # process_utterance will create a fresh queue and a new worker.
+                    idle_timeout = settings.session_gap_minutes * 60
+                    logger.info(
+                        "session_worker_idle_waiting",
+                        session_id=session_id,
+                        idle_timeout_s=idle_timeout,
+                    )
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=idle_timeout)
+                    except TimeoutError:
+                        # Still empty — close the socket and exit.  A new worker
+                        # will start on the next utterance.
+                        logger.info(
+                            "session_worker_idle_timeout",
+                            session_id=session_id,
+                        )
+                        await instant_close_session(session_id)
+                        return
+                    # Got a new item — process it immediately.
+                    # Re-loop to feed this item without calling queue.get() again.
+                    done_event = item["done_event"]
+                    utt_id = item["utterance_id"]
+                    audio_opus = item["audio_opus"]
+                    utterance_time = item["utterance_timestamp"]
+                    language = item.get("language", "auto")
+                    logger.info(
+                        "session_worker_dequeue",
+                        session_id=session_id,
+                        utterance_id=utt_id,
+                        audio_bytes=len(audio_opus),
+                    )
+                    hwm = _session_high_water.get(session_id, 0)
+                    if utt_id <= hwm:
+                        logger.warning(
+                            "utterance_skipped_below_high_water",
+                            session_id=session_id,
+                            utterance_id=utt_id,
+                            high_water=hwm,
+                        )
+                        done_event.set()
+                        queue.task_done()
+                        continue
+                    if instant_uses_fallback(session_id):
+                        done_event.set()
+                        queue.task_done()
+                        continue
+                    try:
+                        await instant_feed_audio(session_id, audio_opus)
+                    except Exception:
+                        logger.exception(
+                            "session_worker_feed_error",
+                            session_id=session_id,
+                            utterance_id=utt_id,
+                        )
+                        done_event.set()
+                        queue.task_done()
+                        try:
+                            await db.create_session_quick_job(
+                                session_id,
+                                [utt_id],
+                                utterance_time,
+                                utterance_time,
+                                language=language,
+                            )
+                            instant_mark_fallback(session_id)
+                        except Exception:
+                            logger.exception(
+                                "session_worker_fallback_error",
+                                session_id=session_id,
+                                utterance_id=utt_id,
+                            )
+                        await instant_close_session(session_id)
+                        _drain_session_queue(session_id)
+                        return
+                    item["is_silent"] = True
+                    continue  # re-enter the event-polling loop for this item
+                # More items waiting — break to feed the next audio immediately.
+                done_event.set()
+                queue.task_done()
+                break
+
+            # Apply the event.
+            if event.get("is_silent"):
+                item["is_silent"] = True
+            else:
+                item["is_silent"] = False
+                if event.get("type") == "segment":
+                    segments = event.get("segments", [])
+                    # Append the utterance to the session if not already done.
+                    # process_utterance is fire-and-forget, so the worker owns the
+                    # append here.  The audio_filename is stored on the item dict
+                    # by _submit_to_session_queue so we can retrieve it.
+                    audio_fn = item.get("audio_filename", "")
+                    try:
+                        await db.append_session_utterance(
+                            session_id,
+                            utt_id,
+                            audio_fn,
+                            {},
+                            [],
+                            utterance_timestamp=utterance_time,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "session_worker_append_error",
+                            session_id=session_id,
+                            utterance_id=utt_id,
+                        )
+                    if segments:
+                        try:
+                            await db.update_session_utterance_transcript(
+                                session_id,
+                                utt_id,
+                                {"segments": segments},
+                            )
+                        except Exception:
+                            logger.exception(
+                                "session_worker_apply_error",
+                                session_id=session_id,
+                                utterance_id=utt_id,
+                            )
+                _session_high_water[session_id] = max(
+                    _session_high_water.get(session_id, 0), utt_id
+                )
+                logger.info(
+                    "utterance_transcribed_in_session",
+                    session_id=session_id,
+                    utterance_id=utt_id,
+                    high_water=_session_high_water[session_id],
+                )
+
+        # Loop back to step 1 to feed the next queued audio immediately.
+
+
+def _submit_to_session_queue(
+    session_id: int,
+    user_id: int,
+    utterance_id: int,
+    audio_opus: bytes,
+    utterance_timestamp: datetime,
+    language: str | None = None,
+    audio_filename: str = "",
+) -> tuple[dict, asyncio.Event]:
+    """Submit an utterance to the session's ordered queue.
+
+    Returns (item, done_event).  The done_event is set immediately after the
+    item is queued (fire-and-forget from the caller's perspective).  The session
+    worker drains the queue and handles all DB operations asynchronously.
+    """
+    if session_id not in _session_queues:
+        _session_queues[session_id] = asyncio.Queue()
+    queue = _session_queues[session_id]
+
+    done_event = asyncio.Event()
+    item = {
+        "user_id": user_id,
+        "utterance_id": utterance_id,
+        "audio_opus": audio_opus,
+        "utterance_timestamp": utterance_timestamp,
+        "language": language,
+        "done_event": done_event,
+        "audio_filename": audio_filename,
+    }
+    queue.put_nowait(item)
+
+    # Mark done immediately — process_utterance is fire-and-forget.
+    done_event.set()
+
+    # Start session worker if not already running.
+    if session_id not in _session_workers or _session_workers[session_id].done():
+        _session_workers[session_id] = asyncio.create_task(_session_worker(session_id))
+
+    return item, done_event
+
+
+def _drain_session_queue(session_id: int) -> None:
+    """Drain and cancel all pending items in the session queue.
+
+    Called synchronously from the worker loop when a session closes, so it runs
+    in the worker loop's thread — cancel must work on the session worker task.
+    """
+    queue = _session_queues.pop(session_id, None)
+    worker = _session_workers.pop(session_id, None)
+
+    if queue:
+        # Cancel all pending done_events so callers waiting on them are unblocked.
+        while not queue.empty():
+            try:
+                item = queue.get_nowait()
+                item["done_event"].set()
+            except asyncio.QueueEmpty:
+                break
+
+    if worker and not worker.done():
+        worker.cancel()
+
+    # Clean up any lingering item events for this session.
+    for key in list(_session_item_events):
+        if key[0] == session_id:
+            del _session_item_events[key]
 
 
 async def claim_utterance(user_id: int, utterance_id: int) -> bool:
@@ -97,6 +449,12 @@ async def process_utterance(user_id: int, utterance_id: int):
     """Encrypt audio and assign to a session for later quick transcription."""
     start = time.monotonic()
     logger.info("processing_utterance", user_id=user_id, utterance_id=utterance_id)
+    # Claim immediately so the worker loop's batch poller doesn't race to claim the same utterance
+    if not await claim_utterance(user_id, utterance_id):
+        logger.info(
+            "utterance_already_claimed", user_id=user_id, utterance_id=utterance_id
+        )
+        return
     chunks = await get_utterance_chunks(user_id, utterance_id)
     if not chunks:
         logger.warning("no_chunks_found", user_id=user_id, utterance_id=utterance_id)
@@ -109,6 +467,10 @@ async def process_utterance(user_id: int, utterance_id: int):
         return
     encryption_secret = user_secrets["encryption_secret"]
     key_salt = bytes(user_secrets["key_salt"])
+
+    # Preserve original compressed audio bytes before encryption for instant transcription
+    decrypted_chunks = [chunk["audio_bytes"] for chunk in chunks]
+
     audio_filenames = []
     for index, chunk in enumerate(chunks):
         filename = audio_crypto.encrypt_audio(
@@ -140,6 +502,10 @@ async def process_utterance(user_id: int, utterance_id: int):
         if gap_minutes <= settings.session_gap_minutes:
             session_id = active_session["id"]
         else:
+            if settings.instant_transcribe_enabled:
+                _drain_session_queue(active_session["id"])
+                await instant_close_session(active_session["id"])
+                _session_high_water.pop(active_session["id"], None)
             await db.end_session(active_session["id"])
             try:
                 await _reprocess_session(active_session)
@@ -149,23 +515,57 @@ async def process_utterance(user_id: int, utterance_id: int):
     else:
         session_id = await db.create_session(user_id, utterance_time)
 
+    # ── Instant transcription: submit to ordered session queue ────────
+    # Per-session queue ensures utterances are fed to the WebSocket in order.
+    # The session worker processes one utterance at a time, waiting for the
+    # transcript before feeding the next. Out-of-order utterances are dropped.
+    # Silent utterances are marked on the item dict; we wait for the result
+    # before deciding whether to store the utterance in the session.
     audio_filename = audio_filenames[0] if audio_filenames else ""
-    await db.append_session_utterance(
-        session_id,
-        utterance_id,
-        audio_filename,
-        {},
-        [],
-        utterance_timestamp=utterance_time,
-    )
-    await complete_utterance(user_id, utterance_id, None)
-    logger.info(
-        "utterance_assigned_to_session",
-        user_id=user_id,
-        utterance_id=utterance_id,
-        session_id=session_id,
-        duration_s=time.monotonic() - start,
-    )
+    if settings.instant_transcribe_enabled:
+        user_settings = await db.get_user_settings(user_id)
+        language = user_settings.get("language", "auto") if user_settings else "auto"
+        audio_opus = b"".join(decrypted_chunks)
+        _submit_to_session_queue(
+            session_id=session_id,
+            user_id=user_id,
+            utterance_id=utterance_id,
+            audio_opus=audio_opus,
+            utterance_timestamp=utterance_time,
+            language=language,
+            audio_filename=audio_filename,
+        )
+        logger.info(
+            "utterance_queued_for_instant",
+            session_id=session_id,
+            utterance_id=utterance_id,
+        )
+        # Fire-and-forget: the session worker owns audio feeding, event draining,
+        # and DB appending.  We do NOT wait here — doing so would block the HTTP
+        # response and hold up the next upload from the device.  The worker sets
+        # done_event after feeding audio (not after transcription), so waiting would
+        # either see is_silent=True before the transcript arrived or hang forever
+        # if the worker exited before setting the event.
+        # The worker handles append_session_utterance / skip-silent internally.
+        await complete_utterance(user_id, utterance_id, None)
+    else:
+        # Non-instant path: store immediately without waiting
+        await db.append_session_utterance(
+            session_id,
+            utterance_id,
+            audio_filename,
+            {},
+            [],
+            utterance_timestamp=utterance_time,
+        )
+        await complete_utterance(user_id, utterance_id, None)
+        logger.info(
+            "utterance_assigned_to_session",
+            user_id=user_id,
+            utterance_id=utterance_id,
+            session_id=session_id,
+            duration_s=time.monotonic() - start,
+        )
 
 
 async def _create_session_quick_jobs() -> None:
@@ -1215,14 +1615,27 @@ async def worker_loop():
                 await _apply_quick_transcripts()
             except Exception:
                 logger.exception("quick_transcripts_apply_error")
-            try:
-                await _create_session_quick_jobs()
-            except Exception:
-                logger.exception("session_quick_jobs_error")
+            if not settings.instant_transcribe_enabled:
+                # Only create quick jobs when instant (per-utterance) transcription is disabled.
+                # When instant is enabled, WebSocket transcription handles per-utterance
+                # transcripts and the finalize path (full WhisperX + diarization) produces
+                # the final quality output at session end.
+                try:
+                    await _create_session_quick_jobs()
+                except Exception:
+                    logger.exception("session_quick_jobs_error")
             try:
                 for session in await db.get_idle_active_sessions(
                     settings.session_gap_minutes
                 ):
+                    if settings.instant_transcribe_enabled:
+                        _drain_session_queue(session["id"])
+                        await instant_close_session(session["id"])
+                        _session_high_water.pop(session["id"], None)
+                        # Access the module-level set directly for cleanup
+                        import lifelog.instant_client as _ic
+
+                        _ic._session_uses_fallback.discard(session["id"])
                     await db.end_session(session["id"])
                     try:
                         await _reprocess_session(session)
