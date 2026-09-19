@@ -72,6 +72,7 @@ export default function TodoList() {
         completed_at: null,
         recording_id: null,
         recording_timestamp: null,
+        speaker_id: null,
         created_at: new Date().toISOString(),
       },
       ...prev,

@@ -1,0 +1,34 @@
+version: '3.8'
+
+# Development override — enables hot-reload without rebuilding the image.
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up dashboard
+#
+# In this mode, Vite's dev server runs inside the container with:
+#   - Source directory mounted as a volume (file changes trigger HMR)
+#   - Port 5173 exposed for browser access (Vite HMR WebSocket)
+#   - nginx is NOT used; Vite's dev server handles both static assets and /api proxy
+#
+# Production (no override): multi-stage nginx build, port 3000 → 80
+
+services:
+  dashboard:
+    build: ./dashboard
+    # Override: run the Vite dev server instead of nginx
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    ports:
+      - "3000:5173"
+    volumes:
+      # Mount source so hot-module-replacement picks up changes live
+      - ./dashboard/src:/app/src:ro
+      - ./dashboard/public:/app/public:ro
+      - ./dashboard/index.html:/app/index.html:ro
+      - ./dashboard/vite.config.ts:/app/vite.config.ts:ro
+      - ./dashboard/tsconfig.json:/app/tsconfig.json:ro
+      - ./dashboard/package.json:/app/package.json:ro
+    environment:
+      - VITE_API_PROXY=http://server:8443
+      - VITE_API_URL=/api
+      - OIDC_ISSUER_URL=${OIDC_ISSUER_URL}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
+    # Dev server handles its own HTTPS-offload for OIDC redirect
+    # so CORS_ORIGINS does not need to include :5173 in this setup

@@ -175,6 +175,7 @@ export default function RecordingDetail() {
         completed_at: null,
         recording_id: numericRecordingId ?? null,
         recording_timestamp: null,
+        speaker_id: null,
         created_at: new Date().toISOString(),
       },
       ...prev,
@@ -210,6 +211,7 @@ export default function RecordingDetail() {
         archived: false,
         recording_id: numericRecordingId ?? null,
         recording_timestamp: null,
+        speaker_id: null,
         created_at: new Date().toISOString(),
       },
       ...prev,
@@ -267,7 +269,7 @@ export default function RecordingDetail() {
   return (
     <div className="recording-detail">
       <h2>
-        {isLive ? '🎙️ Live Recording' : `Recording from ${formatDateTime(recording.timestamp)}`}
+        {isLive ? '🎙️ Live Recording' : <>{recording.title}<span className="recording-time"> : {formatDateTime(recording.timestamp)}</span></>}
         {isLive && <span className="live-badge"> LIVE</span>}
       </h2>
 
@@ -296,10 +298,10 @@ export default function RecordingDetail() {
         </>
       )}
 
-      {recording.summary && (
+      {recording.long_summary && (
         <div className="summary">
           <h3>Summary</h3>
-          <p>{recording.summary}</p>
+          <p>{recording.long_summary}</p>
         </div>
       )}
 

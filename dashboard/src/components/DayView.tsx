@@ -280,7 +280,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
               ) : (
                 <div className="recording-block-content">
                   <span className="recording-block-time">
-                    {format(toUTCDate(rec.timestamp), 'HH:mm')}
+                    {format(toUTCDate(rec.timestamp), 'HH:mm')} {rec.title}
                   </span>
                   {rec.summary && (
                     <span className="recording-block-summary">

@@ -28,6 +28,7 @@ function makeTodo(overrides: Partial<Todo> = {}): Todo {
     completed_at: null,
     recording_id: 10,
     recording_timestamp: '2024-01-15T10:00:00',
+    speaker_id: null,
     created_at: '2024-01-15T10:00:00',
     ...overrides,
   };

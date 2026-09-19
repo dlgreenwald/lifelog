@@ -153,8 +153,9 @@ async def get_recordings_by_date(
         if category is not None:
             rows = await conn.fetch(
                 """
-                SELECT id, timestamp, summary, todos, calendar, notes, speakers, category,
-                       session_id, partition_index, audio_range_start, audio_range_end
+                SELECT id, timestamp, summary, title, long_summary, todos, calendar, notes,
+                       speakers, category, session_id, partition_index,
+                       audio_range_start, audio_range_end
                 FROM recordings
                 WHERE user_id = $1
                   AND DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2
@@ -168,8 +169,9 @@ async def get_recordings_by_date(
         else:
             rows = await conn.fetch(
                 """
-                SELECT id, timestamp, summary, todos, calendar, notes, speakers, category,
-                       session_id, partition_index, audio_range_start, audio_range_end
+                SELECT id, timestamp, summary, title, long_summary, todos, calendar, notes,
+                       speakers, category, session_id, partition_index,
+                       audio_range_start, audio_range_end
                 FROM recordings
                 WHERE user_id = $1
                   AND DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2

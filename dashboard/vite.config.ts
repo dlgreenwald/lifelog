@@ -13,7 +13,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'https://localhost:8443',
+        // Use VITE_API_PROXY target env var (defaults to localhost for host-side
+        // `npm run dev`); set to http://server:8443 when running inside Docker Compose
+        // via the VITE_API_PROXY env var in docker-compose.dev.yml.
+        target: process.env.VITE_API_PROXY || 'https://localhost:8443',
         changeOrigin: true,
         secure: false,
       },

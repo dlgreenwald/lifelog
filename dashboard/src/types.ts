@@ -10,6 +10,8 @@ export interface Recording {
   id: number | string;
   timestamp: string;
   summary: string | null;
+  title: string | null;
+  long_summary: string | null;
   transcript?: { segments?: TranscriptSegment[] };
   speakers: Speaker[] | null;
   todos: Todo[] | null;
@@ -54,6 +56,7 @@ export interface Todo {
   completed_at: string | null;
   recording_id: number | null;
   recording_timestamp: string | null;
+  speaker_id: number | null;
   created_at: string;
 }
 
@@ -79,6 +82,7 @@ export interface Decision {
   archived: boolean;
   recording_id: number | null;
   recording_timestamp: string | null;
+  speaker_id: number | null;
   created_at: string;
 }
 
