@@ -512,6 +512,7 @@ void setup() {
     esp_log_level_set("UPLOAD", ESP_LOG_INFO);
     esp_log_level_set("WIFI", ESP_LOG_INFO);
     esp_log_level_set("ASYNC_TCP", ESP_LOG_ERROR);
+    esp_log_level_set("ENERGY", ESP_LOG_INFO);
 
 #ifdef SLOW_BOOT
     delay(10000);
