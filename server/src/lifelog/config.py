@@ -35,6 +35,8 @@ class Settings(BaseSettings):
 
     # Audio storage
     audio_storage_path: str = "/data/audio"
+    audio_storage_limit_gb: float = 0  # 0 = no limit
+    audio_retention_days: int = 0  # 0 = no limit
 
     # Session grouping
     session_gap_minutes: int = 5
