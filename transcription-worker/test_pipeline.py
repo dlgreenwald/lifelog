@@ -4,7 +4,6 @@ import pickle
 import sys
 import tempfile
 import types
-from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -49,24 +48,9 @@ def test_missing_speaker_defaults_unknown():
 
 
 def test_wav_extraction_is_bounded():
-    # Mock ffmpeg so the test runs in CI without ffmpeg in the venv.
-    fake_opus = b"OggS" + b"\x00" * 16
-
-    @contextmanager
-    def fake_tempdir(*, prefix):
-        yield tempfile.gettempdir()
-
-    def fake_run(cmd, *, capture_output, timeout, check):
-        _ = next(a for a in cmd if a.endswith(".wav"))
-        opus_path = next(a for a in cmd if a.endswith(".opus"))
-        with open(opus_path, "wb") as f:
-            f.write(fake_opus)
-
-    with patch("pipeline.subprocess.run", side_effect=fake_run), \
-         patch("pipeline.tempfile.TemporaryDirectory", side_effect=fake_tempdir):
-        encoded = _extract_segment_opus(
-            np.arange(10, dtype=np.float32), 10, [{"start": -1, "end": 0.5}], [0]
-        )
+    encoded = _extract_segment_opus(
+        np.arange(10, dtype=np.float32), 10, [{"start": -1, "end": 0.5}], [0]
+    )
     assert base64.b64decode(encoded).startswith(b"OggS")
 
 
