@@ -1944,23 +1944,29 @@ async def get_oldest_session_recordings(user_id: int) -> list[dict]:
 
 
 async def get_audio_files_for_session(session_id: int) -> list[str]:
-    """All .enc filenames for a session (utterances + speaker_segments)."""
+    """All .enc filenames for a session (utterances + speaker_segments), ordered."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT audio_filename FROM session_utterances "
-            "WHERE session_id = $1 AND audio_filename != ''",
+            "WHERE session_id = $1 AND audio_filename != '' "
+            "ORDER BY created_at ASC",
             session_id,
         )
         seg_rows = await conn.fetch(
             "SELECT ss.audio_filename FROM speaker_segments ss "
             "JOIN recordings r ON r.id = ss.recording_id "
-            "WHERE r.session_id = $1 AND ss.audio_filename != ''",
+            "WHERE r.session_id = $1 AND ss.audio_filename != '' "
+            "ORDER BY ss.created_at ASC",
             session_id,
         )
-    names = {r["audio_filename"] for r in rows} | {
-        r["audio_filename"] for r in seg_rows
-    }
-    return list(names)
+    seen: set[str] = set()
+    names: list[str] = []
+    for r in list(rows) + list(seg_rows):
+        name = r["audio_filename"]
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
 
 
 async def get_audio_files_for_user(user_id: int) -> list[tuple[str, int]]:

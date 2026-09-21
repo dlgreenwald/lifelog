@@ -157,7 +157,8 @@ def test_get_utterance_status_returns_row():
     """When a queue row exists, returns its status and timestamps."""
     from datetime import datetime
 
-    from lifelog.routes.upload import router as upload_router, validate_upload_auth
+    from lifelog.routes.upload import router as upload_router
+    from lifelog.routes.upload import validate_upload_auth
 
     app = FastAPI()
     app.include_router(upload_router)
@@ -196,7 +197,8 @@ def test_get_utterance_status_returns_row():
 
 def test_get_utterance_status_returns_unknown_when_not_found():
     """When no queue row exists, returns status=unknown."""
-    from lifelog.routes.upload import router as upload_router, validate_upload_auth
+    from lifelog.routes.upload import router as upload_router
+    from lifelog.routes.upload import validate_upload_auth
 
     app = FastAPI()
     app.include_router(upload_router)
