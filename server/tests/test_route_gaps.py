@@ -148,3 +148,78 @@ def test_speaker_audio_uses_owned_matching_segments():
         "late.enc",
     ]
     concat.assert_called_once_with([b"early", b"late"])
+
+
+# ── get_utterance_status ───────────────────────────────────────────────────────
+
+
+def test_get_utterance_status_returns_row():
+    """When a queue row exists, returns its status and timestamps."""
+    from datetime import datetime
+
+    from lifelog.routes.upload import router as upload_router, validate_upload_auth
+
+    app = FastAPI()
+    app.include_router(upload_router)
+
+    fake_user = {"id": 1}
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = {
+        "status": "completed",
+        "error": None,
+        "started_at": datetime(2026, 9, 20, 10, 0, 0),
+        "completed_at": datetime(2026, 9, 20, 10, 5, 0),
+    }
+
+    class FakePoolAcquire:
+        async def __aenter__(self_):
+            return mock_conn
+
+        async def __aexit__(self_, *args):
+            return False
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=FakePoolAcquire())
+
+    app.dependency_overrides[validate_upload_auth] = lambda: fake_user
+    with patch("lifelog.database.pool", pool):
+        response = TestClient(app).get("/utterance/42/status")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "completed"
+    assert data["utterance_id"] == 42
+    assert data["error"] is None
+    assert data["started_at"] == "2026-09-20T10:00:00"
+    assert data["completed_at"] == "2026-09-20T10:05:00"
+
+
+def test_get_utterance_status_returns_unknown_when_not_found():
+    """When no queue row exists, returns status=unknown."""
+    from lifelog.routes.upload import router as upload_router, validate_upload_auth
+
+    app = FastAPI()
+    app.include_router(upload_router)
+
+    fake_user = {"id": 1}
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = None
+
+    class FakePoolAcquire:
+        async def __aenter__(self_):
+            return mock_conn
+
+        async def __aexit__(self_, *args):
+            return False
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=FakePoolAcquire())
+
+    app.dependency_overrides[validate_upload_auth] = lambda: fake_user
+    with patch("lifelog.database.pool", pool):
+        response = TestClient(app).get("/utterance/99/status")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "unknown"
+    assert data["utterance_id"] == 99
