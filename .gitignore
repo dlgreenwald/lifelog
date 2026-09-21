@@ -28,6 +28,9 @@ ENV/
 htmlcov/
 coverage.xml
 
+# Dashboard vitest coverage
+dashboard/coverage/
+
 # mypy / ruff
 .mypy_cache/
 .ruff_cache/

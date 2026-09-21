@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import React from 'react';
 import SettingsPage from '../pages/SettingsPage';
 import * as AuthContext from '../auth/AuthContext';
+import type { User, UserManager } from 'oidc-client-ts';
 import * as ReactRouter from 'react-router-dom';
 import { api } from '../api/client';
 
@@ -27,12 +27,12 @@ vi.mock('react-router-dom', async (importOriginal) => {
 });
 
 vi.spyOn(AuthContext, 'useAuth').mockReturnValue({
-  user: { profile: {} } as AuthContext.User,
+  user: { profile: {} } as unknown as User,
   loading: false,
   login: vi.fn(),
   logout: vi.fn(),
   getAccessToken: vi.fn(),
-  userManager: {} as AuthContext.UserManager,
+  userManager: {} as unknown as UserManager,
 });
 
 // SettingsForm and MobileNavBar are complex — mock them to avoid jsdom issues

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import React from 'react';
 import LoginPage from '../pages/LoginPage';
 import * as AuthContext from '../auth/AuthContext';
+import type { UserManager } from 'oidc-client-ts';
 
 const loginSpy = vi.fn();
 vi.spyOn(AuthContext, 'useAuth').mockReturnValue({
@@ -12,7 +12,7 @@ vi.spyOn(AuthContext, 'useAuth').mockReturnValue({
   login: loginSpy,
   logout: vi.fn(),
   getAccessToken: vi.fn(),
-  userManager: {} as AuthContext.UserManager,
+  userManager: {} as unknown as UserManager,
 });
 
 describe('LoginPage', () => {
