@@ -20,6 +20,10 @@ After **creating or updating** a PR (via `git push`), ALWAYS run `gh pr checks <
 - **CodeQL**: path-injection alerts in test utilities — dismiss via `gh api -XPATCH repos/<owner>/<repo>/code-scanning/alerts/<id> -f dismissed_reason="used in tests" -f state="dismissed"`
 - **npm audit**: production dependency CVEs — resolve by updating the affected package or accepting the risk in `.ignoreVuln`
 
+**Before opening a PR** (also applies when preparing a branch for review), verify PR scope:
+1. `git log main..HEAD --oneline` — confirm every commit belongs in this PR; rebase/cherry-pick unrelated commits off if not.
+2. `gh pr diff <number>` — skim-chunk the diff to confirm no unintended file changes (e.g., generated files, lockfiles, `.env`).
+
 ## ⚠️ Branch Rule
 
 **Trunk-based development.** `main` is the single source of truth. All work happens on short-lived feature branches.
@@ -33,6 +37,9 @@ After **creating or updating** a PR (via `git push`), ALWAYS run `gh pr checks <
 1. Ensure `main` is up to date: `git pull origin main`
 2. Create a branch: `git checkout -b <branch-name>`
 3. Work on the branch; commit frequently with clear messages
+
+**Before opening a PR (or pushing a branch for review):**
+Run `git log main..HEAD --oneline` and verify every listed commit belongs in this PR. If unrelated commits appear (e.g., from a branch that diverged before its prior PR was merged), rebase/cherry-pick them off onto a separate branch before opening this PR. Mixed-scope PRs are harder to review, delay merges, and complicate rollback.
 
 **PR requirements:**
 - Every PR targets `main`
