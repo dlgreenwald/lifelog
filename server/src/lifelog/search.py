@@ -39,7 +39,15 @@ KIND_SUMMARY = "summary"
 KIND_DECISION = "decision"
 KIND_TODO = "todo"
 
-FILTERABLE = ["kind", "status", "speaker", "conversation_id", "date", "participants", "user_id"]
+FILTERABLE = [
+    "kind",
+    "status",
+    "speaker",
+    "conversation_id",
+    "date",
+    "participants",
+    "user_id",
+]
 SORTABLE = ["date", "conversation_id"]
 
 # ── Client ─────────────────────────────────────────────────────────
