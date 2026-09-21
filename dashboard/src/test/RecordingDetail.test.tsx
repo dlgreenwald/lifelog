@@ -36,6 +36,10 @@ const mockRecording: Recording = {
       { name: 'Bob', start: 3.0, end: 6.0, text: 'Sounds good.' },
     ],
   },
+  speakers: [
+    { id: 0, name: 'Alice', start: 0.0, end: 3.0, text: 'Let us plan Q1.' },
+    { id: 1, name: 'Bob', start: 3.0, end: 6.0, text: 'Sounds good.' },
+  ],
   todos: null,
   calendar: [{ event: 'Kickoff meeting', time: '2024-01-22 10:00', participants: 'All' }],
   notes: ['Q1 focus on reliability'],

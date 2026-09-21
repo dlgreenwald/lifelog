@@ -112,7 +112,22 @@ export interface SearchHit {
   kind: 'transcript' | 'summary' | 'decision' | 'todo';
   date: string;
   status?: 'open' | 'done';
+  /** Summary text (set when kind='summary') */
+  summary?: string;
+  /** Decision text (set when kind='decision') */
+  decision?: string;
+  /** Todo text (set when kind='todo') */
+  todo?: string;
   _matchesPosition?: Record<string, Array<{ start: number; length: number }>>;
+  /** Total matches across all kinds (transcript + summary + todo + ...) */
+  _totalMatches?: number;
+  /** Meilisearch _formatted response with highlighted field values */
+  _formatted?: {
+    text?: string;
+    summary?: string;
+    decision?: string;
+    todo?: string;
+  };
 }
 
 export interface SearchResponse {

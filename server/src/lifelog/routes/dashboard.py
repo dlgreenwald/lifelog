@@ -15,6 +15,7 @@ def _sanitize(value: str) -> str:
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from lifelog import search as search_module
 from lifelog.auth import validate_oidc_token
 from lifelog.crypto import audio_crypto
 from lifelog.database import (
@@ -27,12 +28,14 @@ from lifelog.database import (
     get_all_recordings_with_speakers,
     get_daily_summary,
     get_decision_owner,
+    get_decision_recording_id,
     get_decisions,
     get_decisions_for_recording,
     get_recording,
     get_recordings_by_date,
     get_speakers,
     get_todo_owner,
+    get_todo_recording_id,
     get_todos,
     get_todos_for_date,
     get_todos_for_recording,
@@ -272,6 +275,15 @@ async def create_todo_route(
         priority=body.priority,
         recording_id=body.recording_id,
     )
+    # Index in Meilisearch so standalone and recording-attached todos are searchable
+    search_module.upsert_todo(
+        user_id=user["id"],
+        conversation_id=body.recording_id or 0,
+        idx=todo_id,
+        text=body.task,
+        status=body.priority or "medium",
+        title="",
+    )
     return {"id": todo_id}
 
 
@@ -319,7 +331,9 @@ async def delete_todo_route(todo_id: int, user: dict = Depends(validate_oidc_tok
         raise HTTPException(status_code=404, detail="Todo not found")
     if owner != user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
+    recording_id = await get_todo_recording_id(todo_id) or 0
     await delete_todo(todo_id)
+    search_module.delete_document(f"u{owner}_c{recording_id}_todo_{todo_id}")
     return {"ok": True}
 
 
@@ -351,6 +365,14 @@ async def create_decision_route(
         context=body.context,
         reason=body.reason,
         recording_id=body.recording_id,
+    )
+    # Index in Meilisearch so standalone and recording-attached decisions are searchable
+    search_module.upsert_decision(
+        user_id=user["id"],
+        conversation_id=body.recording_id or 0,
+        idx=decision_id,
+        text=body.decision,
+        title="",
     )
     return {"id": decision_id}
 
@@ -391,7 +413,9 @@ async def delete_decision_route(
         raise HTTPException(status_code=404, detail="Decision not found")
     if owner != user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
+    recording_id = await get_decision_recording_id(decision_id) or 0
     await delete_decision(decision_id)
+    search_module.delete_document(f"u{owner}_c{recording_id}_decision_{decision_id}")
     return {"ok": True}
 
 

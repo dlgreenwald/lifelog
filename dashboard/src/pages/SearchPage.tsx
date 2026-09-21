@@ -429,10 +429,18 @@ export default function SearchPage() {
                   key={hit.id}
                   hit={hit}
                   onNavigate={() => {
-                    const params = new URLSearchParams({ q: query });
+                    const params = new URLSearchParams({ q: query, kind: hit.kind });
                     if (hit._matchesPosition) {
                       params.set('matches', btoa(JSON.stringify(hit._matchesPosition)));
                     }
+                    // Pass ALL formatted text types so RecordingDetail can highlight
+                    // any section regardless of which hit kind was clicked. Each param
+                    // contains the Meilisearch-rendered text with [[hilite]] tags.
+                    const fmt = hit._formatted ?? {};
+                    if (fmt.text) params.set('fmt_text', btoa(fmt.text));
+                    if (fmt.summary) params.set('fmt_summary', btoa(fmt.summary));
+                    if (fmt.decision) params.set('fmt_decision', btoa(fmt.decision));
+                    if (fmt.todo) params.set('fmt_todo', btoa(fmt.todo));
                     navigate(`/recording/${hit.conversation_id}?${params}`);
                   }}
                 />
@@ -476,12 +484,25 @@ function SearchHitCard({
 
   const matches = hit._matchesPosition;
 
-  // Find first match position for snippet
-  let snippet = hit.text.slice(0, 200);
-  if (hit.text.length > 200) snippet += '…';
-  if (matches?.['text'] && matches['text'].length > 0) {
-    const firstMatch = matches['text'][0];
-    snippet = snippetAround(hit.text, firstMatch.start);
+  // Total matches across all fields (transcript + summary + todo + ...)
+  const totalMatches = hit._totalMatches ?? Object.values(matches ?? {}).reduce(
+    (sum, arr) => sum + arr.length, 0
+  );
+
+  // The indexed text field varies by kind — use the right one for the snippet.
+  const snippetField = hit.kind === 'summary' ? 'summary'
+    : hit.kind === 'decision' ? 'decision'
+    : hit.kind === 'todo' ? 'todo'
+    : 'text';
+  const snippetText = (hit as unknown as Record<string, string | undefined>)[snippetField] ?? '';
+  const snippetFieldPositions = matches?.[snippetField] ?? [];
+
+  let snippet: string;
+  if (snippetFieldPositions.length > 0) {
+    snippet = snippetAround(snippetText, snippetFieldPositions[0].start);
+  } else {
+    snippet = snippetText.slice(0, 200);
+    if (snippetText.length > 200) snippet += '…';
   }
 
   return (
@@ -496,6 +517,11 @@ function SearchHitCard({
         <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${kindColorClass}`}>
           {kindLabel}
         </span>
+        {totalMatches > 1 && (
+          <span className="text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200 px-1.5 py-0.5 rounded-full">
+            {totalMatches} matches
+          </span>
+        )}
         {hit.title && (
           <span className="font-semibold text-sm">{hit.title}</span>
         )}

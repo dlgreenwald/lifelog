@@ -30,25 +30,23 @@ export default function RecordingDetail() {
 
   const [searchParams] = useSearchParams();
   const highlightQuery = searchParams.get('q') || '';
-  /** Meilisearch _matchesPosition: field name → [{start, length}, ...] */
+  /** Meilisearch _matchesPosition: field name → [{start, length}, ...].
+   * Used as fallback when _formatted is not available in URL params.
+   */
   const highlightMatches: Record<string, Array<{ start: number; length: number }>> | null = (() => {
     const raw = searchParams.get('matches');
     if (!raw) return null;
     try { return JSON.parse(atob(raw)); } catch { return null; }
   })();
 
+
+
   /**
-   * Apply Meilisearch _matchesPosition highlights to a segment's text.
-   * Offsets are relative to the full indexed transcript; we adjust them
-   * to be relative to this segment's position within the full text.
+   * Apply _matchesPosition highlights directly to arbitrary text (fallback
+   * when _formatted is not available). fieldKey: 'text'|'summary'|'decision'|'todo'.
    */
-  function highlightSegment(
-    rawText: string,
-    range: { start: number; end: number },
-  ): React.ReactNode {
-    const text = rawText;
+  function highlightText(text: string, fieldKey: string = 'text'): React.ReactNode {
     if (!highlightMatches) {
-      // Fallback: word-boundary regex on query terms
       if (!highlightQuery.trim()) return text;
       const terms = highlightQuery.trim().split(/\s+/).filter(Boolean);
       if (!terms.length) return text;
@@ -61,23 +59,81 @@ export default function RecordingDetail() {
         i % 2 === 1 ? <mark key={i} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{part}</mark> : part
       )}</>;
     }
-    const allRanges = highlightMatches['text'];
-    if (!allRanges || allRanges.length === 0) return text;
+    const allRanges = highlightMatches[fieldKey] ?? [];
+    if (!allRanges.length) return text;
+    const sorted = [...allRanges].sort((a, b) => a.start - b.start);
+    const merged: Array<{ start: number; end: number }> = [];
+    for (const r of sorted) {
+      const end = r.start + r.length;
+      const last = merged[merged.length - 1];
+      if (last && r.start <= last.end) last.end = Math.max(last.end, end);
+      else merged.push({ start: r.start, end });
+    }
+    const parts: React.ReactNode[] = [];
+    let pos = 0;
+    for (const { start, end } of merged) {
+      if (start > pos) parts.push(text.slice(pos, start));
+      parts.push(<mark key={pos} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{text.slice(start, end)}</mark>);
+      pos = end;
+    }
+    if (pos < text.length) parts.push(text.slice(pos));
+    return <>{parts}</>;
+  }
 
-    // Filter ranges that fall within this segment's character span
+  /**
+   * Highlight a transcript segment using _formatted text from Meilisearch.
+   * The formatted text contains [[hilite]]...[[/hilite]] tags around matched
+   * words — we render them directly without any position mapping.
+   *
+   * When _formatted is not available, falls back to _matchesPosition-based
+   * highlighting using the segment's character range.
+   */
+  function highlightSegment(
+    rawText: string,
+    range: { start: number; end: number },
+    segIdx: number,
+  ): React.ReactNode {
+    const formattedContent = formattedSegments[segIdx] ?? null;
+    if (formattedContent !== null) {
+      // _formatted is authoritative — it has exact highlight tags from Meilisearch.
+      // formattedContent has format: " content[[hilite]]word[[/hilite]] more"
+      // We render it by splitting on the tags.
+      const parts = formattedContent.split(/(\[\[hilite\]\]|\[\[\/hilite\]\])/);
+      if (parts.length === 1) return rawText; // no tags
+      return <>{parts.map((part, i) =>
+        part === '[[hilite]]' ? null
+        : part === '[[/hilite]]' ? null
+        : parts[i - 1] === '[[hilite]]'
+          ? <mark key={i} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{part}</mark>
+          : part
+      )}</>;
+    }
+
+    // Fallback: use _matchesPosition with range-based filtering
+    const text = rawText;
+    if (!highlightMatches?.['text']?.length) {
+      if (!highlightQuery.trim()) return text;
+      const terms = highlightQuery.trim().split(/\s+/).filter(Boolean);
+      if (!terms.length) return text;
+      const pattern = new RegExp(
+        `\\b(${terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'gi'
+      );
+      const parts = text.split(pattern);
+      if (parts.length === 1) return text;
+      return <>{parts.map((part, i) =>
+        i % 2 === 1 ? <mark key={i} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{part}</mark> : part
+      )}</>;
+    }
     const localRanges: Array<{ start: number; end: number }> = [];
-    for (const r of allRanges) {
-      const rStart = r.start;
+    for (const r of highlightMatches['text']) {
       const rEnd = r.start + r.length;
-      if (rEnd < range.start || rStart >= range.end) continue; // outside this segment
+      if (rEnd < range.start || r.start >= range.end) continue;
       localRanges.push({
-        start: Math.max(0, rStart - range.start),
+        start: Math.max(0, r.start - range.start),
         end: Math.min(text.length, rEnd - range.start),
       });
     }
-    if (localRanges.length === 0) return text;
-
-    // Sort and merge overlapping ranges
+    if (!localRanges.length) return text;
     const sorted = [...localRanges].sort((a, b) => a.start - b.start);
     const merged: Array<{ start: number; end: number }> = [];
     for (const r of sorted) {
@@ -85,7 +141,6 @@ export default function RecordingDetail() {
       if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
       else merged.push({ start: r.start, end: r.end });
     }
-
     const parts: React.ReactNode[] = [];
     let pos = 0;
     for (const { start, end } of merged) {
@@ -329,13 +384,88 @@ export default function RecordingDetail() {
     text: seg.text ?? '',
   }));
 
+  /**
+   * Parse _formatted.text from Meilisearch (passed via URL param) into
+   * per-segment formatted content. _formatted.text contains
+   * [[hilite]]...[[/hilite]] tags around matched words. We split it
+   * by speaker labels and map each speaker's content to the corresponding
+   * rawSegments entry so highlightSegment can render tags directly.
+   */
+  const formattedSegments: Array<string | null> = (() => {
+    const raw = searchParams.get('fmt_text');
+    if (!raw) return [];
+    try {
+      const fullText = atob(raw);
+      // Split on speaker label boundaries
+      const parts = fullText.split(/(?=SPEAKER_\d+:)/);
+      // Extract (label, content) from each part
+      const formattedPairs: Array<{ label: string; content: string }> = [];
+      for (const part of parts) {
+        const colonIdx = part.indexOf(':');
+        if (colonIdx < 0) continue;
+        const label = part.slice(0, colonIdx).trim(); // e.g. "SPEAKER_02"
+        const content = part.slice(colonIdx + 1).trimStart();
+        formattedPairs.push({ label, content });
+      }
+      // Match each raw segment to the best-formatted pair by (label + content similarity).
+      // Simple approach: prefer same-label pair with longest common prefix with raw text.
+      return rawSegments.map((seg) => {
+        const segText = seg.text.trim();
+        const segLabel = seg.name;
+        // Find best matching formatted pair
+        let best: { label: string; content: string } | null = null;
+        let bestScore = -1;
+        for (const pair of formattedPairs) {
+          if (pair.label !== segLabel) continue;
+          // Score = longest common prefix length
+          let score = 0;
+          const pairText = pair.content.replace(/\[\[hilite\]\]/g, '').replace(/\[\[\/hilite\]\]/g, '');
+          const minLen = Math.min(segText.length, pairText.length);
+          while (score < minLen && segText[score] === pairText[score]) score++;
+          if (score > bestScore) { bestScore = score; best = pair; }
+        }
+        return best?.content ?? null;
+      });
+    } catch {
+      return [];
+    }
+  })();
+
+  /** Pre-rendered highlighted summary text from Meilisearch _formatted. */
+  const fmtSummary = (() => {
+    const raw = searchParams.get('fmt_summary');
+    if (!raw) return null;
+    try { return atob(raw); } catch { return null; }
+  })();
+
+
+
+  /**
+   * Render a string containing [[hilite]]...[[/hilite]] markers as JSX.
+   * Used for pre-rendered Meilisearch _formatted text where the highlight
+   * positions are already computed and embedded in the text.
+   */
+  function renderFormatted(text: string): React.ReactNode {
+    if (!text) return text;
+    const parts = text.split(/(\[\[hilite\]\]|\[\[\/hilite\]\])/);
+    if (parts.length === 1) return text;
+    // parts[i-1] === '[[hilite]]' means this is the highlighted content
+    return <>{parts.map((part, i) =>
+      part === '[[hilite]]' ? null
+      : part === '[[/hilite]]' ? null
+      : parts[i - 1] === '[[hilite]]'
+        ? <mark key={i} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{part}</mark>
+        : part
+    )}</>;
+  }
+
 
   const segmentCharRanges: Array<{ start: number; end: number }> = (() => {
     const ranges: Array<{ start: number; end: number }> = [];
     let pos = 0;
     for (const seg of rawSegments) {
-      const prefix = seg.text.trim() ? `${seg.name}: ` : '';
       const text = seg.text.trim();
+      const prefix = text ? `${seg.name}: ` : '';
       const segText = prefix + text;
       ranges.push({ start: pos, end: pos + segText.length });
       pos += segText.length + 1; // +1 for space separator
@@ -387,7 +517,14 @@ export default function RecordingDetail() {
       {recording.long_summary && (
         <div className="summary">
           <h3>Summary</h3>
-          <p>{recording.long_summary}</p>
+          <p>{fmtSummary ? (() => {
+            try {
+              const parsed = JSON.parse(fmtSummary) as [Record<string, unknown>, string];
+              return renderFormatted(parsed[1]);
+            } catch {
+              return recording.long_summary;
+            }
+          })() : recording.long_summary}</p>
         </div>
       )}
 
@@ -402,7 +539,7 @@ export default function RecordingDetail() {
                 return (
                   <li key={i} className={!isLive && seg.name === 'Unknown' ? 'unknown' : ''}>
                     {!isLive && <span className="speaker-name">{seg.name}: </span>}
-                    {highlightSegment(text, range)}
+                    {highlightSegment(text, range, i)}
                   </li>
                 );
               })}
@@ -485,7 +622,7 @@ export default function RecordingDetail() {
           <ul>
             {recordingDecisions.map(decision => (
               <li key={decision.id} className={decision.archived ? 'decision-archived' : ''}>
-                <strong>{decision.decision}</strong>
+                <strong>{highlightText(decision.decision, 'decision')}</strong>
                 <span> - {decision.made_by}</span>
                 {decision.archived && (
                   <span className="decision-archive-badge">Archived</span>
@@ -565,7 +702,7 @@ export default function RecordingDetail() {
                   checked={todo.completed}
                   onChange={() => handleTodoToggle(todo)}
                 />
-                <span className="todo-task">{todo.task}</span>
+                <span className="todo-task">{highlightText(todo.task, 'todo')}</span>
                 <span> - {todo.owner}</span>
                 {todo.due && <span> (due: {todo.due})</span>}
                 <span className="priority-badge">{todo.priority}</span>

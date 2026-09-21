@@ -39,7 +39,7 @@ KIND_SUMMARY = "summary"
 KIND_DECISION = "decision"
 KIND_TODO = "todo"
 
-FILTERABLE = ["kind", "status", "speaker", "conversation_id", "date", "participants"]
+FILTERABLE = ["kind", "status", "speaker", "conversation_id", "date", "participants", "user_id"]
 SORTABLE = ["date", "conversation_id"]
 
 # ── Client ─────────────────────────────────────────────────────────
@@ -74,7 +74,11 @@ def build_index() -> None:
     # Set filterable and sortable attributes
     index.update_filterable_attributes(FILTERABLE)
     index.update_sortable_attributes(SORTABLE)
-    index.update_searchable_attributes(["text", "title", "topics"])
+    # Each kind uses its own text field so _matchesPosition positions are
+    # naturally isolated per section when hits are merged by conversation_id.
+    index.update_searchable_attributes(
+        ["text", "summary", "decision", "todo", "title", "topics"]
+    )
 
     # Explicit typo tolerance config (v1.12 API)
     index.update_typo_tolerance(
@@ -114,6 +118,7 @@ def upsert_recording(
     doc = {
         "id": f"u{user_id}_c{conversation_id}_transcript",
         "conversation_id": conversation_id,
+        "user_id": user_id,
         "text": full_text,
         "title": title,
         "speaker": "",
@@ -139,7 +144,8 @@ def upsert_summary(
     doc = {
         "id": f"u{user_id}_c{conversation_id}_summary",
         "conversation_id": conversation_id,
-        "text": text,
+        "user_id": user_id,
+        "summary": text,
         "title": title,
         "speaker": "",
         "kind": KIND_SUMMARY,
@@ -162,7 +168,8 @@ def upsert_decision(
     doc = {
         "id": f"u{user_id}_c{conversation_id}_decision_{idx}",
         "conversation_id": conversation_id,
-        "text": text,
+        "user_id": user_id,
+        "decision": text,
         "title": title,
         "speaker": "",
         "kind": KIND_DECISION,
@@ -186,7 +193,8 @@ def upsert_todo(
     doc = {
         "id": f"u{user_id}_c{conversation_id}_todo_{idx}",
         "conversation_id": conversation_id,
-        "text": text,
+        "user_id": user_id,
+        "todo": text,
         "title": title,
         "speaker": "",
         "kind": KIND_TODO,
@@ -205,6 +213,11 @@ def delete_conversation(user_id: int, conversation_id: int) -> None:
     """Remove all documents for one conversation (recording/session)."""
     filter_expr = f"conversation_id = {conversation_id}"
     get_client().index(INDEX_NAME).delete_documents_by_filter(filter_expr)
+
+
+def delete_document(doc_id: str) -> None:
+    """Remove a single document by its ID."""
+    get_client().index(INDEX_NAME).delete_document(doc_id)
 
 
 def search(
@@ -249,13 +262,23 @@ def search(
             "attributesToRetrieve": [
                 "id",
                 "conversation_id",
+                "user_id",
                 "text",
+                "summary",
+                "decision",
+                "todo",
                 "title",
                 "speaker",
                 "kind",
                 "date",
                 "status",
+                "_formatted",
             ],
+            # Request formatted text with highlight tags so the frontend can
+            # parse [[hilite]]...[[/hilite]] spans and highlight segments exactly.
+            "attributesToHighlight": ["text", "summary", "decision", "todo"],
+            "highlightPreTag": "[[hilite]]",
+            "highlightPostTag": "[[/hilite]]",
             "showMatchesPosition": True,
         },
     )
@@ -295,15 +318,7 @@ def _build_filters(
                 parts.append(f'participants = "{name}"')
 
     if user_id is not None:
-        # conversation_id encodes user_id in its prefix, but Meilisearch doesn't
-        # support uid() — we store user_id indirectly via a document tag.
-        # Instead, filter by conversation_ids that belong to the user.
-        # We approximate by including the user_id in the filter expression itself.
-        # The document IDs contain "u{user_id}_" so we filter via conversation_id
-        # prefix match using string functions.  Since Meilisearch doesn't expose
-        # substring/regex on numeric IDs, we accept that all-filters search without
-        # user_id is acceptable for the search endpoint (authenticated per-request).
-        pass
+        parts.append(f"user_id = {user_id}")
 
     return " AND ".join(parts) if parts else None
 
@@ -318,6 +333,7 @@ def get_facets(user_id: int | None = None) -> dict:
     result = index.search(
         "",
         {
+            "filter": f"user_id = {user_id}" if user_id is not None else None,
             "facets": ["kind", "speaker", "status", "participants"],
             "limit": 0,
         },

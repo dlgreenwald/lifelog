@@ -733,6 +733,24 @@ async def get_todo_owner(todo_id: int) -> int | None:
         return row["user_id"] if row else None
 
 
+async def get_todo_recording_id(todo_id: int) -> int | None:
+    """Get the recording_id for a todo. Returns None if not found."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT recording_id FROM todos WHERE id = $1", todo_id
+        )
+        return row["recording_id"] if row else None
+
+
+async def get_decision_recording_id(decision_id: int) -> int | None:
+    """Get the recording_id for a decision. Returns None if not found."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT recording_id FROM decisions WHERE id = $1", decision_id
+        )
+        return row["recording_id"] if row else None
+
+
 async def save_decisions(
     recording_id: int,
     user_id: int,
