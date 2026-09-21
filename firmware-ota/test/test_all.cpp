@@ -22,6 +22,9 @@
 // Pull in LED state machine tests + their SUT (led.cpp) at file scope so all
 // 9 RUN_TESTs below find their test_* symbols. Defines its own audio globals.
 #include "test_led.h"
+
+// Pull in SpeexDSP AGC tests + SUT (agcInit/Reset/ProcessFrame via mocks)
+#include "lifelog_core/speex_agc_tests.cpp"
 // ═══════════════════════════════════════════════════════════════════
 // Test state — reset each test via setUp()
 // ═══════════════════════════════════════════════════════════════════
@@ -483,6 +486,17 @@ int main() {
     RUN_TEST(test_upload_from_memory_mock);
     RUN_TEST(test_upload_from_memory_rejects_short);
     RUN_TEST(test_overflow_handler_capped);
+
+    // ── Lightweight fixed-point AGC (9 tests — agcInit / agcReset / agcProcessFrame) ──
+    RUN_TEST(test_agcInit_returns_zero_and_sets_unity_gain);
+    RUN_TEST(test_agcInit_null_returns_error);
+    RUN_TEST(test_agcReset_restores_defaults);
+    RUN_TEST(test_agcProcessFrame_512_loud_signal_gets_reduced);
+    RUN_TEST(test_agcProcessFrame_512_quiet_signal_gets_boosted);
+    RUN_TEST(test_agcProcessFrame_non512_passthrough);
+    RUN_TEST(test_agcProcessFrame_zero_count_returns_error);
+    RUN_TEST(test_agcProcessFrame_null_samples_returns_error);
+    RUN_TEST(test_agcProcessFrame_partial_128_samples_passthrough);
 
     // ── OAuth2 Device Flow (28 tests) ──
     RUN_TEST(test_oauth2_initial_state_is_idle);
