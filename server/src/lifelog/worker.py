@@ -1368,27 +1368,6 @@ async def _finalize_completed_sessions() -> None:
                     speakers=len(unique_speakers),
                     duration_s=duration,
                 )
-                persisted = _persist_partition_segments(speaker_segments, user)
-                named = _named_from_persisted(persisted)
-                recording_id = await db.save_session_recording(
-                    session["user_id"],
-                    session["id"],
-                    {"segments": transcript_segments},
-                    named,
-                    {
-                        "summary": "",
-                        "todos": [],
-                        "decisions": [],
-                        "title": "",
-                        "long_summary": "",
-                    },
-                    audio_files[0] if audio_files else "",
-                    speaker_segments=persisted,
-                    session_timestamp=session_start,
-                    category="not_meaningful",
-                    created_at=session_start,
-                )
-                await ingest.ingest_recording(session["user_id"], recording_id)
                 await db.mark_session_processed(session["id"])
                 continue
 
@@ -1399,27 +1378,6 @@ async def _finalize_completed_sessions() -> None:
                     "session_all_segments_low_quality",
                     session_id=session["id"],
                 )
-                persisted = _persist_partition_segments(speaker_segments, user)
-                named = _named_from_persisted(persisted)
-                recording_id = await db.save_session_recording(
-                    session["user_id"],
-                    session["id"],
-                    {"segments": transcript_segments},
-                    named,
-                    {
-                        "summary": "",
-                        "todos": [],
-                        "decisions": [],
-                        "title": "",
-                        "long_summary": "",
-                    },
-                    audio_files[0] if audio_files else "",
-                    speaker_segments=persisted,
-                    session_timestamp=session_start,
-                    category="not_meaningful",
-                    created_at=session_start,
-                )
-                await ingest.ingest_recording(session["user_id"], recording_id)
                 await db.mark_session_processed(session["id"])
                 continue
 
@@ -1537,7 +1495,7 @@ async def _finalize_completed_sessions() -> None:
                         session["user_id"],
                         session["id"],
                         part_idx,
-                        {"segments": []},
+                        {"segments": rebased},
                         named_part,
                         llm_result,
                         audio_files[0] if audio_files else "",

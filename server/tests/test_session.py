@@ -538,7 +538,8 @@ class TestHourlyReprocessing:
                 "job_type": "full",
                 "result": {
                     "segments": [
-                        {"start": 0, "end": 1, "text": "hello", "speaker": "SPEAKER_00"}
+                        {"start": 0, "end": 1, "text": "hello", "speaker": "SPEAKER_00"},
+                        {"start": 1, "end": 2, "text": "world", "speaker": "SPEAKER_01"},
                     ],
                     "speaker_map": {},
                     "speaker_segments": [
@@ -548,7 +549,14 @@ class TestHourlyReprocessing:
                             "end": 1,
                             "text": "hello",
                             "audio": "YQ==",
-                        }
+                        },
+                        {
+                            "speaker": "SPEAKER_01",
+                            "start": 1,
+                            "end": 2,
+                            "text": "world",
+                            "audio": "YQ==",
+                        },
                     ],
                 },
             }
@@ -602,7 +610,14 @@ class TestHourlyReprocessing:
                 "end": 1.0,
                 "text": "hello",
                 "audio_filename": "segment.enc",
-            }
+            },
+            {
+                "speaker": "SPEAKER_01",
+                "start": 1.0,
+                "end": 2.0,
+                "text": "world",
+                "audio_filename": "segment.enc",
+            },
         ]
         assert "audio" not in saved[0]
         mock_db.mark_session_processed.assert_awaited_once_with(1)
