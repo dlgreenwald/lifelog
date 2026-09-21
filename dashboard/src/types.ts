@@ -102,3 +102,46 @@ export interface UserSettings {
     language: string;
     llm_context: string;
 }
+
+export interface SearchHit {
+  id: string;
+  conversation_id: number;
+  text: string;
+  title: string;
+  speaker: string;
+  kind: 'transcript' | 'summary' | 'decision' | 'todo';
+  date: string;
+  status?: 'open' | 'done';
+  /** Summary text (set when kind='summary') */
+  summary?: string;
+  /** Decision text (set when kind='decision') */
+  decision?: string;
+  /** Todo text (set when kind='todo') */
+  todo?: string;
+  _matchesPosition?: Record<string, Array<{ start: number; length: number }>>;
+  /** Total matches across all kinds (transcript + summary + todo + ...) */
+  _totalMatches?: number;
+  /** Meilisearch _formatted response with highlighted field values */
+  _formatted?: {
+    text?: string;
+    summary?: string;
+    decision?: string;
+    todo?: string;
+  };
+}
+
+export interface SearchResponse {
+  hits: SearchHit[];
+  total: number;
+  limit: number;
+  offset: number;
+  processingTimeMs: number;
+  query: string;
+}
+
+export interface Facets {
+  kinds: string[];
+  speakers: string[];
+  statuses: string[];
+  participants: string[];
+}

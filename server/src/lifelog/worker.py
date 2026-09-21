@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import structlog
 
 import lifelog.database as db
+from lifelog import ingest
 from lifelog.config import settings
 from lifelog.crypto import audio_crypto
 from lifelog.database import delete_utterance_chunks, get_utterance_chunks
@@ -1369,7 +1370,7 @@ async def _finalize_completed_sessions() -> None:
                 )
                 persisted = _persist_partition_segments(speaker_segments, user)
                 named = _named_from_persisted(persisted)
-                await db.save_session_recording(
+                recording_id = await db.save_session_recording(
                     session["user_id"],
                     session["id"],
                     {"segments": transcript_segments},
@@ -1387,6 +1388,7 @@ async def _finalize_completed_sessions() -> None:
                     category="not_meaningful",
                     created_at=session_start,
                 )
+                await ingest.ingest_recording(session["user_id"], recording_id)
                 await db.mark_session_processed(session["id"])
                 continue
 
@@ -1399,7 +1401,7 @@ async def _finalize_completed_sessions() -> None:
                 )
                 persisted = _persist_partition_segments(speaker_segments, user)
                 named = _named_from_persisted(persisted)
-                await db.save_session_recording(
+                recording_id = await db.save_session_recording(
                     session["user_id"],
                     session["id"],
                     {"segments": transcript_segments},
@@ -1417,6 +1419,7 @@ async def _finalize_completed_sessions() -> None:
                     category="not_meaningful",
                     created_at=session_start,
                 )
+                await ingest.ingest_recording(session["user_id"], recording_id)
                 await db.mark_session_processed(session["id"])
                 continue
 
@@ -1504,6 +1507,7 @@ async def _finalize_completed_sessions() -> None:
                         session["user_id"],
                         llm_result.get("decisions", []),
                     )
+                    await ingest.ingest_recording(session["user_id"], recording_id)
                     logger.info(
                         "session_finalized",
                         session_id=session["id"],
@@ -1552,6 +1556,7 @@ async def _finalize_completed_sessions() -> None:
                         session["user_id"],
                         llm_result.get("decisions", []),
                     )
+                    await ingest.ingest_recording(session["user_id"], recording_id)
                     logger.info(
                         "partition_recording_saved",
                         session_id=session["id"],

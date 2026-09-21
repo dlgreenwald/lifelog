@@ -75,6 +75,22 @@ async def validate_bearer_token(token: str) -> dict:
     """
     from lifelog.database import get_user_by_oidc_sub
 
+    # Simulator token: "simulator:<client_id>"
+    if token.startswith("simulator:"):
+        client_id = token.split(":", 1)[1].strip()
+        if client_id == settings.oidc_simulator_client_id:
+            # Look up user by simulator sub
+            user = await get_user_by_oidc_sub(f"simulator:{client_id}")
+            if not user:
+                from lifelog.database import create_user
+
+                user = await create_user(
+                    oidc_sub=f"simulator:{client_id}",
+                    name=f"Simulator ({client_id})",
+                )
+            return user
+        raise HTTPException(status_code=401, detail="Invalid simulator client")
+
     payload = _token_payload(token)
     issuer: str = payload.get("iss", "") or ""
 
@@ -127,6 +143,21 @@ async def validate_oidc_token(
 ) -> dict:
     """Validate OIDC JWT token using JWKS public key."""
     from lifelog.database import get_user_by_oidc_sub
+
+    # Simulator token: "simulator:<client_id>"
+    if token.credentials.startswith("simulator:"):
+        client_id = token.credentials.split(":", 1)[1].strip()
+        if client_id == settings.oidc_simulator_client_id:
+            user = await get_user_by_oidc_sub(f"simulator:{client_id}")
+            if not user:
+                from lifelog.database import create_user
+
+                user = await create_user(
+                    oidc_sub=f"simulator:{client_id}",
+                    name=f"Simulator ({client_id})",
+                )
+            return user
+        raise HTTPException(status_code=401, detail="Invalid simulator client")
 
     payload = _token_payload(token.credentials)
     issuer: str = payload.get("iss", "") or ""

@@ -30,6 +30,12 @@ const mockRecording: Recording = {
   summary: null,
   title: 'Discussed Q1 roadmap and assigned tasks.',
   long_summary: 'We reviewed Q1 status, assigned action items to each team member, and set timeline for the kickoff.',
+  transcript: {
+    segments: [
+      { name: 'Alice', start: 0.0, end: 3.0, text: 'Let us plan Q1.' },
+      { name: 'Bob', start: 3.0, end: 6.0, text: 'Sounds good.' },
+    ],
+  },
   speakers: [
     { id: 0, name: 'Alice', start: 0.0, end: 3.0, text: 'Let us plan Q1.' },
     { id: 1, name: 'Bob', start: 3.0, end: 6.0, text: 'Sounds good.' },
@@ -89,10 +95,12 @@ describe('RecordingDetail', () => {
   it('marks Unknown speakers with unknown class', async () => {
     const withUnknown = {
       ...mockRecording,
-      speakers: [
-        ...mockRecording.speakers!,
-        { id: 2, name: 'Unknown', start: 6.0, end: 8.0, text: 'Mystery' },
-      ],
+      transcript: {
+        segments: [
+          ...(mockRecording.transcript?.segments ?? []),
+          { name: 'Unknown', start: 6.0, end: 8.0, text: 'Mystery' },
+        ],
+      },
     };
     mockApi.getRecording.mockResolvedValue(withUnknown);
 

@@ -15,7 +15,7 @@ from slowapi.errors import RateLimitExceeded
 from lifelog.config import settings
 from lifelog.database import init_pool
 from lifelog.rate_limit import limiter
-from lifelog.routes import dashboard, speakers, transcription, upload
+from lifelog.routes import dashboard, search, speakers, transcription, upload
 from lifelog.worker import hourly_reprocess_loop, worker_loop
 
 
@@ -156,6 +156,7 @@ app.add_middleware(
 app.include_router(upload.router, prefix="/api/v1", tags=["upload"])
 app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["dashboard"])
 app.include_router(speakers.router, prefix="/api/v1/speakers", tags=["speakers"])
+app.include_router(search.router, prefix="/api/v1", tags=["search"])
 app.include_router(
     transcription.router, prefix="/internal/transcription", tags=["transcription"]
 )

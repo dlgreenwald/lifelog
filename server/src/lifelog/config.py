@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     audio_storage_limit_gb: float = 0  # 0 = no limit
     audio_retention_days: int = 0  # 0 = no limit
 
+    # Meilisearch
+    meili_host: str = "http://meilisearch:7700"
+    meili_master_key: str = ""
+
     # Session grouping
     session_gap_minutes: int = 5
     meaningful_speech_min_seconds: float = 30.0

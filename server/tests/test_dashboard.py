@@ -202,7 +202,13 @@ async def test_delete_todo_endpoint():
             new_callable=AsyncMock,
             return_value=1,
         ),
+        patch(
+            "lifelog.routes.dashboard.get_todo_recording_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
         patch("lifelog.routes.dashboard.delete_todo", new_callable=AsyncMock),
+        patch("lifelog.routes.dashboard.search_module.delete_document"),
     ):
         client = TestClient(app)
         response = client.delete("/todos/5")
@@ -357,7 +363,13 @@ async def test_delete_decision_endpoint():
             new_callable=AsyncMock,
             return_value=1,
         ),
+        patch(
+            "lifelog.routes.dashboard.get_decision_recording_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
         patch("lifelog.routes.dashboard.delete_decision", new_callable=AsyncMock),
+        patch("lifelog.routes.dashboard.search_module.delete_document"),
     ):
         client = TestClient(app)
         response = client.delete("/decisions/1")
@@ -397,8 +409,13 @@ async def test_create_todo():
     """Create todo endpoint returns id."""
     app = _app_with_mocks()
 
-    with patch(
-        "lifelog.routes.dashboard.create_todo", new_callable=AsyncMock, return_value=42
+    with (
+        patch(
+            "lifelog.routes.dashboard.create_todo",
+            new_callable=AsyncMock,
+            return_value=42,
+        ),
+        patch("lifelog.routes.dashboard.search_module.upsert_todo"),
     ):
         client = TestClient(app)
         response = client.post(
@@ -425,9 +442,14 @@ async def test_create_todo_standalone():
     """Create todo without recording_id creates standalone todo."""
     app = _app_with_mocks()
 
-    with patch(
-        "lifelog.routes.dashboard.create_todo", new_callable=AsyncMock, return_value=99
-    ) as mock_create:
+    with (
+        patch(
+            "lifelog.routes.dashboard.create_todo",
+            new_callable=AsyncMock,
+            return_value=99,
+        ) as mock_create,
+        patch("lifelog.routes.dashboard.search_module.upsert_todo"),
+    ):
         client = TestClient(app)
         response = client.post("/todos", json={"task": "Standalone task"})
 
@@ -443,10 +465,13 @@ async def test_create_decision():
     """Create decision endpoint returns id."""
     app = _app_with_mocks()
 
-    with patch(
-        "lifelog.routes.dashboard.create_decision",
-        new_callable=AsyncMock,
-        return_value=7,
+    with (
+        patch(
+            "lifelog.routes.dashboard.create_decision",
+            new_callable=AsyncMock,
+            return_value=7,
+        ),
+        patch("lifelog.routes.dashboard.search_module.upsert_decision"),
     ):
         client = TestClient(app)
         response = client.post(
@@ -473,11 +498,14 @@ async def test_create_decision_standalone():
     """Create decision without recording_id creates standalone decision."""
     app = _app_with_mocks()
 
-    with patch(
-        "lifelog.routes.dashboard.create_decision",
-        new_callable=AsyncMock,
-        return_value=88,
-    ) as mock_create:
+    with (
+        patch(
+            "lifelog.routes.dashboard.create_decision",
+            new_callable=AsyncMock,
+            return_value=88,
+        ) as mock_create,
+        patch("lifelog.routes.dashboard.search_module.upsert_decision"),
+    ):
         client = TestClient(app)
         response = client.post("/decisions", json={"decision": "Use React"})
 
