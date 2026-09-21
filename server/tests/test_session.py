@@ -538,8 +538,18 @@ class TestHourlyReprocessing:
                 "job_type": "full",
                 "result": {
                     "segments": [
-                        {"start": 0, "end": 1, "text": "hello", "speaker": "SPEAKER_00"},
-                        {"start": 1, "end": 2, "text": "world", "speaker": "SPEAKER_01"},
+                        {
+                            "start": 0,
+                            "end": 1,
+                            "text": "hello",
+                            "speaker": "SPEAKER_00",
+                        },
+                        {
+                            "start": 1,
+                            "end": 2,
+                            "text": "world",
+                            "speaker": "SPEAKER_01",
+                        },
                     ],
                     "speaker_map": {},
                     "speaker_segments": [
