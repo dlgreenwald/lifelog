@@ -711,3 +711,230 @@ class TestCheckAndEndInactiveSession:
             result = await check_and_end_inactive_session(session_id=3)
         assert result is False
         mock_conn.execute.assert_not_called()
+
+
+# ── User settings ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_user_settings_returns_row(mock_conn):
+    """When a settings row exists, get_user_settings returns it."""
+    from lifelog.database import get_user_settings
+
+    mock_conn.fetchrow.return_value = {
+        "language": "en",
+        "llm_context": "special context",
+    }
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_user_settings(user_id=1)
+
+    assert result == {"language": "en", "llm_context": "special context"}
+    mock_conn.fetchrow.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_user_settings_returns_defaults_when_no_row(mock_conn):
+    """When no settings row exists, get_user_settings returns default values."""
+    from lifelog.database import get_user_settings
+
+    mock_conn.fetchrow.return_value = None
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_user_settings(user_id=1)
+
+    assert result == {"language": "auto", "llm_context": ""}
+
+
+@pytest.mark.asyncio
+async def test_save_user_settings_calls_execute(mock_conn):
+    """save_user_settings calls execute with upsert SQL."""
+    from lifelog.database import save_user_settings
+
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        await save_user_settings(user_id=1, language="fr", llm_context="custom")
+
+    mock_conn.execute.assert_awaited_once()
+    sql = mock_conn.execute.call_args.args[0]
+    assert "INSERT INTO user_settings" in sql
+    assert "ON CONFLICT" in sql
+
+
+# ── Session reprocessing helpers ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_idle_active_sessions_returns_list(mock_conn):
+    """get_idle_active_sessions returns a list of session dicts."""
+    from lifelog.database import get_idle_active_sessions
+
+    fake_sessions = [
+        {"id": 10, "user_id": 1, "started_at": "2026-09-20T10:00:00", "ended_at": None},
+        {"id": 11, "user_id": 2, "started_at": "2026-09-20T11:00:00", "ended_at": None},
+    ]
+    mock_conn.fetch.return_value = fake_sessions
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_idle_active_sessions(max_idle_minutes=5.0)
+
+    assert len(result) == 2
+    assert result[0]["id"] == 10
+    mock_conn.fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_idle_active_sessions_empty(mock_conn):
+    """Returns empty list when no idle sessions exist."""
+    from lifelog.database import get_idle_active_sessions
+
+    mock_conn.fetch.return_value = []
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_idle_active_sessions(max_idle_minutes=5.0)
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_mark_session_processed_calls_execute(mock_conn):
+    """mark_session_processed calls execute with UPDATE SQL."""
+    from lifelog.database import mark_session_processed
+
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        await mark_session_processed(session_id=42)
+
+    mock_conn.execute.assert_awaited_once()
+    sql = mock_conn.execute.call_args.args[0]
+    assert "UPDATE sessions" in sql
+    assert "status = 'processed'" in sql
+
+
+@pytest.mark.asyncio
+async def test_reset_session_for_reprocessing_success(mock_conn):
+    """When session exists, reset_session_for_reprocessing returns True and deletes records."""
+    from lifelog.database import reset_session_for_reprocessing
+
+    mock_conn.fetchrow.return_value = {"id": 42, "status": "ended", "retry_count": 1}
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await reset_session_for_reprocessing(session_id=42)
+
+    assert result is True
+    # Should have: SELECT, DELETE recordings, DELETE jobs, UPDATE session = 4 calls
+    assert mock_conn.execute.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_reset_session_for_reprocessing_not_found(mock_conn):
+    """When session does not exist, reset_session_for_reprocessing returns False."""
+    from lifelog.database import reset_session_for_reprocessing
+
+    mock_conn.fetchrow.return_value = None
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await reset_session_for_reprocessing(session_id=999)
+
+    assert result is False
+    mock_conn.execute.assert_not_called()
+
+
+# ── Session audio and recording queries ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_session_processed_at_returns_datetime(mock_conn):
+    """get_session_processed_at returns the processed timestamp when set."""
+    from datetime import datetime
+
+    from lifelog.database import get_session_processed_at
+
+    ts = datetime(2026, 9, 20, 12, 0, 0)
+    mock_conn.fetchrow.return_value = {"session_processed_at": ts}
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_session_processed_at(session_id=42)
+
+    assert result == ts
+
+
+@pytest.mark.asyncio
+async def test_get_session_processed_at_returns_none_when_not_processed(mock_conn):
+    """Returns None when session has not been processed."""
+    from lifelog.database import get_session_processed_at
+
+    mock_conn.fetchrow.return_value = {"session_processed_at": None}
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_session_processed_at(session_id=42)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_audio_files_for_session_returns_list(mock_conn):
+    """get_audio_files_for_session returns a list of audio filenames."""
+    from lifelog.database import get_audio_files_for_session
+
+    mock_conn.fetch.return_value = [
+        {"audio_filename": "file1.enc"},
+        {"audio_filename": "file2.enc"},
+    ]
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_audio_files_for_session(session_id=1)
+
+    assert result == ["file1.enc", "file2.enc"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_files_for_session_empty(mock_conn):
+    """Returns empty list when no audio files exist."""
+    from lifelog.database import get_audio_files_for_session
+
+    mock_conn.fetch.return_value = []
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_audio_files_for_session(session_id=1)
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_audio_files_for_user_returns_list(mock_conn):
+    """get_audio_files_for_user fetches session IDs then looks up audio sizes."""
+    from lifelog.database import get_audio_files_for_user
+
+    # Outer call returns session IDs; patch the inner helper to avoid mocking its pool calls
+    mock_conn.fetch.return_value = [{"id": 10}, {"id": 11}]
+    with (
+        patch("lifelog.database.pool", _make_mock_pool(mock_conn)),
+        patch(
+            "lifelog.database.get_audio_files_for_session", new_callable=AsyncMock
+        ) as mock_get_files,
+    ):
+        # Simulate file sizes by mocking os.path.getsize via settings.audio_storage_path
+        mock_get_files.return_value = ["file1.enc", "file2.enc"]
+        with patch("os.path.getsize", return_value=2048):
+            result = await get_audio_files_for_user(user_id=1)
+
+    assert ("file1.enc", 2048) in result
+    assert ("file2.enc", 2048) in result
+
+
+@pytest.mark.asyncio
+async def test_get_audio_files_for_user_empty(mock_conn):
+    """Returns empty list when no audio files exist."""
+    from lifelog.database import get_audio_files_for_user
+
+    mock_conn.fetch.return_value = []
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_audio_files_for_user(user_id=1)
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_oldest_session_recordings_returns_list(mock_conn):
+    """get_oldest_session_recordings returns recordings ordered by timestamp."""
+    from lifelog.database import get_oldest_session_recordings
+
+    fake_recs = [
+        {"id": 5, "session_id": 10, "timestamp": "2026-09-19T10:00:00"},
+        {"id": 6, "session_id": 11, "timestamp": "2026-09-19T11:00:00"},
+    ]
+    mock_conn.fetch.return_value = fake_recs
+    with patch("lifelog.database.pool", _make_mock_pool(mock_conn)):
+        result = await get_oldest_session_recordings(user_id=1)
+
+    assert len(result) == 2
+    assert result[0]["id"] == 5

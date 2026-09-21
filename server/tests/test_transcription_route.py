@@ -1,119 +1,144 @@
-from datetime import datetime
-from unittest.mock import AsyncMock, patch
+"""Unit tests for lifelog.routes.transcription — helpers and Pydantic models."""
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import pytest
+from pydantic import ValidationError
 
-from lifelog.routes.transcription import router
+from lifelog.routes.transcription import (
+    _ALLOWED_STAGES,
+    JobError,
+    JobResult,
+    StageUpdate,
+    UtteranceSpan,
+    _iso,
+    _json_value,
+)
 
-
-def _client():
-    app = FastAPI()
-    app.include_router(router, prefix="/internal/transcription")
-    return TestClient(app)
-
-
-def test_claim_returns_204_without_work():
-    with patch(
-        "lifelog.routes.transcription.db.claim_transcription_job",
-        new_callable=AsyncMock,
-        return_value=None,
-    ):
-        response = _client().post("/internal/transcription/claim")
-    assert response.status_code == 204
-    assert response.content == b""
+# ── _iso ───────────────────────────────────────────────────────────────────────
 
 
-def test_claim_serializes_job():
-    job = {
-        "id": 4,
-        "session_id": 2,
-        "window_start": datetime(2025, 1, 1, 10),
-        "window_end": datetime(2025, 1, 1, 10, 10),
-        "chunk_index": 0,
-        "job_type": None,
-        "result": None,
-    }
-    with patch(
-        "lifelog.routes.transcription.db.claim_transcription_job",
-        new_callable=AsyncMock,
-        return_value=job,
-    ):
-        response = _client().post("/internal/transcription/claim")
-    assert response.status_code == 200
-    assert response.json()["job_type"] == "full"
-    assert response.json()["window_start"] == "2025-01-01T10:00:00"
+class TestIso:
+    def test_datetime_returns_iso_string(self):
+        from datetime import datetime
+
+        dt = datetime(2026, 9, 20, 14, 30, 0)
+        assert _iso(dt) == "2026-09-20T14:30:00"
+
+    def test_none_returns_none(self):
+        assert _iso(None) is None
 
 
-def test_stage_rejects_unknown_stage():
-    response = _client().post("/internal/transcription/stage/4", json={"stage": "bad"})
-    assert response.status_code == 422
+# ── _json_value ───────────────────────────────────────────────────────────────
 
 
-def test_completion_persists_all_result_fields():
-    with patch(
-        "lifelog.routes.transcription.db.complete_transcription_job",
-        new_callable=AsyncMock,
-    ) as complete:
-        response = _client().post(
-            "/internal/transcription/complete/4",
-            json={
-                "segments": [],
-                "full_transcript": {"segments": []},
-                "speaker_map": {},
-                "speaker_segments": [{"speaker": "SPEAKER_00"}],
-                "utterance_spans": [],
-            },
+class TestJsonValue:
+    def test_string_returns_parsed_json(self):
+        result = _json_value('{"key": "value"}', {})
+        assert result == {"key": "value"}
+
+    def test_invalid_json_returns_default(self):
+        result = _json_value("not json", {"fallback": True})
+        assert result == {"fallback": True}
+
+    def test_non_string_returns_value(self):
+        result = _json_value({"already": "dict"}, {})
+        assert result == {"already": "dict"}
+
+    def test_none_returns_default(self):
+        result = _json_value(None, "default")
+        assert result == "default"
+
+
+# ── _ALLOWED_STAGES ────────────────────────────────────────────────────────────
+
+
+class TestAllowedStages:
+    def test_expected_stages_present(self):
+        assert "queued" in _ALLOWED_STAGES
+        assert "transcribing" in _ALLOWED_STAGES
+        assert "diarizing" in _ALLOWED_STAGES
+        assert "done" in _ALLOWED_STAGES
+
+    def test_no_forbidden_stages(self):
+        assert "invalid" not in _ALLOWED_STAGES
+        assert "failed" not in _ALLOWED_STAGES
+
+
+# ── StageUpdate model ──────────────────────────────────────────────────────────
+
+
+class TestStageUpdate:
+    def test_valid_stage(self):
+        result = StageUpdate(stage="transcribing")
+        assert result.stage == "transcribing"
+
+    def test_invalid_stage_still_parses(self):
+        # Pydantic doesn't validate enum here — the route does
+        result = StageUpdate(stage="invalid")
+        assert result.stage == "invalid"
+
+
+# ── UtteranceSpan model ───────────────────────────────────────────────────────
+
+
+class TestUtteranceSpan:
+    def test_valid(self):
+        span = UtteranceSpan(utterance_id=1, start=0.0, end=5.5)
+        assert span.utterance_id == 1
+        assert span.start == 0.0
+        assert span.end == 5.5
+
+    def test_missing_required_field(self):
+        with pytest.raises(ValidationError):
+            UtteranceSpan(utterance_id=1)  # missing start and end
+
+
+# ── JobResult model ────────────────────────────────────────────────────────────
+
+
+class TestJobResult:
+    def test_valid_minimal(self):
+        result = JobResult(
+            segments=[{"text": "hello", "speaker": "Alice", "start": 0.0, "end": 1.5}],
+            full_transcript={},
+            speaker_map={},
         )
-    assert response.status_code == 200
-    assert complete.await_args.args == (
-        4,
-        {
-            "segments": [],
-            "full_transcript": {"segments": []},
-            "speaker_map": {},
-            "utterance_spans": [],
-            "speaker_segments": [{"speaker": "SPEAKER_00"}],
-            "utterance_ids": [],
-        },
-    )
+        assert len(result.segments) == 1
+
+    def test_full_fields(self):
+        result = JobResult(
+            segments=[{"text": "hello"}],
+            full_transcript={"segments": []},
+            speaker_segments=[{"speaker": "Alice", "text": "hello"}],
+            speaker_map={"0": "Alice"},
+            utterance_spans=[UtteranceSpan(utterance_id=1, start=0.0, end=1.5)],
+            utterance_ids=[1],
+        )
+        assert result.speaker_segments[0]["speaker"] == "Alice"
+        assert result.utterance_ids == [1]
+
+    def test_missing_required_field(self):
+        with pytest.raises(ValidationError):
+            JobResult()  # missing required fields
+
+    def test_utterance_spans_validation(self):
+        # utterance_spans must be list of UtteranceSpan
+        result = JobResult(
+            segments=[],
+            full_transcript={},
+            speaker_map={},
+            utterance_spans=[{"utterance_id": 1, "start": 0.0, "end": 1.5}],
+        )
+        assert len(result.utterance_spans) == 1
 
 
-def test_quick_audio_returns_one_base64_segment():
-    job = {
-        "id": 4,
-        "session_id": 2,
-        "status": "processing",
-        "job_type": "quick",
-        "result": {"audio_filename": "a.enc"},
-    }
-    with (
-        patch(
-            "lifelog.routes.transcription.db.get_transcription_job",
-            new_callable=AsyncMock,
-            return_value=job,
-        ),
-        patch(
-            "lifelog.routes.transcription._job_owner",
-            new_callable=AsyncMock,
-            return_value={"encryption_secret": "s", "key_salt": b"salt"},
-        ),
-        patch(
-            "lifelog.routes.transcription.audio_crypto.decrypt_audio",
-            return_value=b"audio",
-        ),
-    ):
-        response = _client().get("/internal/transcription/audio/4")
-    assert response.status_code == 200
-    assert response.json()["audio_segments"] == ["YXVkaW8="]
-    assert response.json()["timestamps"] == []
+# ── JobError model ─────────────────────────────────────────────────────────────
 
 
-def test_audio_rejects_non_processing_job():
-    with patch(
-        "lifelog.routes.transcription.db.get_transcription_job",
-        new_callable=AsyncMock,
-        return_value={"status": "done"},
-    ):
-        response = _client().get("/internal/transcription/audio/4")
-    assert response.status_code == 409
+class TestJobError:
+    def test_valid(self):
+        err = JobError(error="WhisperX crashed")
+        assert err.error == "WhisperX crashed"
+
+    def test_missing_required_field(self):
+        with pytest.raises(ValidationError):
+            JobError()

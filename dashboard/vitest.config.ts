@@ -15,4 +15,10 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     css: false,
   },
+  coverage: {
+    provider: 'v8',
+    reporter: ['text', 'html'],
+    include: ['src/**'],
+    exclude: ['src/test/**', 'src/**/*.test.*', 'src/test/setup.ts'],
+  },
 });

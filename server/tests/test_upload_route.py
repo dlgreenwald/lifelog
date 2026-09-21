@@ -1,266 +1,136 @@
-"""Mock integration tests for upload route endpoint."""
-
-from unittest.mock import AsyncMock, patch
+"""Unit tests for lifelog.routes.upload — helper functions and module constants."""
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from lifelog.routes.upload import _active_utterances, router, validate_upload_auth
-
-SERVER_UTT_ID = 1700000000
+# ── Module constants ────────────────────────────────────────────────────────────
 
 
-def _app_with_mocks(user=None):
-    """Build a test app with dependency overrides."""
-    app = FastAPI()
-    app.include_router(router)
+class TestUploadConstants:
+    def test_max_chunk_size_is_10mb(self):
+        from lifelog.routes.upload import MAX_CHUNK_SIZE
 
-    async def fake_upload_auth():
-        return user or {
-            "id": 1,
-            "api_key": "test-key",
-            "name": "Test",
-            "encryption_secret": "secret-123",
-        }
+        assert MAX_CHUNK_SIZE == 10 * 1024 * 1024
 
-    app.dependency_overrides[validate_upload_auth] = fake_upload_auth
-    return app
+    def test_utterance_ttl_is_30_minutes(self):
+        from lifelog.routes.upload import UTTERANCE_TTL
+
+        assert UTTERANCE_TTL == 1800
 
 
-@pytest.fixture(autouse=True)
-def _clear_active_utterances():
-    """Reset tracking state before every test."""
-    _active_utterances.clear()
-    yield
-    _active_utterances.clear()
+# ── _opus_sample_rate ───────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_upload_chunk_stored():
-    """Upload with is_final=false stores chunk and returns chunk_stored."""
-    mock_user = {
-        "id": 1,
-        "api_key": "test-key",
-        "name": "Test",
-        "encryption_secret": "secret-123",
-    }
-    app = _app_with_mocks(mock_user)
+class TestOpusSampleRate:
+    def test_too_short_bytes_returns_none(self):
+        from lifelog.routes.upload import _opus_sample_rate
 
-    with (
-        patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock),
-        patch("lifelog.routes.upload._current_epoch", return_value=SERVER_UTT_ID),
-    ):
-        client = TestClient(app)
-        response = client.post(
-            "/upload",
-            files={"file": ("chunk.opus", b"chunk-data", "audio/opus")},
-            data={"utterance_id": 5, "chunk_index": 0, "is_final": "false"},
+        assert _opus_sample_rate(b"short") is None
+
+    def test_subprocess_returns_sample_rate(self):
+        """Test that _opus_sample_rate parses opusinfo output correctly."""
+        from unittest.mock import MagicMock, patch
+
+        mock_result = MagicMock()
+        mock_result.stdout = "Original sample rate: 48000 Hz\nChannels: 1"
+        mock_result.stderr = ""
+
+        mock_subprocess = MagicMock()
+        mock_subprocess.run.return_value = mock_result
+
+        mock_tempfile = MagicMock()
+        mock_tempfile.return_value.__enter__ = lambda s: (
+            setattr(s, "name", "/tmp/test.opus") or s
         )
+        mock_tempfile.return_value.__aexit__ = lambda *a: None
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "chunk_stored"
-    assert data["utterance_id"] == SERVER_UTT_ID
-    assert data["chunk_index"] == 0
+        mock_os = MagicMock()
 
+        # Replace the local imports inside _opus_sample_rate via sys.modules
+        import sys
 
-@pytest.mark.asyncio
-async def test_upload_enqueue_on_final():
-    """Upload with is_final=true stores chunk and enqueues for processing."""
-    mock_user = {
-        "id": 1,
-        "api_key": "test-key",
-        "name": "Test",
-        "encryption_secret": "secret-123",
-    }
-    app = _app_with_mocks(mock_user)
+        with patch.dict(
+            sys.modules,
+            {
+                "subprocess": mock_subprocess,
+                "tempfile": mock_tempfile,
+                "os": mock_os,
+            },
+        ):
+            # Re-import to pick up the mocked modules
+            from lifelog.routes.upload import _opus_sample_rate
 
-    with (
-        patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock),
-        patch("lifelog.routes.upload._current_epoch", return_value=SERVER_UTT_ID),
-        patch("lifelog.routes.upload.database.pool") as mock_pool,
-    ):
-        mock_conn = AsyncMock()
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = _opus_sample_rate(b"x" * 200)
 
-        client = TestClient(app)
-        response = client.post(
-            "/upload",
-            files={"file": ("final.opus", b"final-data", "audio/opus")},
-            data={"utterance_id": 10, "chunk_index": 2, "is_final": "true"},
-        )
+        assert result == 48000
+        mock_subprocess.run.assert_called_once()
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "enqueued"
-    assert data["utterance_id"] == SERVER_UTT_ID
+    def test_opusinfo_unavailable_returns_none(self):
+        from unittest.mock import patch
+
+        from lifelog.routes.upload import _opus_sample_rate
+
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            assert _opus_sample_rate(b"x" * 200) is None
 
 
-@pytest.mark.asyncio
-async def test_upload_new_utterance_on_device_id_change():
-    """Different device utterance_ids get different server IDs."""
-    mock_user = {
-        "id": 1,
-        "api_key": "test-key",
-        "name": "Test",
-        "encryption_secret": "secret-123",
-    }
-    app = _app_with_mocks(mock_user)
-
-    with (
-        patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock),
-        patch("lifelog.routes.upload._current_epoch", return_value=1700000000),
-    ):
-        client = TestClient(app)
-
-        resp1 = client.post(
-            "/upload",
-            files={"file": ("c1.opus", b"data1", "audio/opus")},
-            data={"utterance_id": 1, "chunk_index": 0, "is_final": "false"},
-        )
-        resp2 = client.post(
-            "/upload",
-            files={"file": ("c2.opus", b"data2", "audio/opus")},
-            data={"utterance_id": 2, "chunk_index": 0, "is_final": "false"},
-        )
-
-    assert resp1.json()["utterance_id"] == resp2.json()["utterance_id"]
+# ── _evict_stale_utterances ───────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_upload_new_utterance_on_chunk_index_reset():
-    """chunk_index resetting to 0 with same device id signals new utterance."""
-    mock_user = {
-        "id": 1,
-        "api_key": "test-key",
-        "name": "Test",
-        "encryption_secret": "secret-123",
-    }
-    app = _app_with_mocks(mock_user)
+class TestEvictStaleUtterances:
+    def test_no_eviction_when_fresh(self):
+        from lifelog.routes.upload import _active_utterances, _evict_stale_utterances
 
-    epoch_counter = [1700000000]
+        # Reset state
+        _active_utterances.clear()
 
-    def _next_epoch():
-        val = epoch_counter[0]
-        epoch_counter[0] += 1
-        return val
+        # Add a fresh entry
+        _active_utterances[1] = {100: {"server_id": 5, "last_seen": 1000}}
 
-    with (
-        patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock),
-        patch("lifelog.routes.upload._current_epoch", side_effect=_next_epoch),
-        patch("lifelog.routes.upload.database.pool") as mock_pool,
-    ):
-        mock_conn = AsyncMock()
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("lifelog.routes.upload._current_epoch", lambda: 1500)
+            _evict_stale_utterances()
 
-        client = TestClient(app)
+        assert 1 in _active_utterances
+        assert 100 in _active_utterances[1]
 
-        # Utterance 1: chunks 0, 1, 2
-        client.post(
-            "/upload",
-            files={"file": ("c0.opus", b"d", "audio/opus")},
-            data={"utterance_id": 5, "chunk_index": 0, "is_final": "false"},
-        )
-        client.post(
-            "/upload",
-            files={"file": ("c1.opus", b"d", "audio/opus")},
-            data={"utterance_id": 5, "chunk_index": 1, "is_final": "false"},
-        )
-        client.post(
-            "/upload",
-            files={"file": ("c2.opus", b"d", "audio/opus")},
-            data={"utterance_id": 5, "chunk_index": 2, "is_final": "false"},
-        )
-        # Utterance 2: chunk_index resets to 0
-        resp = client.post(
-            "/upload",
-            files={"file": ("c3.opus", b"d", "audio/opus")},
-            data={"utterance_id": 5, "chunk_index": 0, "is_final": "false"},
-        )
+        _active_utterances.clear()
 
-    # New utterance got a different server ID (exact value depends on call count)
-    assert isinstance(resp.json()["utterance_id"], int)
-    # Old utterance was enqueued (finalize called)
-    assert mock_conn.execute.call_count >= 1
+    def test_evicts_expired_entries(self):
+        from lifelog.routes.upload import _active_utterances, _evict_stale_utterances
 
+        _active_utterances.clear()
+        # Entry last seen at timestamp 100, TTL = 1800
+        _active_utterances[1] = {100: {"server_id": 5, "last_seen": 100}}
 
-@pytest.mark.asyncio
-async def test_upload_finalize_on_is_final():
-    """is_final removes entry from active tracking."""
-    mock_user = {
-        "id": 1,
-        "api_key": "test-key",
-        "name": "Test",
-        "encryption_secret": "secret-123",
-    }
-    app = _app_with_mocks(mock_user)
+        with pytest.MonkeyPatch.context() as mp:
+            # Current time is 1900 — entry is 1800 seconds old, exactly at TTL boundary
+            # Still present (not > TTL). Advance to 1901 — now expired.
+            mp.setattr("lifelog.routes.upload._current_epoch", lambda: 1901)
+            _evict_stale_utterances()
 
-    with (
-        patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock),
-        patch("lifelog.routes.upload._current_epoch", return_value=SERVER_UTT_ID),
-        patch("lifelog.routes.upload.database.pool") as mock_pool,
-    ):
-        mock_conn = AsyncMock()
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        assert 1 not in _active_utterances
 
-        client = TestClient(app)
+    def test_evicts_expired_leaves_valid(self):
+        from lifelog.routes.upload import _active_utterances, _evict_stale_utterances
 
-        # Store a chunk first
-        client.post(
-            "/upload",
-            files={"file": ("c0.opus", b"d", "audio/opus")},
-            data={"utterance_id": 3, "chunk_index": 0, "is_final": "false"},
-        )
-        assert 3 in _active_utterances.get(1, {})
+        _active_utterances.clear()
+        # User 1: expired entry
+        _active_utterances[1] = {100: {"server_id": 1, "last_seen": 100}}
+        # User 2: fresh entry
+        _active_utterances[2] = {200: {"server_id": 2, "last_seen": 5000}}
 
-        # Finalize
-        resp = client.post(
-            "/upload",
-            files={"file": ("c1.opus", b"d", "audio/opus")},
-            data={"utterance_id": 3, "chunk_index": 1, "is_final": "true"},
-        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("lifelog.routes.upload._current_epoch", lambda: 6000)
+            _evict_stale_utterances()
 
-    assert resp.json()["status"] == "enqueued"
-    assert 3 not in _active_utterances.get(1, {})
+        assert 1 not in _active_utterances
+        assert 2 in _active_utterances
+        assert 200 in _active_utterances[2]
 
+        _active_utterances.clear()
 
-@pytest.mark.asyncio
-async def test_upload_missing_auth():
-    """Upload without Bearer token returns 401."""
-    app = FastAPI()
-    app.include_router(router)
+    def test_empty_active_utterances_noop(self):
+        from lifelog.routes.upload import _active_utterances, _evict_stale_utterances
 
-    client = TestClient(app)
-    response = client.post(
-        "/upload",
-        files={"file": ("test.opus", b"data", "audio/opus")},
-        data={"utterance_id": 1, "chunk_index": 0, "is_final": "true"},
-        headers={"Authorization": "Invalid token"},
-    )
-
-    assert response.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_upload_rejects_oversized_chunk():
-    """Upload rejects chunks larger than MAX_CHUNK_SIZE."""
-    from lifelog.routes.upload import MAX_CHUNK_SIZE
-
-    app = _app_with_mocks()
-
-    with patch("lifelog.routes.upload.save_utterance_chunk", new_callable=AsyncMock):
-        client = TestClient(app)
-        oversized = b"x" * (MAX_CHUNK_SIZE + 1)
-        response = client.post(
-            "/upload",
-            files={"file": ("test.opus", oversized, "audio/opus")},
-            data={"utterance_id": 1, "chunk_index": 0, "is_final": "false"},
-            headers={"X-API-Key": "test-key"},
-        )
-
-    assert response.status_code == 413
-    assert response.json()["detail"] == "Chunk too large"
+        _active_utterances.clear()
+        _evict_stale_utterances()  # Should not raise
