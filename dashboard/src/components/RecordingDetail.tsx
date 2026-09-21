@@ -514,7 +514,7 @@ export default function RecordingDetail() {
         </>
       )}
 
-      {recording.long_summary && (
+      {(recording.long_summary ?? recording.summary) && (
         <div className="summary">
           <h3>Summary</h3>
           <p>{fmtSummary ? (() => {
@@ -522,9 +522,9 @@ export default function RecordingDetail() {
               const parsed = JSON.parse(fmtSummary) as [Record<string, unknown>, string];
               return renderFormatted(parsed[1]);
             } catch {
-              return recording.long_summary;
+              return recording.long_summary ?? recording.summary;
             }
-          })() : recording.long_summary}</p>
+          })() : (recording.long_summary ?? recording.summary)}</p>
         </div>
       )}
 
