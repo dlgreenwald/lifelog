@@ -260,6 +260,19 @@ void uploadAllRecordings() {
 
 static TaskHandle_t autoUploadTaskHandle = NULL;
 
+// Parse epoch from filename like "rec_1726926612_042.opus" → returns 1726926612, or 0 if invalid
+static time_t _parse_epoch_from_filename(const char *filename) {
+    // Strip path prefix
+    const char *base = strrchr(filename, '/');
+    base = base ? base + 1 : filename;
+    // Expected format: rec_<epoch>_<index>.opus
+    if (strncmp(base, "rec_", 4) != 0) return 0;
+    char *end = nullptr;
+    time_t epoch = strtoll(base + 4, &end, 10);
+    if (end == base + 4 || epoch <= 0) return 0;
+    return epoch;
+}
+
 static void autoUploadTask(void *pvParameters) {
     const TickType_t interval = pdMS_TO_TICKS(30000);  // 30 seconds
     while (true) {
@@ -272,6 +285,7 @@ static void autoUploadTask(void *pvParameters) {
         if (!root) { sdGive(); continue; }
 
         char paths[32][64];
+        time_t epochs[32];
         int count = 0;
         while (count < 32) {
             sdTake();
@@ -287,6 +301,7 @@ static void autoUploadTask(void *pvParameters) {
                 const char *fname = f.name();
                 if (strncmp(fname, "lifelog/", 8) == 0) fname += 8;
                 snprintf(paths[count], sizeof(paths[count]), "/lifelog/%s", fname);
+                epochs[count] = _parse_epoch_from_filename(fname);
                 count++;
             }
         }
@@ -302,7 +317,7 @@ static void autoUploadTask(void *pvParameters) {
 
         uint32_t orphanId = 0x80000000;
         for (int i = 0; i < count; i++) {
-            if (uploadFile(paths[i], orphanId++, 0, true, 0, 0, 0)) {
+            if (uploadFile(paths[i], orphanId++, 0, true, epochs[i], 0, 0)) {
                 sdTake();
                 SD.remove(paths[i]);
                 sdGive();

@@ -147,13 +147,17 @@ static void opus_deinit() {
 // Allocates growing PSRAM buffer for entire OGG stream.
 // No SD file — upload from memory after voice ends.
 
+// Epoch (from time()) at utterance start — used for stable filename across flushes
+static time_t s_utterance_start_epoch = 0;
+
 static void opus_init_stream() {
     ogg_stream_reset_serialno(&ogg_stream, ogg_serialno);
 
     opus_granulepos = 0;
     opus_packetno = 2;      // head=0, tags=1, first audio=2
-    mem_to_sd = false;
+    mem_to_sd = false;  // Reset so this utterance's flushes create/append to its own file
     mem_buf_pos = 0;
+    s_utterance_start_epoch = time(nullptr);
 
     // Allocate or reuse growing PSRAM buffer
     if (!mem_buf || mem_buf_capacity < MEM_BUF_INITIAL_SIZE) {
@@ -198,22 +202,33 @@ static void opus_init_stream() {
     ESP_LOGD(TAG, "opus_init_stream: PSRAM buffer %luKB (header=%lu bytes)",
              (unsigned long)(mem_buf_capacity / 1024), (unsigned long)mem_buf_pos);
 }
-static void mem_flush_to_sd() {
+
+static void mem_flush_to_sd(time_t utterance_epoch) {
     if (mem_buf_pos == 0 || mem_to_sd) return;
     if (sdMutex == NULL) {
         ESP_LOGE(TAG, "mem_flush_to_sd: sdMutex is NULL, cannot flush");
         return;
     }
 
-    time_t now = time(nullptr);
-    if (now > 0) {
-        generateFilenameUtc(sd_filename, sizeof(sd_filename), now, fileIndex++, true);
+    // Generate filename using the utterance start epoch, not flush-time
+    if (utterance_epoch > 0) {
+        generateFilenameUtc(sd_filename, sizeof(sd_filename), utterance_epoch, 0, true);
     } else {
-        snprintf(sd_filename, sizeof(sd_filename), "/lifelog/rec_%05lu.opus", fileIndex++);
+        snprintf(sd_filename, sizeof(sd_filename), "rec_%lu.opus",
+                 (unsigned long)time(nullptr));
     }
+    // Prepend /lifelog/ — SD requires absolute paths
+    char full_path[64];
+    snprintf(full_path, sizeof(full_path), "/lifelog/%s", sd_filename);
 
+    // Open existing file for append, or create new one
+    bool file_existed = SD.exists(full_path);
     sdTake();
-    opus_file = SD.open(sd_filename, FILE_WRITE);
+    if (file_existed) {
+        opus_file = SD.open(full_path, FILE_APPEND);
+    } else {
+        opus_file = SD.open(full_path, FILE_WRITE);
+    }
     sdGive();
 
     if (!opus_file) {
@@ -233,11 +248,13 @@ static void mem_flush_to_sd() {
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 
-    strcpy(lastSavedFile, sd_filename);
+    strcpy(lastSavedFile, full_path);
     mem_to_sd = true;
+    mem_buf_pos = 0;
 
-    ESP_LOGI(TAG, "mem_flush_to_sd: wrote %lu bytes to %s",
-             (unsigned long)mem_buf_pos, sd_filename);
+    ESP_LOGI(TAG, "mem_flush_to_sd: %s %lu bytes to %s",
+             file_existed ? "appended" : "wrote",
+             (unsigned long)written, sd_filename);
 }
 
 // Grow mem_buf if needed; returns false on failure (hit max or realloc failed).
@@ -300,10 +317,10 @@ static int opus_encode_to_buffer(const int16_t* pcm, int samples) {
             if (WiFi.status() != WL_CONNECTED && mem_buf_pos > SD_FLUSH_THRESHOLD) {
                 ESP_LOGW(TAG, "WiFi down, flushing %lu bytes to SD",
                          (unsigned long)mem_buf_pos);
-                mem_flush_to_sd();
+                mem_flush_to_sd(s_utterance_start_epoch);
             } else if (!mem_buf_grow(page_size)) {
                 ESP_LOGW(TAG, "mem_buf full, flushing to SD");
-                mem_flush_to_sd();
+                mem_flush_to_sd(s_utterance_start_epoch);
             }
 
             if (mem_to_sd) {
@@ -390,7 +407,7 @@ static void opus_file_end() {
             int page_size = ogg_page_buf.header_len + ogg_page_buf.body_len;
             if (!mem_buf_grow(page_size)) {
                 // Fallback: flush to SD if can't grow
-                mem_flush_to_sd();
+                mem_flush_to_sd(s_utterance_start_epoch);
                 if (mem_to_sd) {
                     sdTake();
                     opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
@@ -418,8 +435,9 @@ static void opus_file_end() {
 static void persistFile(const UploadRequest &req) {
     // WiFi offline: flush to SD immediately
     if (WiFi.status() != WL_CONNECTED) {
-        mem_flush_to_sd();   // idempotent guard (mem_to_sd checked inside)
+        mem_flush_to_sd(req.recorded_at);   // idempotent guard (mem_to_sd checked inside)
         free(req.mem_ptr);  // NULL = safe no-op
+        closePendingFile(); // close SD file before returning — autoUploadTask will find it on next scan
         return;
     }
 
@@ -438,28 +456,30 @@ static void persistFile(const UploadRequest &req) {
         if (!ok) {
             // Server down — flush to SD; autoUploadTask picks it up
             ESP_LOGW(TAG, "persistFile: server error, flushing to SD for retry...");
-            mem_flush_to_sd();
+            mem_flush_to_sd(req.recorded_at);
         }
         free(req.mem_ptr);
     } else {
         // SD path — file already on SD, just upload
+        // Use lastSavedFile (full path) not sd_filename (bare name)
+        char sd_path[64];
+        snprintf(sd_path, sizeof(sd_path), "/lifelog/%s", sd_filename);
         ESP_LOGD(TAG, "persistFile: uploading from SD: %s (utt=%lu chunk=%lu, voice=%lu-%lums)...",
-                 req.filename, (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex,
+                 sd_path, (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex,
                  (unsigned long)req.start_ms, (unsigned long)req.end_ms);
-        ok = uploadFile(req.filename, req.utteranceId, req.chunkIndex, req.isFinal, req.recorded_at,
+        ok = uploadFile(sd_path, req.utteranceId, req.chunkIndex, req.isFinal, req.recorded_at,
                         req.start_ms, req.end_ms);
         if (ok) {
             sdTake();
-            SD.remove(req.filename);
+            SD.remove(sd_path);
             sdGive();
-            ESP_LOGD(TAG, "persistFile: uploaded and deleted %s", req.filename);
+            ESP_LOGD(TAG, "persistFile: uploaded and deleted %s", sd_path);
         }
-        if (req.from_sd) {
-            closePendingFile();
-        }
+        closePendingFile();  // Always close; from_sd or not, pendingCloseFile may be set
     }
     if (!ok) {
-        ESP_LOGW(TAG, "persistFile: upload failed: %s", req.filename);
+        ESP_LOGW(TAG, "persistFile: upload failed: %s",
+                 req.from_sd ? sd_filename : req.filename);
     }
 }
 
@@ -559,27 +579,34 @@ void writerTask(void *pvParameters) {
             // Requirement 1: flush to SD if WiFi is offline and data is in PSRAM
             if (!mem_to_sd && mem_buf_pos > 0 && WiFi.status() != WL_CONNECTED) {
                 ESP_LOGW(TAG, "WiFi offline, flushing %lu bytes to SD", (unsigned long)mem_buf_pos);
-                mem_flush_to_sd();
+                mem_flush_to_sd(s_utterance_start_epoch);
             }
 #endif
             prev_recording = false;
 
-            bool has_data = mem_to_sd ? (strlen(sd_filename) > 0) : (mem_buf_pos > 0);
+            // has_data guard: either data in flight to upload task (mem_ptr set),
+            // or data already on SD (mem_to_sd set after flush)
+            bool has_data = (mem_buf_pos > 0) || (mem_to_sd && strlen(sd_filename) > 0);
             if (has_data) {
                 UploadRequest req;
                 memset(&req, 0, sizeof(req));
-                if (mem_to_sd) {
-                    // SD fallback path
-                    strncpy(req.filename, sd_filename, sizeof(req.filename) - 1);
-                    req.from_sd = true;
-                } else {
-                    // Memory path — hand off mem_buf to upload task
+                if (!mem_to_sd && mem_buf_pos > 0) {
+                    // Memory path — data is in PSRAM buffer, upload from memory
                     strncpy(req.filename, lastSavedFile, sizeof(req.filename) - 1);
                     req.from_sd = false;
+                    req.mem_ptr = mem_buf;
+                    req.mem_size = mem_buf_pos;
+                } else {
+                    // SD path — data is on SD (either flushed mid-utterance or was already there).
+                    // Once mem_to_sd is true, the utterance stays on SD for its entire lifetime
+                    // to ensure the full utterance and all segments are in the same file.
+                    char sd_path[64];
+                    snprintf(sd_path, sizeof(sd_path), "/lifelog/%s", sd_filename);
+                    strncpy(req.filename, sd_path, sizeof(req.filename) - 1);
+                    req.from_sd = true;
+                    req.mem_ptr = NULL;  // No memory data — file is on SD
+                    req.mem_size = 0;
                 }
-                // Always transfer mem_buf ownership to the request for cleanup in upload_if_connected
-                req.mem_ptr = mem_buf;
-                req.mem_size = mem_buf_pos;
                 mem_buf = NULL;
                 mem_buf_pos = 0;
                 mem_buf_capacity = 0;
@@ -591,7 +618,7 @@ void writerTask(void *pvParameters) {
                 req.recorded_at = time(nullptr) - gmtOffset;
                 req.start_ms = listenStartMs;   // system uptime ms at voice start
                 req.end_ms = millis();          // system uptime ms at voice end
-                chunkIndex++;
+                chunkIndex = chunkIndex + 1;
                 if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
                     ESP_LOGW(TAG, "Upload queue full (%lu/%d), skipping %s",
                              (unsigned long)uxQueueMessagesWaiting(uploadQueue), 8, req.filename);

@@ -239,14 +239,13 @@ ESP-IDF `esp_log.h` — runtime-adjustable per TAG via `esp_log_level_set()` in 
 
 ## Model Partition
 
-The `model` partition stores esp-sr models (nsnet2 + multinet) as a packed binary.
+The `model` partition stores esp-sr models (nsnet2 + vadnet1_medium) as a packed binary.
 
 ### What's needed
 
-- **nsnet2** (330KB) — noise suppression
-- **mn4q8_cn** (880KB) — speech command recognition (smallest that fits)
+- **nsnet2** — noise suppression (NS)
+- **vadnet1_medium** — voice activity detection (VAD)
 - WakeNet: disabled via weak stubs
-- VADNet: disabled (WebRTC fallback)
 
 ### Binary format
 
@@ -277,7 +276,7 @@ def pack_string(s):
     return b + b'\x00' * (STR_LEN - len(b))
 needed = {
     'nsnet2': os.path.join(MODEL_DIR, 'nsnet_model/nsnet2'),
-    'mn4q8_cn': os.path.join(MODEL_DIR, 'multinet_model/mn4q8_cn'),
+    'vadnet1_medium': os.path.join(MODEL_DIR, 'vadnet_model/vadnet1_medium'),
 }
 models = {}
 for name, path in needed.items():
@@ -334,7 +333,6 @@ esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 921600 \
 
 - Full `erase_flash` wipes model partition — must reflash after erase
 - Upstream `pack_model.py` has a directory walk bug — use the script above
-- English multinets (mn5q8_en, mn7_en) are too large for 1.9MB partition
 - OTA uploads don't include model partition
 
 ## Testing
