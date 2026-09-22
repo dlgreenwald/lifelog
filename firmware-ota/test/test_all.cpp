@@ -23,8 +23,6 @@
 // 9 RUN_TESTs below find their test_* symbols. Defines its own audio globals.
 #include "test_led.h"
 
-// Pull in SpeexDSP AGC tests + SUT (agcInit/Reset/ProcessFrame via mocks)
-#include "lifelog_core/speex_agc_tests.cpp"
 // ═══════════════════════════════════════════════════════════════════
 // Test state — reset each test via setUp()
 // ═══════════════════════════════════════════════════════════════════

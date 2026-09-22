@@ -573,15 +573,6 @@ inline int ogg_stream_flush(ogg_stream_state* os, ogg_page* og) {
 
 inline void ogg_packet_clear(ogg_packet*) {}
 
-// ── SpeexDSP stubs ────────────────────────────────────────────────
-
-#define SPEEX_PREPROCESS_SET_AGC 2
-#define SPEEX_PREPROCESS_SET_AGC_LEVEL 6
-#define SPEEX_PREPROCESS_SET_NOISE_SUPPRESS 18
-#define SPEEX_PREPROCESS_SET_VAD 4
-#define SPEEX_PREPROCESS_SET_DEREVERB 8
-#define SPEEX_PREPROCESS_SET_AGC_MAX_GAIN 30
-
 // Captured AGC_ctl values for test verification
 static float mock_agc_level = 0.0f;
 static int mock_agc_max_gain_db = 0;
@@ -589,57 +580,3 @@ static int mock_agc_ns_suppress = 0;
 static int mock_agc_vad_enable = -1;
 static int mock_agc_enable_calls = 0;
 static int mock_agc_reset_count = 0;
-
-struct SpeexPreprocessState_ { int dummy; };
-typedef struct SpeexPreprocessState_ SpeexPreprocessState;
-
-inline SpeexPreprocessState* speex_preprocess_state_init(int frame_size, int sampling_rate) {
-    (void)frame_size; (void)sampling_rate;
-    // Allocate a fake state — we only need a non-NULL pointer
-    return new SpeexPreprocessState_{0};
-}
-
-inline void speex_preprocess_state_destroy(SpeexPreprocessState* st) {
-    if (st) {
-        // Track reset (destroy) calls
-        mock_agc_reset_count++;
-        delete st;
-    }
-}
-
-inline int speex_preprocess_run(SpeexPreprocessState* st, int16_t* x) {
-    (void)st;
-    // In-place pass-through for tests — just scale by 2 to show AGC "processed"
-    for (int i = 0; i < 160; i++) {
-        x[i] = (int16_t)(x[i] * 2);
-    }
-    return 1;  // Return speech detected
-}
-
-inline int speex_preprocess_ctl(SpeexPreprocessState* st, int request, void* ptr) {
-    (void)st;
-    if (request == SPEEX_PREPROCESS_SET_AGC) {
-        mock_agc_enable_calls++;
-        return 0;
-    }
-    if (request == SPEEX_PREPROCESS_SET_AGC_LEVEL) {
-        mock_agc_level = *(float*)ptr;
-        return 0;
-    }
-    if (request == SPEEX_PREPROCESS_SET_NOISE_SUPPRESS) {
-        mock_agc_ns_suppress = *(int*)ptr;
-        return 0;
-    }
-    if (request == SPEEX_PREPROCESS_SET_VAD) {
-        mock_agc_vad_enable = *(int*)ptr;
-        return 0;
-    }
-    if (request == SPEEX_PREPROCESS_SET_DEREVERB) {
-        return 0;
-    }
-    if (request == SPEEX_PREPROCESS_SET_AGC_MAX_GAIN) {
-        mock_agc_max_gain_db = *(int*)ptr;
-        return 0;
-    }
-    return 0;  // All other requests: succeed
-}

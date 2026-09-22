@@ -218,7 +218,6 @@ static void afeInit() {
     afe_config->vad_min_noise_ms = 1000;      // min silence before VAD declares end of speech
     afe_config->vad_delay_ms = 128;
 
-    // SpeexDSP AGC replaces esp-sr AGC — disable esp-sr built-in AGC
     afe_config->agc_init = false;
     afe_config->agc_compression_gain_db = 12;  // max boost AGC can apply to quiet signals (esp-sr default 9)
     afe_config->agc_target_level_dbfs = 3;    // target -3 dBFS envelope (industry standard for speech)
