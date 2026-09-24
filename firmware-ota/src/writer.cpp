@@ -522,7 +522,10 @@ void writerTask(void *pvParameters) {
                 opus_encode_to_buffer(pcm_buf, drain_count);
             }
 
-            opus_file_end();  // finalizes pages, persists via upload_or_sd()
+            opus_file_end();  // flush EOS page into mem_buf
+
+            // Persist: upload from memory, or write to SD if WiFi unavailable
+            persist_or_upload_file(s_utterance_start_epoch, s_segment);
 
             chunkIndex++;   // each segment gets its own chunkIndex
             s_segment++;
