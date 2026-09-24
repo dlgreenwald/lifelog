@@ -49,8 +49,8 @@ static AgcState agcState = {0};
 #define AGC_TARGET_RMS    2000
 // Min gain × 65536   (0.25 = -12 dB max attenuation)
 #define AGC_MIN_GAIN      16384
-// Max gain × 65536   (32.0 = +30 dB max boost — headroom for very quiet speech)
-#define AGC_MAX_GAIN      2097152
+// Max gain × 65536   (56.2 = +45 dB max boost — covers quiet speakers at -122 dBFS noise floor)
+#define AGC_MAX_GAIN      11653503
 // EMA coefficient for RMS tracking  (α=0.1, Q19.13)
 #define AGC_RMS_ALPHA_Q13 3277
 // EMA coefficient for gain smoothing (α=0.05, Q16.16)
@@ -58,13 +58,15 @@ static AgcState agcState = {0};
 
 static void agcReset(AgcState *s) {
     if (!s) return;
-    s->rms_q19 = AGC_TARGET_RMS;
+    // Seed rms_q19=200 → first agcProcessFrame computes target_gain ≈ 20 dB.
+    // AGC then converges up or down naturally from there based on signal level.
+    s->rms_q19 = 200;  // was AGC_TARGET_RMS (2000=0 dB); start at 20 dB instead
     s->gain_q16 = 65536;  // unity gain
 }
 
 static int agcInit(AgcState *s) {
     if (!s) return -1;
-    s->rms_q19 = AGC_TARGET_RMS;
+    s->rms_q19 = 200;  // start at 20 dB (see agcReset for rationale)
     s->gain_q16 = 65536;
     return 0;
 }
