@@ -1023,66 +1023,82 @@ OAuth2HttpResponse OAuth2DeviceFlow::requestInternal(const char* method, const c
     }
     return result;
 #else
-    esp_http_client_method_t httpMethod = HTTP_METHOD_GET;
-    if (strcmp(method, "POST") == 0) httpMethod = HTTP_METHOD_POST;
-    else if (strcmp(method, "PUT") == 0) httpMethod = HTTP_METHOD_PUT;
-    else if (strcmp(method, "PATCH") == 0) httpMethod = HTTP_METHOD_PATCH;
-    else if (strcmp(method, "DELETE") == 0) httpMethod = HTTP_METHOD_DELETE;
+    // Retry once on empty-body bug: TLS read returns EAGAIN after HTTP headers are
+    // received, leaving statusCode=200 with an empty body. Retrying gets a fresh TLS
+    // connection and usually succeeds.
+    for (int attempt = 0; attempt < 2; attempt++) {
+        esp_http_client_method_t httpMethod = HTTP_METHOD_GET;
+        if (strcmp(method, "POST") == 0) httpMethod = HTTP_METHOD_POST;
+        else if (strcmp(method, "PUT") == 0) httpMethod = HTTP_METHOD_PUT;
+        else if (strcmp(method, "PATCH") == 0) httpMethod = HTTP_METHOD_PATCH;
+        else if (strcmp(method, "DELETE") == 0) httpMethod = HTTP_METHOD_DELETE;
 
-    esp_http_client_config_t config = {};
-    config.url = url;
-    config.method = httpMethod;
-    config.timeout_ms = 15000;
-    config.buffer_size = 4096;
-    config.crt_bundle_attach = esp_crt_bundle_attach;
+        esp_http_client_config_t config = {};
+        config.url = url;
+        config.method = httpMethod;
+        config.timeout_ms = 15000;
+        config.buffer_size = 4096;
+        config.crt_bundle_attach = esp_crt_bundle_attach;
 
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) return result;
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+        if (!client) break;
 
-    if (body && (httpMethod == HTTP_METHOD_POST || httpMethod == HTTP_METHOD_PUT || httpMethod == HTTP_METHOD_PATCH))
-        esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
-    if (extraHeaders && extraHeaders[0] != '\0')
-        esp_http_client_set_header(client, "Authorization", extraHeaders);
+        if (body && (httpMethod == HTTP_METHOD_POST || httpMethod == HTTP_METHOD_PUT || httpMethod == HTTP_METHOD_PATCH))
+            esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+        if (extraHeaders && extraHeaders[0] != '\0')
+            esp_http_client_set_header(client, "Authorization", extraHeaders);
 
-    esp_err_t err;
-    if (body && (httpMethod == HTTP_METHOD_POST || httpMethod == HTTP_METHOD_PUT || httpMethod == HTTP_METHOD_PATCH)) {
-        err = esp_http_client_open(client, strlen(body));
-        if (err == ESP_OK) {
-            esp_http_client_write(client, body, strlen(body));
-            esp_http_client_fetch_headers(client);
-            result.statusCode = esp_http_client_get_status_code(client);
-        }
-    } else {
-        err = esp_http_client_open(client, 0);
-        if (err == ESP_OK) {
-            esp_http_client_fetch_headers(client);
-            result.statusCode = esp_http_client_get_status_code(client);
-        }
-    }
-
-    if (err == ESP_OK && result.statusCode > 0) {
-        // Read response body — heap allocate to avoid stack overflow on FreeRTOS tasks
-        char* buf = (char*)pvPortMalloc(4096);
-        if (buf) {
-            int totalRead = 0;
-            while (totalRead < 4095) {
-                int n = esp_http_client_read(client, buf + totalRead, 4095 - totalRead);
-                if (n <= 0) break;
-                totalRead += n;
+        esp_err_t err;
+        if (body && (httpMethod == HTTP_METHOD_POST || httpMethod == HTTP_METHOD_PUT || httpMethod == HTTP_METHOD_PATCH)) {
+            err = esp_http_client_open(client, strlen(body));
+            if (err == ESP_OK) {
+                esp_http_client_write(client, body, strlen(body));
+                esp_http_client_fetch_headers(client);
+                result.statusCode = esp_http_client_get_status_code(client);
             }
-            if (totalRead > 0) {
-                buf[totalRead] = '\0';
-                deserializeJson(result.body, buf);
+        } else {
+            err = esp_http_client_open(client, 0);
+            if (err == ESP_OK) {
+                esp_http_client_fetch_headers(client);
+                result.statusCode = esp_http_client_get_status_code(client);
+            }
+        }
+
+        if (err == ESP_OK && result.statusCode > 0) {
+            // Read response body — heap allocate to avoid stack overflow on FreeRTOS tasks
+            char* buf = (char*)pvPortMalloc(4096);
+            if (buf) {
+                int totalRead = 0;
+                while (totalRead < 4095) {
+                    int n = esp_http_client_read(client, buf + totalRead, 4095 - totalRead);
+                    if (n <= 0) break;
+                    totalRead += n;
+                }
+                if (totalRead > 0) {
+                    buf[totalRead] = '\0';
+                    deserializeJson(result.body, buf);
 #ifndef OAUTH2_TESTING
-                ESP_LOGI(TAG, "Read %d bytes of response", totalRead);
+                    ESP_LOGI(TAG, "Read %d bytes of response", totalRead);
 #endif
+                }
+                vPortFree(buf);
             }
-            vPortFree(buf);
+        }
+
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+
+        // Got a body — return it (even if body is an error JSON from the server)
+        if (!result.body.isNull()) break;
+        // Empty body despite valid status — retry once with a fresh connection.
+        // On retry, log which attempt we're on so the failure is traceable.
+        if (attempt == 0) {
+#ifndef OAUTH2_TESTING
+            ESP_LOGW(TAG, "requestInternal: empty body on attempt 1, retrying with fresh connection");
+#endif
         }
     }
 
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
     return result;
 #endif
 }
