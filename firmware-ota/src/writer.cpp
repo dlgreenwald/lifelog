@@ -529,6 +529,11 @@ void writerTask(void *pvParameters) {
 
             chunkIndex++;   // each segment gets its own chunkIndex
             s_segment++;
+
+            // Reinitialize Opus stream for the continuation of this utterance.
+            // prev_recording is still true (voice hasn't ended), so the voice-start
+            // block above won't fire — we must reinit here instead.
+            opus_init_stream();
 #endif
             // Reset prev_recording only on true voice end (not buffer-threshold flush)
             if (!recording) {
