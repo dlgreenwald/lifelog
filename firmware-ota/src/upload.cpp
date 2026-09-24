@@ -704,6 +704,12 @@ static void uploadTask(void *pvParameters) {
 }
 
 void startUploadTask(TaskHandle_t *outHandle) {
-    xTaskCreatePinnedToCore(uploadTask, "uploadTask", 16384, NULL, 2, outHandle, 1);
-    ESP_LOGI(TAG, "Upload task started (core 1, stack 16384)");
+    TaskHandle_t handle;
+    BaseType_t created = xTaskCreatePinnedToCore(uploadTask, "uploadTask", 16384, NULL, 2, &handle, 1);
+    if (created == pdPASS) {
+        ESP_LOGI(TAG, "Upload task started (core 1, stack 16384)");
+        if (outHandle) *outHandle = handle;
+    } else {
+        ESP_LOGE(TAG, "Upload task failed to start");
+    }
 }
