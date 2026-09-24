@@ -666,6 +666,11 @@ extern void write_file_to_sd_from_buf(uint8_t *mem_buf, uint32_t mem_buf_pos,
                                        time_t utterance_epoch, uint32_t segment);
 
 static void uploadTask(void *pvParameters) {
+    if (uploadQueue == NULL) {
+        ESP_LOGE(TAG, "uploadTask: uploadQueue is NULL — writerInit() may have failed");
+        vTaskSuspend(NULL);  // suspend forever
+    }
+
     UploadRequest job;
     uint32_t peak = 0;
 
