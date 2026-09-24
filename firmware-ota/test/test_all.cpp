@@ -23,6 +23,10 @@
 // 9 RUN_TESTs below find their test_* symbols. Defines its own audio globals.
 #include "test_led.h"
 
+// Pull in AGC tests + their SUT (static funcs from i2s_fe.cpp) so all
+// 9 RUN_TESTs below find their test_* symbols.
+#include "test_agc.h"
+
 // ═══════════════════════════════════════════════════════════════════
 // Test state — reset each test via setUp()
 // ═══════════════════════════════════════════════════════════════════
@@ -494,7 +498,7 @@ int main() {
     RUN_TEST(test_agcProcessFrame_non512_passthrough);
     RUN_TEST(test_agcProcessFrame_zero_count_returns_error);
     RUN_TEST(test_agcProcessFrame_null_samples_returns_error);
-    RUN_TEST(test_agcProcessFrame_partial_128_samples_passthrough);
+    RUN_TEST(test_agcProcessFrame_null_state_returns_error);
 
     // ── OAuth2 Device Flow (28 tests) ──
     RUN_TEST(test_oauth2_initial_state_is_idle);

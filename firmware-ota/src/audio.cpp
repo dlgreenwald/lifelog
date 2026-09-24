@@ -51,7 +51,14 @@ uint32_t getRingFillLevel() {
 
 void sdTake() {
     if (sdMutex == NULL) return;
-    xSemaphoreTakeRecursive(sdMutex, portMAX_DELAY);
+    uint32_t now = millis();
+    BaseType_t acquired = xSemaphoreTakeRecursive(sdMutex, portMAX_DELAY);
+    uint32_t waited_ms = millis() - now;
+    if (waited_ms > 5) {
+        ESP_LOGW(TAG, "sdTake: task=%s waited %lums for mutex",
+                 pcTaskGetName(xTaskGetCurrentTaskHandle()), (unsigned long)waited_ms);
+    }
+    (void)acquired;
 }
 
 void sdGive() {

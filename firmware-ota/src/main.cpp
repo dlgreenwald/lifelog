@@ -473,6 +473,9 @@ static void setupSD() {
         SD.mkdir("lifelog");
         ESP_LOGI("SD", "Created /lifelog");
     }
+
+    sdDirCacheInit();
+    startUploadMonitorTask();
 }
 
 // ── Forward declarations ──────────────────────────────────────────
@@ -688,6 +691,5 @@ void loop() {
         lastDashPush = millis();
         dash.update();
     }
-
-    ledLoop();
+    //ledLoop();
 }

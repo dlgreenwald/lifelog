@@ -355,8 +355,20 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                     transcript_error = f"{type(e).__name__}: {e}"
 
                 elapsed_s = time.monotonic() - chunk_start
+
+                # Filter low-quality segments (model uncertain or silence-like audio).
+                # Thresholds mirror the server-side final-transcription filter in worker.py.
+                filtered_segments = [
+                    s
+                    for s in segments
+                    if s.get("no_speech_prob", 0) <= 0.8
+                    and s.get("avg_logprob", 0) > -1.0
+                ]
+
                 full_text = " ".join(
-                    s["text"].strip() for s in segments if s.get("text", "").strip()
+                    s["text"].strip()
+                    for s in filtered_segments
+                    if s.get("text", "").strip()
                 )
 
                 # On first successful transcription, cache detected language for session
@@ -391,7 +403,8 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                     rms_dbfs=round(rms_dbfs, 1),
                     peak_dbfs=round(peak_dbfs, 1),
                     clipping_pct=clipping_pct,
-                    segment_count=len(segments),
+                    segment_count=len(filtered_segments),
+                    raw_segment_count=len(segments),
                     transcript=full_text[:500],
                     language=session_language or "auto",
                     elapsed_s=round(elapsed_s, 3),
@@ -420,12 +433,12 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                                     "end": s["end"],
                                     "text": s["text"],
                                 }
-                                for s in segments
+                                for s in filtered_segments
                             ],
                             # Also flag as silent if Whisper ran but found no speech.
                             # This catches audio that passed the RMS guard but produced
                             # no transcript segments (e.g. very quiet real speech).
-                            "is_silent": len(segments) == 0,
+                            "is_silent": len(filtered_segments) == 0,
                         }
                     )
             except Exception as e:

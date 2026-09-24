@@ -45,12 +45,12 @@ typedef struct {
 
 static AgcState agcState = {0};
 
-// Target RMS × 8192  (4000 ≈ -12 dBFS for 16-bit PCM)
-#define AGC_TARGET_RMS    4000
+// Target RMS × 8192  (2000 ≈ -24 dBFS for 16-bit PCM — comfortable distant-speech level)
+#define AGC_TARGET_RMS    2000
 // Min gain × 65536   (0.25 = -12 dB max attenuation)
 #define AGC_MIN_GAIN      16384
-// Max gain × 65536   (4.0 = +12 dB max boost)
-#define AGC_MAX_GAIN      262144
+// Max gain × 65536   (32.0 = +30 dB max boost — headroom for very quiet speech)
+#define AGC_MAX_GAIN      2097152
 // EMA coefficient for RMS tracking  (α=0.1, Q19.13)
 #define AGC_RMS_ALPHA_Q13 3277
 // EMA coefficient for gain smoothing (α=0.05, Q16.16)
@@ -243,7 +243,7 @@ static void afeInit() {
     if (agcInit(&agcState) != 0) {
         ESP_LOGW(TAG, "AGC init failed — AGC disabled");
     } else {
-        ESP_LOGI(TAG, "AGC ready (target=-12 dBFS, range 12 dB)");
+        ESP_LOGI(TAG, "AGC ready (target=-24 dBFS, range 42 dB)");
     }
 }
 
@@ -371,6 +371,19 @@ static void processAfeResult(afe_fetch_result_t *result) {
         if (samples > 0) {
             agcProcessFrame(&agcState, (int16_t *)result->data, samples);
         }
+
+        // Rate-limited AGC diagnostic — log gain + input RMS once per second during speech
+        {
+            static uint32_t last_agc_log_ms = 0;
+            uint32_t now_ms = millis();
+            if (now_ms - last_agc_log_ms >= 1000) {
+                float gain_db = 20.0f * log10f((float)agcState.gain_q16 / 65536.0f);
+                float rms_dbfs = 20.0f * log10f((float)agcState.rms_q19 / 8192.0f / 32768.0f);
+                ESP_LOGI(TAG, "AGC gain=%.1f dB  rms=%.1f dBFS  vad=1", gain_db, rms_dbfs);
+                last_agc_log_ms = now_ms;
+            }
+        }
+
         int available = (RING_ITEM_BYTES / (int)sizeof(int16_t)) - chunkSamples;
         int toCopy = (samples <= available) ? samples : available;
         memcpy(chunk + chunkSamples, result->data, toCopy * sizeof(int16_t));
@@ -393,7 +406,17 @@ static void processAfeResult(afe_fetch_result_t *result) {
                 }
             }
             if (dropped > 0) {
-                ESP_LOGW(TAG, "Ring overflow: dropped %d chunks to make room", dropped);
+                UBaseType_t uxItemsWaiting = 0;
+                vRingbufferGetInfo(audioRingBuf, NULL, NULL, NULL, NULL, &uxItemsWaiting);
+                static uint32_t lastOverflowMs = 0;
+                uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                // Rate-limit: log at most once per second to avoid drowning sd flush logs
+                if (now - lastOverflowMs >= 1000) {
+                    ESP_LOGW(TAG, "Ring overflow: dropped %d chunks (fill=%lu/%d writer=%s) [rate-limited: 1/sec]",
+                             dropped, (unsigned long)uxItemsWaiting, RING_NUM_ITEMS,
+                             pcTaskGetName(writerTaskHandle));
+                    lastOverflowMs = now;
+                }
             }
         }
 
