@@ -387,7 +387,7 @@ static void test_upload_from_memory_mock() {
     // Verify the uploadFileFromMemory mock records calls correctly
     uint8_t data[4096] = {0x01, 0x02, 0x03, 0x04};
     mock_upload_mem_calls.clear();
-    bool ok = uploadFileFromMemory(data, sizeof(data), "/test.opus", 42, 0, true);
+    bool ok = uploadFileFromMemory(data, sizeof(data), "/test.opus", 42, 0, true, 0, 0, 0);
     TEST_ASSERT_TRUE(ok);
     TEST_ASSERT_EQUAL_INT(1, mock_upload_mem_calls.size());
     TEST_ASSERT_EQUAL_STRING("/test.opus", mock_upload_mem_calls[0].filename.c_str());
@@ -402,7 +402,7 @@ static void test_upload_from_memory_rejects_short() {
     // Short data should be rejected (discarded as short clip)
     uint8_t data[100] = {0};
     mock_upload_mem_calls.clear();
-    bool ok = uploadFileFromMemory(data, sizeof(data), "/test.opus", 42, 0, true);
+    bool ok = uploadFileFromMemory(data, sizeof(data), "/test.opus", 42, 0, true, 0, 0, 0);
     TEST_ASSERT_TRUE(ok);  // Returns true (discarded), not an error
     TEST_ASSERT_EQUAL_INT(0, mock_upload_mem_calls.size());  // But not actually uploaded
 }

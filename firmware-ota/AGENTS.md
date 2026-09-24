@@ -92,7 +92,8 @@ PDM Mic (GPIO42 CLK, GPIO41 DIN)
 | `lib/lifelog_core/codec.h` | Opus/OGG codec helpers |
 | `lib/lifelog_core/filename.h` | Recording filename generation |
 | `test/mocks.h` | Complete ESP32/FreeRTOS/Arduino/Opus/OGG mock layer |
-| `test/test_all.cpp` | 78 Unity tests across 11 categories (LED state machine included) |
+| `test/test_agc.h` | Fixed-point AGC unit tests (9 tests — inlined into test_all.cpp) |
+| `test/test_all.cpp` | 87 Unity tests across 13 categories |
 | `partitions/partitions_ota.csv` | OTA partition table with model partition |
 
 ## Development Commands
@@ -350,7 +351,7 @@ To fix this properly: restructure tests to `#include` the actual `.cpp` files (w
 ### Framework
 
 - **Unity** (throwtheswitch/Unity@^2.5.2) — native platform, no hardware needed
-- **78 tests** across 11 categories (LED state machine added in 2026-Q3)
+- **87 tests** across 12 categories (LED state machine + fixed-point AGC added in 2026-Q3)
 
 ### Categories
 
@@ -362,10 +363,13 @@ To fix this properly: restructure tests to `#include` the actual `.cpp` files (w
 | Filename | 5 | Opus/WAV format, increment, large index, buffer size |
 | Upload extension | 4 | Opus/WAV/mismatch/other extension matching |
 | addKnownNetwork | 3 | New, update existing, max limit |
+| PSRAM Buffering | 3 | uploadFileFromMemory mock, short-clip discard, overflow handler |
 | OAuth2 state machine | 3 | Initial state, start transitions, stop sets idle |
 | OAuth2 device code flow | 7 | Request success/failure, poll pending/slow_down/success/expired/denied/timeout |
 | OAuth2 token management | 7 | Has valid token, clear tokens, token refresh, storage roundtrip, configure overwrites, get when not authenticated, load saved state, ensure valid token |
 | OAuth2 HTTP proxy | 5 | Post injects auth header, post retries on 401, del injects auth header, put/patch when not authenticated, malformed JSON response |
+| LED State Machine | 9 | Listen/record/idle transitions, blink cadence, 100ms guard, voice restart |
+| Fixed-point AGC | 9 | agcInit, agcReset, agcProcessFrame (loud/quiet/passthrough/error cases) |
 
 ### Mock Layer (`test/mocks.h`)
 
@@ -424,7 +428,7 @@ pio test -e test
 
 | Script | Steps |
 |---|---|
-| `build.sh` | pio compile → native tests (78 tests) |
+| `build.sh` | pio compile → native tests (87 tests) |
 
 ## Dependencies
 

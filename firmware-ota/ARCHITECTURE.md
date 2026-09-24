@@ -4,13 +4,13 @@ This document describes the architecture of the ESP32-S3 firmware for the LifeLo
 
 ## System Overview
 
-The firmware runs on a Seeed XIAO ESP32-S3 Sense (dual-core 240MHz, 8MB PSRAM, 8MB flash). Audio is captured from the built-in PDM microphone, processed through esp-sr for noise suppression and voice activity detection, encoded to Opus, stored on the SD card, and uploaded to the LifeLog server over WiFi.
+The firmware runs on a Seeed XIAO ESP32-S3 Sense (dual-core 240MHz, 8MB PSRAM, 8MB flash). Audio is captured from the built-in PDM microphone, processed through esp-sr for noise suppression and voice activity detection, encoded to Opus, and either uploaded directly over WiFi or stored on the SD card for later upload.
 
 ```mermaid
 graph TB
     subgraph Hardware["Hardware"]
         mic["PDM Mic<br/>(GPIO 42/41)"]
-        sd["SD Card<br/>(GPIO 21, SPI 25MHz)"]
+        sd["SD Card<br/>(GPIO 21, SPI 10MHz)"]
         wifi["WiFi<br/>(ESP32-S3)"]
     end
 
@@ -21,14 +21,14 @@ graph TB
     subgraph Core1["Core 1"]
         fetch["afeFetchTask<br/>8KB stack, pri=5"]
         writer["writerTask<br/>48KB stack, pri=5"]
-        uploader["uploadWorkerTask<br/>8KB stack, pri=1"]
+        mon["uploadMonitorTask<br/>12KB stack, pri=1"]
         loop["Arduino loop<br/>(OTA + stats)"]
     end
 
     subgraph Shared["Shared"]
         ring["Ring Buffer<br/>32 slots × 512 samples"]
-        queue["Upload Queue<br/>8 slots"]
         mutex["sdMutex<br/>(Recursive)"]
+        cache["sdDirCache<br/>(PSRAM, 64-entry)"]
     end
 
     afe["esp-sr AFE<br/>(NSNET2 + WebRTC VAD)"]
@@ -41,11 +41,15 @@ graph TB
     fetch -->|"Ring buffer write"| ring
     ring -->|"Ring buffer read"| writer
     writer -->|"PCM frames"| opus
-    opus -->|"Opus/OGG files<br/>(/lifelog/rec_*.opus)"| sd
-    writer -->|"UploadRequest<br/>(on voice end)"| queue
-    queue -->|"xQueueReceive"| uploader
-    uploader -->|"Read file<br/>(sdMutex held)"| sd
-    uploader -->|"HTTP POST"| wifi
+
+    opus -->|"Opus/OGG → PSRAM"| writer
+    writer -->|"persist_or_upload_file()"| decision{{"WiFi up?<br/>PSRAM fit?"}}
+    decision -->|"yes, up, fits"| upload["uploadFileFromMemory()"]
+    decision -->|"no, down, or large"| writeSD["write_file_to_sd()"]
+    upload -->|"HTTP POST<br/>multipart/form-data"| wifi
+    writeSD -->|"/lifelog/rec_<epoch>S<n>.opus"| sd
+    sd -->|"SD.remove() on HTTP 200"| mon
+    mon -->|"sdDirCache iteration<br/>every 30s"| wifi
     wifi -->|"multipart upload"| server
 
     style Core0 fill:#e8f5e9
@@ -55,7 +59,7 @@ graph TB
 ```
 
 > **Core 0** — isolated I2S reads. Keeps DMA off core 1 where SD and WiFi run.
-> **Core 1** — all processing + I/O. Largest stack (48KB) for Opus encode + OGG mux.
+> **Core 1** — audio processing, SD I/O, and upload monitoring. `uploadMonitorTask` is low-priority (pri=1) and sleeps 30s between cycles.
 
 ## Core Assignment
 
@@ -64,7 +68,7 @@ The dual-core ESP32-S3 is split deliberately:
 | Core | Tasks | Rationale |
 |------|-------|-----------|
 | **Core 0** | `afeFeedTask` only | Isolates I2S DMA reads from SD/WiFi contention. DMA and FSPI share internal bus resources — keeping DMA on a separate core prevents bus conflicts. |
-| **Core 1** | `afeFetchTask`, `writerTask`, `uploadWorkerTask`, Arduino `loop()` | All audio processing, file I/O, and network operations run here. Tasks yield via timeouts, mutexes, and queue operations so the scheduler can interleave them. |
+| **Core 1** | `afeFetchTask`, `writerTask`, `uploadMonitorTask`, Arduino `loop()` | All audio processing, file I/O, and network operations run here. `uploadMonitorTask` is low-priority (pri=1) — it wakes every 30s, checks WiFi and the cache, and uploads any pending files before yielding. |
 
 ```mermaid
 graph TB
@@ -75,13 +79,13 @@ graph TB
     subgraph Core1["Core 1 (CPU1)"]
         fetch["afeFetchTask<br/>Priority: 5<br/>Stack: 8KB"]
         writer["writerTask<br/>Priority: 5<br/>Stack: 48KB"]
-        uploader["uploadWorkerTask<br/>Priority: 1<br/>Stack: 8KB"]
+        mon["uploadMonitorTask<br/>Priority: 1<br/>Stack: 12KB"]
         loop["Arduino loop()<br/>Priority: 1<br/>Stack: default"]
     end
 
     feed -->|"raw audio<br/>(AFE pipeline)"| fetch
     fetch -->|"ring buffer<br/>notification"| writer
-    writer -->|"upload queue"| uploader
+    mon -->|"sdDirCache<br/>WiFi status"| upload
 
     style Core0 fill:#e8f5e9
     style Core1 fill:#e3f2fd
@@ -89,62 +93,77 @@ graph TB
 
 > **Why separate cores?** I2S DMA and FSPI (SD card) share internal bus resources on ESP32-S3. Running DMA on core 0 prevents bus contention with SD writes.
 >
-> **Why core 1 for everything else?** afeFetch needs fast access to ring buffer; writer needs Opus encode + SD write; uploader is low-priority background work; OTA runs in Arduino loop.
+> **Why no uploadWorkerTask?** The prior architecture used a `uploadWorkerTask` consuming an `uploadQueue` (depth=8) for background uploads. This has been replaced by `uploadMonitorTask` which iterates the `sdDirCache` on a 30s interval. No queue is used — uploads are synchronous and blocking within the monitor task.
 
 ## Audio Pipeline
 
-The audio pipeline transforms raw PDM microphone samples into Opus-encoded OGG files on the SD card. OGG pages are first buffered in PSRAM (≥4KB) before opening the SD file, eliminating SD latency during voice onset. Short utterances (<4KB) are discarded without touching SD.
+The audio pipeline transforms raw PDM microphone samples into Opus-encoded OGG files. Audio is accumulated in PSRAM and either uploaded directly from memory or written to the SD card when WiFi is unavailable. Long utterances that exceed the PSRAM buffer threshold are automatically flushed to SD as a new segment mid-utterance.
 
-```mermaid
-flowchart TB
-    subgraph Core0["Core 0"]
-        A["afeFeedTask"] --> B["i2s_read() — 100ms timeout<br/>512 samples × 2 bytes<br/>DMA: 4×1024 buffers"]
-        B --> C["afe_handle->feed(raw_audio)<br/>esp-sr AFE pipeline processes in-place"]
-    end
+### Voice-end flush (per-utterance)
 
-    subgraph Core1["Core 1"]
-        D["afeFetchTask"] --> E["afe_handle->fetch()<br/>Returns: NS-cleaned audio,<br/>VAD state, wake word (disabled)"]
+On voice end, `writerTask`:
+1. Drains all remaining ring buffer items
+2. Finalizes the OGG stream (`opus_file_end()`)
+3. Calls `persist_or_upload_file()` — attempts memory upload, falls back to `write_file_to_sd()`
 
-        E --> F{VAD state<br/>changed?}
+### Buffer-threshold flush (per-segment)
 
-        F -->|"voice start"| G["Set recording = true<br/>Prepend VAD cache (8192 samples)<br/>Init OGG stream in memory<br/>xTaskNotifyGive(writerTask)"]
-        F -->|"voice continued"| H["Write 512 samples to ring buffer<br/>xTaskNotifyGive(writerTask)"]
-        F -->|"voice end"| I["Set recording = false<br/>Write EOS marker to ring buffer<br/>xTaskNotifyGive(writerTask)"]
-        F -->|"no change"| J[skip]
+If `mem_buf_pos > SD_FLUSH_THRESHOLD` (1MB − 256KB) while still recording, the buffer is flushed to SD as a new segment file before encoding continues. This caps maximum PSRAM usage regardless of utterance length. The segment counter increments, the `chunkIndex` is advanced, and recording continues with a fresh PSRAM buffer.
 
-        K["writerTask"] --> L{Ring buffer<br/>has data?}
+### persist_or_upload_file()
 
-        L -->|"yes"| M["Read 512 samples from ring buffer<br/>Accumulate into pcm_buf (8KB)"]
-        M --> N{pcm_buf ≥<br/>320 samples?}
-        N -->|"yes"| O["Encode 20ms frame (320 samples)<br/>Drain OGG pages to buffer or SD<br/>Before 4KB: buffer in PSRAM<br/>≥4KB: open SD file, flush buffer"]
-        O --> N
-        N -->|"no"| K
-        L -->|"empty"| K
-
-        G --> K
-        H --> K
-        I --> K
-
-        K --> P{Recording<br/>ended?}
-        P -->|"yes"| Q{Pages<br/>flushed?}
-        Q -->|"yes"| R["Write EOS page<br/>Flush + close file<br/>Queue upload request"]
-        Q -->|"no (short utterance)"| S["Discard buffered pages<br/>No SD write for utterances <4KB"]
-        P -->|"no"| K
-
-        T["uploadWorkerTask"] --> U{Upload queue<br/>has request?}
-        U -->|"yes"| V["Read file from SD<br/>4KB chunks, sdMutex yield between chunks"]
-        V --> W["HTTP POST multipart/form-data"]
-        W --> X{Success?}
-        X -->|"yes"| Y["Delete file from SD"]
-        X -->|"no"| Z["Log warning, keep file"]
-        U -->|"empty"| AA["vTaskDelay(100ms)"]
-    end
-
-    C --> D
-
-    style Core0 fill:#e8f5e9
-    style Core1 fill:#e3f2fd
 ```
+if mem_buf_pos == 0: discard (short utterance)
+if WiFi connected:
+    attempt uploadFileFromMemory() — PSRAM direct upload
+    if ok: delete SD file, return true
+    if fail: write_file_to_sd()
+else:
+    write_file_to_sd()
+return false
+```
+
+### write_file_to_sd()
+
+Writes the current PSRAM buffer to `/lifelog/rec_<epoch>S<n>.opus`, then adds the file to `sdDirCache`. A flush (`f.flush()`) is called before `f.close()` to force the FAT cache to the SD card media — see [SD Durability](#sd-durability).
+
+## Upload Monitor Task
+
+`uploadMonitorTask` runs every 30 seconds on Core 1 (pri=1, 12KB stack). It:
+1. Logs WiFi status and cached file count
+2. If WiFi is up and cache is non-empty: iterates index 0 repeatedly (each `sdDirCacheRemove` shifts the array), uploads via `uploadFile()`, deletes the file from SD + cache on success
+3. Breaks on first failure, waits for next 30s cycle
+
+Files written by `write_file_to_sd()` are added to `sdDirCache` immediately. The cache is populated at startup via `sdDirCacheInit()` (full `/lifelog` scan, sorted alphanumerically) and updated on:
+- **Add**: `write_file_to_sd()` after successful close
+- **Remove**: `uploadMonitorTask` after successful HTTP upload, or `uploadFile()` PSRAM tier after successful memory upload
+
+The monitor does NOT use the upload queue — uploads are synchronous and direct.
+
+## SD Directory Cache
+
+PSRAM-resident directory cache avoids repeated SD directory scans. The cache is a 64-entry inline struct (`~4.6KB PSRAM`) scanned once at startup.
+
+| Function | Behavior |
+|----------|----------|
+| `sdDirCacheInit()` | Scans `/lifelog`, filters to `.opus`/`.wav`, sorts alphanumerically, logs count |
+| `sdDirCacheGetEntry(i, &epoch)` | O(1) index lookup; returns `nullptr` if `i >= count` |
+| `sdDirCacheGetCount()` | Returns current entry count |
+| `sdDirCacheAdd(path, epoch)` | Appends to end (assumes timestamp-ordered insertion); returns false if `!valid` or full |
+| `sdDirCacheRemove(path)` | Linear search + shift-down removal |
+| `sdDirCacheInvalidate()` | Clears cache (forces rebuild on next init) |
+
+## SD Durability
+
+**Critical fix**: `VFSFileImpl::close()` in the ESP32 Arduino SD library calls `fclose()` but does **not** call `fsync()`. This means file data can remain in the kernel's FAT page cache and be lost on power loss.
+
+`write_file_to_sd()` works around this by calling `f.flush()` before `f.close()`:
+```cpp
+f.flush();   // fflush() + fsync() — forces kernel page cache → SD card flash
+f.close();
+```
+
+This is the workaround applied upstream in [espressif/arduino-esp32#1293](https://github.com/espressif/arduino-esp32/issues/1293) for `File::flush()`. Both `flush()` and `close()` return `void` on ESP32 Arduino, so errors are silently ignored by the library.
 
 ## Shared State and Synchronization
 
@@ -155,7 +174,7 @@ graph TB
     subgraph SharedState["Shared State"]
         sd_mutex["sdMutex<br/>(Recursive Mutex)"]
         ring_mutex["ring_mutex<br/>(Mutex)"]
-        upload_q["uploadQueue<br/>(FreeRTOS Queue, depth 8)"]
+        cache["sdDirCache<br/>(PSRAM struct, 64-entry)"]
         head["ring_head<br/>volatile uint32_t"]
         tail["ring_tail<br/>volatile uint32_t"]
         used["ring_used[32]<br/>volatile bool[]"]
@@ -169,7 +188,7 @@ graph TB
 
     fetch["afeFetchTask"]
     writer["writerTask"]
-    uploader["uploadWorkerTask"]
+    mon["uploadMonitorTask"]
 
     fetch -->|"acquires to write ring buffer"| ring_mutex
     fetch -->|"writes VAD state"| recording
@@ -180,17 +199,18 @@ graph TB
     writer -->|"acquires to read ring buffer"| ring_mutex
     writer -->|"reads VAD state"| recording
     writer -->|"acquires for SD writes"| sd_mutex
-    writer -->|"xQueueSend"| upload_q
 
-    uploader -->|"acquires for SD reads"| sd_mutex
-    uploader -->|"xQueueReceive"| upload_q
+    mon -->|"acquires for SD reads"| sd_mutex
+    mon -->|"reads"| cache
 
     style SharedState fill:#fff3e0
 ```
 
-> **sdMutex** is recursive — allows nested locking from upload stream chunks (4KB read → release → re-acquire).
+> **sdMutex** is recursive — allows nested locking from upload stream chunks (64KB read → release → re-acquire).
 >
 > **ring_mutex** guards ring buffer head/tail/used[] between afeFetchTask (producer) and writerTask (consumer).
+>
+> **uploadQueue is removed** — the prior `uploadWorkerTask` + FreeRTOS queue (depth=8) architecture is replaced by `uploadMonitorTask` which uses the `sdDirCache` and synchronous uploads.
 
 ### Ring Buffer Detail
 
@@ -242,8 +262,9 @@ flowchart TB
     A["Serial.begin(115200)"] --> B["Delay 1000ms"]
     B --> C["bootInit()<br/>Check NVS boot counter<br/>and confirmed flag"]
     C --> D["setupWiFi()<br/>WiFiManager captive portal<br/>AP: LifeLog-Setup<br/>Timeout: 120s"]
-    D --> E["setupSD()<br/>SD.begin(SD_CS_PIN, SPI, 25000000)<br/>25MHz SPI clock<br/>Creates /lifelog/ if missing"]
-    E --> F["audioInit()<br/>Init I2S PDM (16kHz, mono)<br/>Init esp-sr AFE (NSNET2 + WebRTC VAD)<br/>Init Opus encoder (24kbps, 20ms frames)<br/>Init OGG mux<br/>Create ring buffer<br/>Create upload queue (depth 8)"]
+    D --> E["setupSD()<br/>SD.begin(SD_CS_PIN, SPI, 10000000)<br/>10MHz SPI clock (down from 25MHz)<br/>Creates /lifelog/ if missing<br/>sdDirCacheInit() — scans /lifelog into PSRAM"]
+    E --> EA["startUploadMonitorTask()<br/>12KB stack, Core 1, pri=1<br/>30s poll interval"]
+    EA --> F["audioInit()<br/>Init I2S PDM (16kHz, mono)<br/>Init esp-sr AFE (NSNET2 + WebRTC VAD)<br/>Init Opus encoder (24kbps, 20ms frames)<br/>Init OGG mux<br/>Create ring buffer"]
     F --> G["setupOTA()<br/>ArduinoOTA init<br/>Hostname: lifelog"]
     G --> H["xTaskCreatePinnedToCore<br/>afe_feed → Core 0"]
     G --> I["xTaskCreatePinnedToCore<br/>afe_fetch → Core 1"]
@@ -268,12 +289,16 @@ flowchart TB
 | Complexity | 5 (0-10 scale) |
 | Signal type | VOIP |
 | Pre-skip | 3840 samples (80ms at 48kHz, per RFC 7845) |
+| PSRAM buffer | 1MB initial, grows by 128KB up to 1MB max |
+| SD flush threshold | 768KB (1MB − 256KB headroom for EOS encode) |
 
 **OGG Stream Structure:**
 1. OpusHead packet (19 bytes) — stream metadata
 2. OpusTags packet (28 bytes) — vendor "LifeLog ESP32"
-3. Opus audio packets — encoded frames, pages flushed every ~4KB (~1.3s)
-4. EOS (End of Stream) packet — 1-byte body
+3. Opus audio packets — encoded frames, accumulated in PSRAM
+4. EOS (End of Stream) page — flushed on voice end or buffer threshold
+
+**Segment files**: Long recordings are split into segments at the SD flush threshold. Each segment is a complete OGG stream (`rec_<epoch>S<n>.opus`). The server stitches segments into a single recording via `recorded_at` + `utterance_start_ms` timestamps.
 
 **Granulepos Calculation:** OGG granulepos is in 48kHz units. For 16kHz input:
 ```
@@ -306,19 +331,18 @@ flowchart TB
 
     SD{SD.begin<br/>fails?}
     SD -->|"yes"| SD1["Log error<br/>SD unavailable"]
-    SD -->|"no"| SD2["SD ready"]
-    SD1 -.->|"No retry — device<br/>continues without storage"| UP
-    SD2 --> UP
+    SD -->|"no"| SD2["SD ready<br/>sdDirCacheInit() scans /lifelog"]
+    SD1 -.->|"Device continues<br/>without storage"| MON
+    SD2 --> MON
 
-    UP{HTTP POST<br/>fails?}
-    UP -->|"yes"| UP1["Log warning<br/>File stays on SD"]
-    UP -->|"no"| UP2["Delete file from SD"]
-    UP1 -.->|"Single attempt<br/>No retry — file preserved<br/>for later upload"| WD
-    UP2 --> WD
-
-    WD["Watchdog<br/>After setup():<br/>- Loop task removed from WDT<br/>- Idle task removed from WDT<br/>- AFE tasks yield via 100ms i2s_read timeouts"]
-
-    WD --> Stop(["stop"])
+    MON["uploadMonitorTask<br/>every 30s"]
+    MON --> UP{WiFi up?<br/>Cache > 0?}
+    UP -->|"no"| MONW["Wait 30s, retry"]
+    UP -->|"yes"| MONS["For each cached file:<br/>uploadFile() → HTTP POST<br/>SD.remove() on 200<br/>sdDirCacheRemove()"]
+    MONS --> SU{Success?}
+    SU -->|"yes"| SUC["Delete file, next cache entry"]
+    SU -->|"no"| FAIL["Log warn, stop cycle<br/>Retry next interval"]
+    SUC --> MON
 
     style Start fill:#c8e6c9
     style Stop fill:#ffcdd2
@@ -330,7 +354,7 @@ flowchart TB
 
 | Pin | Function | Notes |
 |-----|----------|-------|
-| GPIO 21 | SD CS + LED | **Shared** — LED toggle disabled to avoid bus contention |
+| GPIO 21 | SD CS | SPI chip select |
 | GPIO 42 | I2S PDM CLK | Sense built-in mic |
 | GPIO 41 | I2S PDM DIN | Sense built-in mic |
 
@@ -342,14 +366,16 @@ flowchart TB
 | DMA buffers | 4 × 1024 samples | `audio.cpp` |
 | Ring buffer slots | 32 | `audio.cpp` |
 | Ring buffer chunk | 512 samples (32ms) | `audio.cpp` |
-| OGG buffer capacity | 16 KB (PSRAM) | `audio.cpp` |
-| OGG flush threshold | 4 KB before SD open | `audio.cpp` |
+| PSRAM buffer initial | 1 MB | `writer.cpp` |
+| PSRAM buffer max | 1 MB | `writer.cpp` |
+| PSRAM buffer growth | 128 KB increments | `writer.cpp` |
+| SD flush threshold | 768 KB | `writer.cpp` |
 | Opus frame | 20ms (320 samples) | `config.h` |
 | Opus bitrate | 24 kbps | `config.h` |
 | Opus complexity | 5 | `config.h` |
-| SD SPI clock | 25 MHz | `main.cpp` |
+| SD SPI clock | 10 MHz | `main.cpp` |
 | Upload chunk size | 4 KB | `upload.cpp` |
-| Upload queue depth | 8 | `audio.cpp` |
+| sdDirCache max entries | 64 | `upload.cpp` |
 
 ### AFE Configuration
 
@@ -359,9 +385,18 @@ flowchart TB
 | Mode | `AFE_MODE_LOW_COST` |
 | Noise suppression | NSNET2 |
 | VAD | WebRTC (fallback via NULL model name) |
-| AGC | Enabled, 9dB compression, -3 dBFS target, 3.0× gain |
+| AGC | Disabled |
 | WakeNet | Disabled (weak stubs) |
 | Models | Loaded from `model` partition (mmap) |
+
+### Upload Paths
+
+| Tier | Condition | Mechanism |
+|------|-----------|-----------|
+| PSRAM direct | `fileSize <= PSRAM/2` | Entire file read into PSRAM, `uploadFileFromMemory()`, then `SD.remove()` |
+| Streaming | Large files | 64KB chunk reads from SD with sdMutex per chunk, `esp_http_client` POST |
+
+Both tiers call `esp_http_client_cleanup()` on failure and `SD.remove()` + `sdDirCacheRemove()` on HTTP 200.
 
 ### Server Connection
 
@@ -392,16 +427,15 @@ flowchart TB
 
 ```
 /lifelog/
-  rec_00000.opus
-  rec_00001.opus
-  rec_00002.opus
+  rec_<epoch>S0.opus   ← segment 0 (first flush, or entire short recording)
+  rec_<epoch>S1.opus   ← segment 1 (if buffer threshold hit mid-utterance)
+  rec_<epoch>S2.opus   ← segment 2
   ...
 ```
 
-- Sequential zero-padded filenames
-- Monotonically increasing `fileIndex` (RAM only — lost on reboot)
-- Pre-opened: next file opened after voice ends to avoid ~150ms FAT32 create latency
-- Deleted after successful upload
+- Segments are named `<epoch>S<n>` where `<epoch>` is the utterance start time and `<n>` is the zero-padded segment index.
+- Segments are individual OGG streams (complete with OpusHead + OpusTags + audio + EOS).
+- Deleted after successful upload by `uploadMonitorTask` or `uploadFile()` PSRAM tier.
 
 ## Dependencies
 

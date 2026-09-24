@@ -278,7 +278,8 @@ static std::vector<UploadCall> mock_upload_calls;
 static bool mock_upload_should_succeed = true;
 static std::vector<std::string> mock_uploaded_files;
 
-inline bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool final) {
+inline bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx,
+                       bool final, time_t recordedAt, uint32_t startMs, uint32_t endMs) {
     UploadCall call = {std::string(filename), uttId, chunkIdx, final};
     mock_upload_calls.push_back(call);
     mock_uploaded_files.push_back(std::string(filename));
@@ -292,13 +293,17 @@ struct UploadMemCall {
     uint32_t utteranceId;
     uint32_t chunkIndex;
     bool isFinal;
+    time_t recordedAt;
+    uint32_t startMs;
+    uint32_t endMs;
 };
 static std::vector<UploadMemCall> mock_upload_mem_calls;
 
 inline bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
                                  const char *filename, uint32_t uttId,
-                                 uint32_t chunkIdx, bool final) {
-    UploadMemCall call = {data, size, std::string(filename), uttId, chunkIdx, final};
+                                 uint32_t chunkIdx, bool final,
+                                 time_t recordedAt, uint32_t startMs, uint32_t endMs) {
+    UploadMemCall call = {data, size, std::string(filename), uttId, chunkIdx, final, recordedAt, startMs, endMs};
     if (size < 4096) return true;  // Short clip — discard (matches real impl)
     mock_upload_mem_calls.push_back(call);
     return mock_upload_should_succeed;
@@ -572,11 +577,3 @@ inline int ogg_stream_flush(ogg_stream_state* os, ogg_page* og) {
 }
 
 inline void ogg_packet_clear(ogg_packet*) {}
-
-// Captured AGC_ctl values for test verification
-static float mock_agc_level = 0.0f;
-static int mock_agc_max_gain_db = 0;
-static int mock_agc_ns_suppress = 0;
-static int mock_agc_vad_enable = -1;
-static int mock_agc_enable_calls = 0;
-static int mock_agc_reset_count = 0;

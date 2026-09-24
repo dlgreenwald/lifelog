@@ -35,7 +35,7 @@ static esp_afe_sr_data_t *afe_data = NULL;
 // on ESP32 Xtensa without hardware FPU.
 //
 // Target: ~0.25 (= -12 dBFS) RMS for comfortable speech level.
-// Max boost: ×4 (+12 dB).  Max cut: ÷4 (-12 dB).
+// Max boost: ×32 (+30 dB).  Max cut: ÷4 (-12 dB).
 // Gain changes are smoothed to avoid discontinuities.
 
 typedef struct {

@@ -63,10 +63,10 @@ static void opus_file_end();
 static void closePendingFile();
 
 // ── PSRAM memory buffer constants ──────────────────────────────────
-#define MEM_BUF_INITIAL_SIZE    (1 * 1024 * 1024)        // 64KB initial
-#define MEM_BUF_MAX_SIZE        (1 * 1024 * 1024)  // 4MB max
-#define MEM_BUF_GROW_SIZE       (128 * 1024)       // 128KB growth increments
-#define SD_FLUSH_THRESHOLD      (MEM_BUF_MAX_SIZE - 256 * 1024)  // Flush to SD with 384KB headroom for growth during drain + EOS
+#define MEM_BUF_INITIAL_SIZE    (1 * 1024 * 1024)   // 1MB initial
+#define MEM_BUF_MAX_SIZE        (1 * 1024 * 1024)   // 1MB max
+#define MEM_BUF_GROW_SIZE       (128 * 1024)        // 128KB growth increments
+#define SD_FLUSH_THRESHOLD      (MEM_BUF_MAX_SIZE - 256 * 1024)  // 768KB — flush before EOS encode runs out of headroom
 
 // ── Opus encoder state (used when AUDIO_FORMAT_OPUS_ACTIVE) ────────
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
@@ -495,7 +495,7 @@ void writerTask(void *pvParameters) {
         //   1. prev_recording && !recording  — utterance ended
         //   2. recording && mem_buf_pos > SD_FLUSH_THRESHOLD — buffer full mid-utterance
         if ((prev_recording && !recording) || (recording && mem_buf_pos > SD_FLUSH_THRESHOLD)) {
-            ESP_LOGE(TAG, "writer: flush block%s",
+            ESP_LOGI(TAG, "writer: flush block%s",
                      (!recording) ? " (voice end)" : " (buffer threshold)");
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
             // Drain any remaining ring items before finalizing the segment
