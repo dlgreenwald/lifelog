@@ -45,8 +45,8 @@ typedef struct {
 
 static AgcState agcState = {0};
 
-// Target RMS × 8192  (2000 ≈ -24 dBFS for 16-bit PCM — comfortable distant-speech level)
-#define AGC_TARGET_RMS    2000
+// Target RMS × 8192  (8000 ≈ -12 dBFS for 16-bit PCM — louder, better for whisperX)
+#define AGC_TARGET_RMS    8000
 // Min gain × 65536   (0.25 = -12 dB max attenuation)
 #define AGC_MIN_GAIN      16384
 // Max gain × 65536   (56.2 = +45 dB max boost — covers quiet speakers at -122 dBFS noise floor)
@@ -58,15 +58,15 @@ static AgcState agcState = {0};
 
 static void agcReset(AgcState *s) {
     if (!s) return;
-    // Seed rms_q19=200 → first agcProcessFrame computes target_gain ≈ 20 dB.
+    // Seed rms_q19=800 → first agcProcessFrame computes target_gain ≈ 20 dB.
     // AGC then converges up or down naturally from there based on signal level.
-    s->rms_q19 = 200;  // was AGC_TARGET_RMS (2000=0 dB); start at 20 dB instead
+    s->rms_q19 = 800;  // was 200 with AGC_TARGET_RMS=2000; now 4× for target=8000 → +20 dB start
     s->gain_q16 = 65536;  // unity gain
 }
 
 static int agcInit(AgcState *s) {
     if (!s) return -1;
-    s->rms_q19 = 200;  // start at 20 dB (see agcReset for rationale)
+    s->rms_q19 = 800;  // start at 20 dB (see agcReset for rationale)
     s->gain_q16 = 65536;
     return 0;
 }
