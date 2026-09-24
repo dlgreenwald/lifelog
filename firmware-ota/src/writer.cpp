@@ -341,6 +341,8 @@ void write_file_to_sd_from_buf(uint8_t *mem_buf, uint32_t mem_buf_pos,
 }
 
 void writerInit() {
+    // Idempotent — safe to call multiple times (e.g., once before AFE init, once after)
+    if (getUploadQueueHandle() != NULL) return;  // already initialized
 
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
     opus_init();
@@ -348,7 +350,7 @@ void writerInit() {
 
     // mem_buf allocated lazily in opus_init_stream() on first voice start
 
-    // Queue created here (after scheduler/FreeRTOS heap is ready) and registered with upload.cpp.
+    // Queue created here and registered with upload.cpp.
     // uploadTask polls until this is set before processing any jobs.
     QueueHandle_t q = xQueueCreate(3, sizeof(UploadRequest));
     assert(q);

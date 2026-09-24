@@ -71,11 +71,12 @@ void sdGive() {
 void audioInit() {
     sdMutex = xSemaphoreCreateRecursiveMutex();
 
+    // Initialize writer (Opus encoder, upload queue, upload task).
+    // Called before i2sFeInit so uploadTask's queue is ready early — AFE init takes ~15s.
+    writerInit();
+
     // Initialize I2S microphone + AFE (VAD + NS + AGC)
     i2sFeInit();
-
-    // Initialize writer (Opus encoder, upload queue, upload task)
-    writerInit();
 
     // Allocate ring buffer in PSRAM via RTOS xRingbuffer (thread-safe, no mutex needed)
     uint8_t *ringStorage = (uint8_t *)ps_malloc(RING_TOTAL_BYTES);
