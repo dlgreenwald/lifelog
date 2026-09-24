@@ -656,9 +656,16 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
 
 // ── Async upload task — receives UploadRequests from writer, uploads, frees buffer ─
 
-// uploadQueue and UploadRequest live in writer.cpp
-extern "C" {
-    extern QueueHandle_t uploadQueue;
+// uploadQueue is owned by upload.cpp — writer.cpp calls setUploadQueueHandle() to register it.
+// This avoids cross-TU extern linkage issues on ESP32.
+static QueueHandle_t s_uploadQueue = NULL;
+
+void setUploadQueueHandle(QueueHandle_t q) {
+    s_uploadQueue = q;
+}
+
+QueueHandle_t getUploadQueueHandle() {
+    return s_uploadQueue;
 }
 
 // Forward declaration — SD fallback writes using the same mem_buf position as the original job
@@ -666,10 +673,10 @@ extern void write_file_to_sd_from_buf(uint8_t *mem_buf, uint32_t mem_buf_pos,
                                        time_t utterance_epoch, uint32_t segment);
 
 static void uploadTask(void *pvParameters) {
-    // Wait for writerInit() to create the queue (it runs after scheduler starts).
+    // Wait for writerInit() to call setUploadQueueHandle() (it runs after scheduler starts).
     // writerInit() is called from audioInit() in main setup, so this is typically <1s.
     uint32_t wait_ticks = 0;
-    while (uploadQueue == NULL) {
+    while (s_uploadQueue == NULL) {
         vTaskDelay(pdMS_TO_TICKS(100));
         wait_ticks++;
         if (wait_ticks % 50 == 0) {  // every ~5s
@@ -682,10 +689,10 @@ static void uploadTask(void *pvParameters) {
     uint32_t peak = 0;
 
     for (;;) {
-        if (xQueueReceive(uploadQueue, &job, portMAX_DELAY) != pdTRUE) continue;
+        if (xQueueReceive(s_uploadQueue, &job, portMAX_DELAY) != pdTRUE) continue;
 
         // Track high-water mark
-        uint32_t qlen = uxQueueMessagesWaiting(uploadQueue);
+        uint32_t qlen = uxQueueMessagesWaiting(s_uploadQueue);
         if (qlen > peak) {
             peak = qlen;
             ESP_LOGI(TAG, "uploadTask: queue high-water mark: %lu", (unsigned long)peak);

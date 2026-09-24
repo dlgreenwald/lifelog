@@ -21,15 +21,14 @@
 static const char* TAG = "WRITER";
 
 // ── Upload state ──────────────────────────────────────────────────
-// Queue is created in writerInit() after scheduler starts. uploadTask polls until ready.
-static QueueHandle_t uploadQueue = NULL;
 static TaskHandle_t uploadTaskHandle = NULL;
 
 // Buffer health counter
 static uint32_t totalSamplesWritten = 0;
 
 uint32_t getUploadQueueDepth() {
-    return uploadQueue ? uxQueueMessagesWaiting(uploadQueue) : 0;
+    QueueHandle_t q = getUploadQueueHandle();
+    return q ? uxQueueMessagesWaiting(q) : 0;
 }
 
 TaskHandle_t getUploadTaskHandle() {
@@ -349,11 +348,11 @@ void writerInit() {
 
     // mem_buf allocated lazily in opus_init_stream() on first voice start
 
-    // Queue created here (after scheduler/FreeRTOS heap is ready) — not as static init.
+    // Queue created here (after scheduler/FreeRTOS heap is ready) and registered with upload.cpp.
     // uploadTask polls until this is set before processing any jobs.
-    assert(uploadQueue == NULL);
-    uploadQueue = xQueueCreate(3, sizeof(UploadRequest));
-    assert(uploadQueue);
+    QueueHandle_t q = xQueueCreate(3, sizeof(UploadRequest));
+    assert(q);
+    setUploadQueueHandle(q);
 }
 
 // ── Write task (reads PSRAM, writes SD, uploads) ──────────────────
@@ -459,7 +458,7 @@ void writerTask(void *pvParameters) {
             req.start_ms = listenStartMs;
             req.end_ms = this_end_ms;
 
-            if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
+            if (xQueueSend(getUploadQueueHandle(), &req, 0) != pdTRUE) {
                 ESP_LOGW(TAG, "writer: upload queue full, dropping segment %lu", (unsigned long)this_chunk);
                 free(copy);  // drop if queue is full
             }

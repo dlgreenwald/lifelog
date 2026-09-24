@@ -32,6 +32,8 @@ void uploadAllRecordings();
 void startAutoUploadTask();
 void startUploadMonitorTask();
 void startUploadTask(TaskHandle_t *outHandle);
+void setUploadQueueHandle(QueueHandle_t q);
+QueueHandle_t getUploadQueueHandle();
 // Upload OGG data directly from a memory buffer (no SD access, no sdMutex).
 bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
                           const char* filename, uint32_t utteranceId,
