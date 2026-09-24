@@ -469,6 +469,15 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                     if (_tokenExpiry > nowSec) {
                         uint32_t remainingSec = _tokenExpiry - nowSec;
                         delayMs = (remainingSec / 2) * 1000;  // Wake at halfway
+                        // Sanity check: if expiry is unreasonably far in the future,
+                        // the stored token expiry is corrupted. Refresh in 30s.
+                        if (remainingSec > 500) {
+#ifndef OAUTH2_TESTING
+                            ESP_LOGW(TAG, "Token expiry %lu is too far in future (%lu s) — refreshing in 30s",
+                                     (unsigned long)_tokenExpiry, (unsigned long)remainingSec);
+#endif
+                            delayMs = 30000;
+                        }
                     } else {
                         delayMs = 0;  // Already expired, refresh immediately
                     }
@@ -500,8 +509,9 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                 {
                     uint32_t nowSec = static_cast<uint32_t>(time(NULL));
                     if (_tokenExpiry > nowSec) {
+                        uint32_t remainingSec = _tokenExpiry - nowSec;
                         ESP_LOGI(TAG, "Token valid for %lus, sleeping %lus before refresh",
-                                     _tokenExpiry - nowSec, (_tokenExpiry - nowSec) / 2);
+                                     remainingSec, delayMs / 1000);
                     } else {
                         ESP_LOGI(TAG, "Token expired, refreshing now");
                     }
