@@ -37,21 +37,6 @@ TaskHandle_t getUploadTaskHandle() {
 
 uint32_t getTotalSamplesWritten() { return totalSamplesWritten; }
 
-// ── Upload request (metadata captured at file-close time) ──────────
-
-struct UploadRequest {
-    char filename[64];
-    uint8_t *mem_ptr;        // NULL if reading from SD
-    uint32_t mem_size;
-    uint32_t utteranceId;
-    uint32_t chunkIndex;
-    bool isFinal;
-    bool from_sd;
-    time_t recorded_at;      // UTC epoch seconds; 0 if clock invalid
-    uint32_t start_ms;      // system uptime ms when voice start was detected
-    uint32_t end_ms;        // system uptime ms when voice end was detected
-};
-
 // ── Forward declarations ──────────────────────────────────────────
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
 static void opus_init();
@@ -60,7 +45,6 @@ static void opus_init_stream();
 static int opus_encode_to_buffer(const int16_t* pcm, int samples);
 static void opus_file_end();
 #endif
-static void closePendingFile();
 
 // ── PSRAM memory buffer constants ──────────────────────────────────
 #define MEM_BUF_INITIAL_SIZE    (1 * 1024 * 1024)   // 1MB initial
@@ -276,19 +260,6 @@ static int opus_encode_to_buffer(const int16_t* pcm, int samples) {
     return remaining;
 }
 
-// ── Deferred file close — writer returns immediately after queuing upload ──
-static File pendingCloseFile;
-static bool hasPendingClose = false;
-
-static void closePendingFile() {
-    if (!hasPendingClose) return;
-    sdTake();
-    pendingCloseFile.close();
-    sdGive();
-    hasPendingClose = false;
-    ESP_LOGD(TAG, "Deferred file close completed");
-}
-
 static void opus_file_end() {
     if (mem_buf_pos == 0) {
         ESP_LOGD(TAG, "opus_file_end: no data (short utterance)");
@@ -327,30 +298,24 @@ static void opus_file_end() {
 
 // ── Write current mem_buf to SD as a single file ─────────────────────
 
-static void write_file_to_sd(time_t utterance_epoch, uint32_t segment) {
-    if (mem_buf_pos == 0) return;
+// Write pre-encoded audio to SD — called by upload task on HTTP fallback.
+// Generates filename from epoch + segment. Caller owns the buffer.
+void write_file_to_sd_from_buf(uint8_t *mem_buf, uint32_t mem_buf_pos,
+                                time_t utterance_epoch, uint32_t segment) {
+    if (mem_buf_pos == 0 || sdMutex == NULL) return;
 
-    // Close any pending file from a prior segment first
-    closePendingFile();
-
-    if (sdMutex == NULL) {
-        ESP_LOGE(TAG, "write_file_to_sd: sdMutex is NULL");
-        return;
-    }
-
-    // Generate filename: rec_<epoch>_<segment>.opus
+    char sd_filename[64];
     generateFilenameUtc(sd_filename, sizeof(sd_filename), utterance_epoch, segment, true);
     char full_path[64];
     snprintf(full_path, sizeof(full_path), "/lifelog/%s", sd_filename);
 
     uint32_t t0 = millis();
-
     sdTake();
-    ESP_LOGI(TAG, "write_file_to_sd: %lu bytes to %s", (unsigned long)mem_buf_pos, full_path);
+    ESP_LOGI(TAG, "write_file_to_sd_from_buf: %lu bytes to %s", (unsigned long)mem_buf_pos, full_path);
     File f = SD.open(full_path, FILE_WRITE);
     if (!f) {
         sdGive();
-        ESP_LOGE(TAG, "write_file_to_sd: failed to open %s", full_path);
+        ESP_LOGE(TAG, "write_file_to_sd_from_buf: failed to open %s", full_path);
         return;
     }
 
@@ -363,77 +328,16 @@ static void write_file_to_sd(time_t utterance_epoch, uint32_t segment) {
         vTaskDelay(pdMS_TO_TICKS(1));  // yield to avoid watchdog
     }
 
-    // Explicitly flush before closing. Arduino SD library's close() only calls
-    // fclose() — it does NOT call fsync() — so data can be lost.
-    // File::flush() calls fflush() + fsync() internally (workaround for issue #1293).
-    // Note: both flush() and close() return void, so errors are silently ignored.
     f.flush();
     f.close();
-    ESP_LOGI(TAG, "write_file_to_sd: closed %s", full_path);
+    ESP_LOGI(TAG, "write_file_to_sd_from_buf: closed %s", full_path);
     sdGive();
 
     strcpy(lastSavedFile, full_path);
-    mem_buf_pos = 0;
-
-    ESP_LOGI(TAG, "write_file_to_sd: done %lu bytes in %lums",
+    ESP_LOGI(TAG, "write_file_to_sd_from_buf: done %lu bytes in %lums",
              (unsigned long)written, (unsigned long)(millis() - t0));
 
-    // Add to SD dir cache so autoUploadTask finds it without a rescan
     sdDirCacheAdd(full_path, utterance_epoch);
-}
-
-// ── Persist: upload from memory, or write to SD if WiFi unavailable ─
-
-static bool persist_or_upload_file(time_t utterance_epoch, uint32_t segment) {
-    // Short utterance — mem_buf_pos == 0 means no audio captured
-    if (mem_buf_pos == 0) {
-        ESP_LOGI(TAG, "persist_or_upload_file: short utterance, discarding");
-        closePendingFile();
-        return false;
-    }
-
-    // Close any pending SD file from prior segment before new operations
-    closePendingFile();
-
-    if (WiFi.status() != WL_CONNECTED) {
-        ESP_LOGW(TAG, "persist_or_upload_file: WiFi down, writing segment %lu to SD", (unsigned long)segment);
-        write_file_to_sd(utterance_epoch, segment);
-        // After writing, mem_buf_pos = 0; queue the SD file below
-        // WiFi-down: mark that we need to queue the SD file
-        // Fall through to queue the SD file for later upload
-    }
-
-    // Attempt upload from PSRAM memory
-    if (WiFi.status() == WL_CONNECTED) {
-        char filename[64];
-        generateFilenameUtc(filename, sizeof(filename), utterance_epoch, segment, true);
-        ESP_LOGD(TAG, "persist_or_upload_file: uploading %s (%luKB, voice=%lu-%lums)...",
-                 filename, (unsigned long)(mem_buf_pos / 1024),
-                 (unsigned long)listenStartMs, (unsigned long)millis());
-        bool ok = uploadFileFromMemory(mem_buf, mem_buf_pos,
-                                      filename, utteranceId,
-                                      chunkIndex, isFinal, utterance_epoch,
-                                      listenStartMs, millis());
-        if (ok) {
-            ESP_LOGD(TAG, "persist_or_upload_file: upload success, segment %lu", (unsigned long)segment);
-            // mem_buf = NULL;
-            mem_buf_pos = 0;
-            // mem_buf_capacity = 0;
-            return true;
-        }
-        ESP_LOGW(TAG, "persist_or_upload_file: upload failed, writing segment %lu to SD",
-                 (unsigned long)segment);
-        write_file_to_sd(utterance_epoch, segment);
-    }
-
-    // Reset memory state — next segment starts fresh
-    // mem_buf = NULL;
-    mem_buf_pos = 0;
-    // mem_buf_capacity = 0;
-    // Reset mem_to_sd so next utterance starts fresh (not appending to this file)
-    mem_to_sd = false;
-
-    return false;
 }
 
 void writerInit() {
@@ -443,6 +347,10 @@ void writerInit() {
 #endif
 
     // mem_buf allocated lazily in opus_init_stream() on first voice start
+
+    // Upload job queue — consumed by uploadTask in upload.cpp
+    uploadQueue = xQueueCreate(3, sizeof(UploadRequest));
+    assert(uploadQueue);
 }
 
 // ── Write task (reads PSRAM, writes SD, uploads) ──────────────────
@@ -466,7 +374,7 @@ void writerTask(void *pvParameters) {
         uint32_t nowMs = millis();
         if (recording && nowMs - lastHealthLogMs >= 1000) {
             ESP_LOGI(TAG, "writer: healthy mem_buf_pos=%lu/%lu",
-                        (unsigned long)mem_buf_pos, (unsigned long)mem_buf_capacity);
+                        (unsigned long)mem_buf_pos, (unsigned long)SD_FLUSH_THRESHOLD);
             lastHealthLogMs = nowMs;
         }
 
@@ -524,8 +432,34 @@ void writerTask(void *pvParameters) {
 
             opus_file_end();  // flush EOS page into mem_buf
 
-            // Persist: upload from memory, or write to SD if WiFi unavailable
-            persist_or_upload_file(s_utterance_start_epoch, s_segment);
+            // Async persist: copy buffer, enqueue job, reinit stream immediately.
+            // Upload task owns the copy — uploads, falls back to SD on failure, frees it.
+            uint32_t this_chunk = chunkIndex;
+            bool this_is_final = !recording;
+            uint32_t this_end_ms = millis();
+
+            uint32_t copy_size = mem_buf_pos;  // save before reset
+            uint8_t *copy = (uint8_t *)ps_malloc(copy_size);
+            assert(copy);
+            memcpy(copy, mem_buf, copy_size);
+
+            mem_buf_pos = 0;  // reset writer buffer before reinit
+            opus_init_stream();  // fresh buffer for continuation
+
+            UploadRequest req = {};
+            req.mem_ptr = copy;
+            req.mem_size = copy_size;
+            req.utteranceId = utteranceId;
+            req.chunkIndex = this_chunk;
+            req.isFinal = this_is_final;
+            req.recorded_at = s_utterance_start_epoch;
+            req.start_ms = listenStartMs;
+            req.end_ms = this_end_ms;
+
+            if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
+                ESP_LOGW(TAG, "writer: upload queue full, dropping segment %lu", (unsigned long)this_chunk);
+                free(copy);  // drop if queue is full
+            }
 
             chunkIndex++;   // each segment gets its own chunkIndex
             s_segment++;

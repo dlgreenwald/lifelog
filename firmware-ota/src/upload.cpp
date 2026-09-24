@@ -653,3 +653,57 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
         return false;
     }
 }
+
+// ── Async upload task — receives UploadRequests from writer, uploads, frees buffer ─
+
+// uploadQueue and UploadRequest live in writer.cpp
+extern "C" {
+    extern QueueHandle_t uploadQueue;
+}
+
+// Forward declaration — SD fallback writes using the same mem_buf position as the original job
+extern void write_file_to_sd_from_buf(uint8_t *mem_buf, uint32_t mem_buf_pos,
+                                       time_t utterance_epoch, uint32_t segment);
+
+static void uploadTask(void *pvParameters) {
+    UploadRequest job;
+    uint32_t peak = 0;
+
+    for (;;) {
+        if (xQueueReceive(uploadQueue, &job, portMAX_DELAY) != pdTRUE) continue;
+
+        // Track high-water mark
+        uint32_t qlen = uxQueueMessagesWaiting(uploadQueue);
+        if (qlen > peak) {
+            peak = qlen;
+            ESP_LOGI(TAG, "uploadTask: queue high-water mark: %lu", (unsigned long)peak);
+        }
+
+        // Generate filename from epoch + segment
+        char filename[64];
+        generateFilenameUtc(filename, sizeof(filename), job.recorded_at, job.chunkIndex, true);
+
+        bool ok = false;
+        if (job.mem_ptr && job.mem_size > 0) {
+            // In-memory upload — upload task owns the buffer
+            ok = uploadFileFromMemory(job.mem_ptr, job.mem_size,
+                                      filename, job.utteranceId,
+                                      job.chunkIndex, job.isFinal,
+                                      job.recorded_at, job.start_ms, job.end_ms);
+            if (!ok) {
+                // Upload failed — fall back to SD write
+                ESP_LOGW(TAG, "uploadTask: upload failed, writing to SD");
+                write_file_to_sd_from_buf(job.mem_ptr, job.mem_size,
+                                          job.recorded_at, job.chunkIndex);
+            }
+            free(job.mem_ptr);  // always free — owns the buffer
+        }
+
+        ESP_LOGD(TAG, "uploadTask: done %s %s", filename, ok ? "uploaded" : "SD fallback");
+    }
+}
+
+void startUploadTask(TaskHandle_t *outHandle) {
+    xTaskCreatePinnedToCore(uploadTask, "uploadTask", 16384, NULL, 2, outHandle, 1);
+    ESP_LOGI(TAG, "Upload task started (core 1, stack 16384)");
+}

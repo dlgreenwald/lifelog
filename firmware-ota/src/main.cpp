@@ -476,6 +476,7 @@ static void setupSD() {
 
     sdDirCacheInit();
     startUploadMonitorTask();
+    startUploadTask(NULL);  // async upload task — owns buffer lifetime, handles SD fallback
 }
 
 // ── Forward declarations ──────────────────────────────────────────
