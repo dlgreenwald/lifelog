@@ -21,6 +21,7 @@ graph TB
     subgraph Core1["Core 1"]
         fetch["afeFetchTask<br/>8KB stack, pri=5"]
         writer["writerTask<br/>48KB stack, pri=5"]
+        upload["uploadTask<br/>16KB stack, pri=2"]
         mon["uploadMonitorTask<br/>12KB stack, pri=1"]
         loop["Arduino loop<br/>(OTA + stats)"]
     end
@@ -43,10 +44,12 @@ graph TB
     writer -->|"PCM frames"| opus
 
     opus -->|"Opus/OGG → PSRAM"| writer
-    writer -->|"persist_or_upload_file()"| decision{{"WiFi up?<br/>PSRAM fit?"}}
-    decision -->|"yes, up, fits"| upload["uploadFileFromMemory()"]
-    decision -->|"no, down, or large"| writeSD["write_file_to_sd()"]
-    upload -->|"HTTP POST<br/>multipart/form-data"| wifi
+    writer -->|"opus_file_end()"| decision{{"Buffer<br/>flush?"}}
+    decision -->|"voice end or<br/>threshold"| enq["xQueueSend(uploadJob)"]
+    decision -->|"continuing<br/>utterance"| reinit["opus_init_stream()"]
+    enq -->|"async"| upload["uploadTask<br/>(core 1, pri=2)"]
+    upload -->|"uploadFileFromMemory()"| wifi
+    upload -.->|"on HTTP fail"| writeSD["write_file_to_sd_from_buf()"]
     writeSD -->|"/lifelog/rec_<epoch>S<n>.opus"| sd
     sd -->|"SD.remove() on HTTP 200"| mon
     mon -->|"sdDirCache iteration<br/>every 30s"| wifi
@@ -68,7 +71,7 @@ The dual-core ESP32-S3 is split deliberately:
 | Core | Tasks | Rationale |
 |------|-------|-----------|
 | **Core 0** | `afeFeedTask` only | Isolates I2S DMA reads from SD/WiFi contention. DMA and FSPI share internal bus resources — keeping DMA on a separate core prevents bus conflicts. |
-| **Core 1** | `afeFetchTask`, `writerTask`, `uploadMonitorTask`, Arduino `loop()` | All audio processing, file I/O, and network operations run here. `uploadMonitorTask` is low-priority (pri=1) — it wakes every 30s, checks WiFi and the cache, and uploads any pending files before yielding. |
+| **Core 1** | `afeFetchTask`, `writerTask`, `uploadTask`, `uploadMonitorTask`, Arduino `loop()` | All audio processing, file I/O, and network operations run here. `uploadTask` (pri=2) owns all HTTP uploads — never blocks the writer. `uploadMonitorTask` (pri=1) wakes every 30s and handles SD-resident orphan files. |
 
 ```mermaid
 graph TB
@@ -79,12 +82,14 @@ graph TB
     subgraph Core1["Core 1 (CPU1)"]
         fetch["afeFetchTask<br/>Priority: 5<br/>Stack: 8KB"]
         writer["writerTask<br/>Priority: 5<br/>Stack: 48KB"]
+        upload["uploadTask<br/>Priority: 2<br/>Stack: 16KB"]
         mon["uploadMonitorTask<br/>Priority: 1<br/>Stack: 12KB"]
         loop["Arduino loop()<br/>Priority: 1<br/>Stack: default"]
     end
 
     feed -->|"raw audio<br/>(AFE pipeline)"| fetch
     fetch -->|"ring buffer<br/>notification"| writer
+    writer -->|"xQueueSend<br/>async job"| upload
     mon -->|"sdDirCache<br/>WiFi status"| upload
 
     style Core0 fill:#e8f5e9
@@ -93,7 +98,7 @@ graph TB
 
 > **Why separate cores?** I2S DMA and FSPI (SD card) share internal bus resources on ESP32-S3. Running DMA on core 0 prevents bus contention with SD writes.
 >
-> **Why no uploadWorkerTask?** The prior architecture used a `uploadWorkerTask` consuming an `uploadQueue` (depth=8) for background uploads. This has been replaced by `uploadMonitorTask` which iterates the `sdDirCache` on a 30s interval. No queue is used — uploads are synchronous and blocking within the monitor task.
+> **Why a separate uploadTask?** The writer must never block on HTTP — long uploads (>1s) would cause the ring buffer to overflow while the writer waits on WiFi. `uploadTask` (core 1, pri=2) owns all HTTP I/O. It receives jobs via a FreeRTOS queue (depth=3), copies the PSRAM buffer for safety, and calls `uploadFileFromMemory()`. On HTTP failure it falls back to `write_file_to_sd_from_buf()` and always `free()`s the buffer. The writer is blocked only on `ps_malloc` + memcpy (~7ms for 1MB) and `opus_init_stream()` (~free) before resuming ring drain.
 
 ## Audio Pipeline
 
@@ -104,41 +109,39 @@ The audio pipeline transforms raw PDM microphone samples into Opus-encoded OGG f
 On voice end, `writerTask`:
 1. Drains all remaining ring buffer items
 2. Finalizes the OGG stream (`opus_file_end()`)
-3. Calls `persist_or_upload_file()` — attempts memory upload, falls back to `write_file_to_sd()`
+3. Allocates a PSRAM copy, enqueues an `UploadRequest` via `xQueueSend()`, and immediately reinitiates the stream
 
 ### Buffer-threshold flush (per-segment)
 
-If `mem_buf_pos > SD_FLUSH_THRESHOLD` (1MB − 256KB) while still recording, the buffer is flushed to SD as a new segment file before encoding continues. This caps maximum PSRAM usage regardless of utterance length. The segment counter increments, the `chunkIndex` is advanced, and recording continues with a fresh PSRAM buffer.
+If `mem_buf_pos > SD_FLUSH_THRESHOLD` (1MB − 256KB) while still recording, the buffer is flushed as a new segment file before encoding continues. This caps maximum PSRAM usage regardless of utterance length. The segment counter increments, `chunkIndex` is advanced, and recording continues with a fresh PSRAM buffer.
 
-### persist_or_upload_file()
+### Async upload path
 
-```
-if mem_buf_pos == 0: discard (short utterance)
-if WiFi connected:
-    attempt uploadFileFromMemory() — PSRAM direct upload
-    if ok: delete SD file, return true
-    if fail: write_file_to_sd()
-else:
-    write_file_to_sd()
-return false
-```
+On both voice-end and buffer-threshold flush, `writerTask`:
+1. `opus_file_end()` — finalizes the OGG stream into `mem_buf`
+2. `ps_malloc` + memcpy — copies the buffer (writer retains `mem_buf` for the continuation)
+3. `opus_init_stream()` — reinitiates a fresh encoder with a new PSRAM buffer
+4. `xQueueSend(uploadQueue, &req, 0)` — enqueues the job and immediately resumes draining the ring buffer
 
-### write_file_to_sd()
+`uploadTask` (core 1, pri=2) owns the job from this point:
+- Calls `uploadFileFromMemory()` with the copied buffer
+- On HTTP failure: calls `write_file_to_sd_from_buf()` (SD fallback)
+- Always `free()`s the copied buffer
+
+`uploadMonitorTask` handles SD-resident orphan files only — files that arrived there when WiFi was down or OAuth wasn't ready.
+
+### write_file_to_sd_from_buf()
 
 Writes the current PSRAM buffer to `/lifelog/rec_<epoch>S<n>.opus`, then adds the file to `sdDirCache`. A flush (`f.flush()`) is called before `f.close()` to force the FAT cache to the SD card media — see [SD Durability](#sd-durability).
 
 ## Upload Monitor Task
 
-`uploadMonitorTask` runs every 30 seconds on Core 1 (pri=1, 12KB stack). It:
+`uploadMonitorTask` runs every 30 seconds on Core 1 (pri=1, 12KB stack). It handles **orphan SD files only** — files written by `uploadTask` on HTTP failure or by `uploadFile()` during WiFi downtime. It:
 1. Logs WiFi status and cached file count
 2. If WiFi is up and cache is non-empty: iterates index 0 repeatedly (each `sdDirCacheRemove` shifts the array), uploads via `uploadFile()`, deletes the file from SD + cache on success
 3. Breaks on first failure, waits for next 30s cycle
 
-Files written by `write_file_to_sd()` are added to `sdDirCache` immediately. The cache is populated at startup via `sdDirCacheInit()` (full `/lifelog` scan, sorted alphanumerically) and updated on:
-- **Add**: `write_file_to_sd()` after successful close
-- **Remove**: `uploadMonitorTask` after successful HTTP upload, or `uploadFile()` PSRAM tier after successful memory upload
-
-The monitor does NOT use the upload queue — uploads are synchronous and direct.
+`uploadTask` handles all in-memory uploads (the common path). `uploadMonitorTask` is the catch-all for the SD tier.
 
 ## SD Directory Cache
 
@@ -210,7 +213,7 @@ graph TB
 >
 > **ring_mutex** guards ring buffer head/tail/used[] between afeFetchTask (producer) and writerTask (consumer).
 >
-> **uploadQueue is removed** — the prior `uploadWorkerTask` + FreeRTOS queue (depth=8) architecture is replaced by `uploadMonitorTask` which uses the `sdDirCache` and synchronous uploads.
+> **uploadQueue** (depth=3) connects writerTask to uploadTask. Owned by `upload.cpp` via `setUploadQueueHandle()` / `getUploadQueueHandle()` — avoids cross-TU extern linkage issues on ESP32. Created in `writerInit()` (called from `audioInit()` before AFE init) and consumed by `uploadTask`.
 
 ### Ring Buffer Detail
 
@@ -263,8 +266,9 @@ flowchart TB
     B --> C["bootInit()<br/>Check NVS boot counter<br/>and confirmed flag"]
     C --> D["setupWiFi()<br/>WiFiManager captive portal<br/>AP: LifeLog-Setup<br/>Timeout: 120s"]
     D --> E["setupSD()<br/>SD.begin(SD_CS_PIN, SPI, 10000000)<br/>10MHz SPI clock (down from 25MHz)<br/>Creates /lifelog/ if missing<br/>sdDirCacheInit() — scans /lifelog into PSRAM"]
-    E --> EA["startUploadMonitorTask()<br/>12KB stack, Core 1, pri=1<br/>30s poll interval"]
-    EA --> F["audioInit()<br/>Init I2S PDM (16kHz, mono)<br/>Init esp-sr AFE (NSNET2 + WebRTC VAD)<br/>Init Opus encoder (24kbps, 20ms frames)<br/>Init OGG mux<br/>Create ring buffer"]
+    E --> EA["startUploadTask()<br/>16KB stack, Core 1, pri=2<br/>Polls for queue (set by writerInit)"]
+    EA --> EB["startUploadMonitorTask()<br/>12KB stack, Core 1, pri=1<br/>30s poll interval"]
+    EB --> F["audioInit()<br/>writerInit() — creates uploadQueue<br/>Init I2S PDM (16kHz, mono)<br/>Init esp-sr AFE (NSNET2 + WebRTC VAD)<br/>Init Opus encoder (24kbps, 20ms frames)<br/>Init OGG mux<br/>Create ring buffer"]
     F --> G["setupOTA()<br/>ArduinoOTA init<br/>Hostname: lifelog"]
     G --> H["xTaskCreatePinnedToCore<br/>afe_feed → Core 0"]
     G --> I["xTaskCreatePinnedToCore<br/>afe_fetch → Core 1"]
@@ -385,18 +389,19 @@ flowchart TB
 | Mode | `AFE_MODE_LOW_COST` |
 | Noise suppression | NSNET2 |
 | VAD | WebRTC (fallback via NULL model name) |
-| AGC | Disabled |
+| AGC | Enabled — target: −12 dBFS, range: −12 to +45 dB, seed: +20 dB |
 | WakeNet | Disabled (weak stubs) |
 | Models | Loaded from `model` partition (mmap) |
 
 ### Upload Paths
 
-| Tier | Condition | Mechanism |
-|------|-----------|-----------|
-| PSRAM direct | `fileSize <= PSRAM/2` | Entire file read into PSRAM, `uploadFileFromMemory()`, then `SD.remove()` |
-| Streaming | Large files | 64KB chunk reads from SD with sdMutex per chunk, `esp_http_client` POST |
+`uploadTask` owns all in-memory uploads. `uploadMonitorTask` handles the SD orphan tier.
 
-Both tiers call `esp_http_client_cleanup()` on failure and `SD.remove()` + `sdDirCacheRemove()` on HTTP 200.
+| Tier | Path | Notes |
+|------|------|-------|
+| In-memory (normal) | `uploadTask` → `uploadFileFromMemory()` | Writer's PSRAM copy; deleted from SD on HTTP 200 |
+| SD fallback | `uploadTask` → `write_file_to_sd_from_buf()` | On HTTP failure; added to `sdDirCache` |
+| SD orphans | `uploadMonitorTask` (30s cycle) | WiFi-down files; `sdDirCache` iteration |
 
 ### Server Connection
 
