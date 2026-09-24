@@ -21,9 +21,8 @@
 static const char* TAG = "WRITER";
 
 // ── Upload state ──────────────────────────────────────────────────
-// Queue is global/static (not in writerInit) so it's ready before uploadTask starts.
-// xQueueCreate uses heap directly — safe to call before scheduler starts.
-static QueueHandle_t uploadQueue = xQueueCreate(3, sizeof(UploadRequest));
+// Queue is created in writerInit() after scheduler starts. uploadTask polls until ready.
+static QueueHandle_t uploadQueue = NULL;
 static TaskHandle_t uploadTaskHandle = NULL;
 
 // Buffer health counter
@@ -349,7 +348,12 @@ void writerInit() {
 #endif
 
     // mem_buf allocated lazily in opus_init_stream() on first voice start
-    // uploadQueue is global (initialized before scheduler starts) — no action needed here
+
+    // Queue created here (after scheduler/FreeRTOS heap is ready) — not as static init.
+    // uploadTask polls until this is set before processing any jobs.
+    assert(uploadQueue == NULL);
+    uploadQueue = xQueueCreate(3, sizeof(UploadRequest));
+    assert(uploadQueue);
 }
 
 // ── Write task (reads PSRAM, writes SD, uploads) ──────────────────

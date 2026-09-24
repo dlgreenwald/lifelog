@@ -666,10 +666,17 @@ extern void write_file_to_sd_from_buf(uint8_t *mem_buf, uint32_t mem_buf_pos,
                                        time_t utterance_epoch, uint32_t segment);
 
 static void uploadTask(void *pvParameters) {
-    if (uploadQueue == NULL) {
-        ESP_LOGE(TAG, "uploadTask: uploadQueue is NULL — writerInit() may have failed");
-        vTaskSuspend(NULL);  // suspend forever
+    // Wait for writerInit() to create the queue (it runs after scheduler starts).
+    // writerInit() is called from audioInit() in main setup, so this is typically <1s.
+    uint32_t wait_ticks = 0;
+    while (uploadQueue == NULL) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        wait_ticks++;
+        if (wait_ticks % 50 == 0) {  // every ~5s
+            ESP_LOGW(TAG, "uploadTask: waiting for uploadQueue (writerInit not yet called)...");
+        }
     }
+    ESP_LOGI(TAG, "uploadTask: queue ready (waited %lu ticks)", (unsigned long)wait_ticks);
 
     UploadRequest job;
     uint32_t peak = 0;
