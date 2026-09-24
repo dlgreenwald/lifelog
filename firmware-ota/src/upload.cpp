@@ -27,6 +27,7 @@ static struct {
     SdCacheEntry entries[SD_CACHE_MAX_ENTRIES];
     uint16_t count;
     bool valid;
+    bool wasFull;  // true if cache hit 64-entry limit at any point
 } sdDirCache;
 
 // Alphanumeric qsort comparison — rec_<epoch>_<index>.opus filenames sort chronologically
@@ -68,6 +69,7 @@ void sdDirCacheInit() {
     }
     sdDirCache.count = n;
     sdDirCache.valid = true;
+    sdDirCache.wasFull = false;
 
     ESP_LOGI(TAG, "sdDirCache: scanned %u entries from /lifelog", n);
 }
@@ -92,6 +94,13 @@ void sdDirCacheRemove(const char *filename) {
             }
             sdDirCache.count--;
             ESP_LOGD(TAG, "sdDirCache: removed %s (%u remaining)", filename, sdDirCache.count);
+
+            // If cache drained after being full, rebuild to pick up overflow files
+            if (sdDirCache.count == 0 && sdDirCache.wasFull) {
+                ESP_LOGI(TAG, "sdDirCache: drained after overflow, rebuilding");
+                sdDirCache.wasFull = false;
+                sdDirCacheInit();
+            }
             return;
         }
     }
@@ -103,7 +112,11 @@ void sdDirCacheInvalidate() {
 }
 
 bool sdDirCacheAdd(const char *fullPath, time_t epoch) {
-    if (!sdDirCache.valid || sdDirCache.count >= SD_CACHE_MAX_ENTRIES) return false;
+    if (!sdDirCache.valid) return false;
+    if (sdDirCache.count >= SD_CACHE_MAX_ENTRIES) {
+        sdDirCache.wasFull = true;  // mark for rebuild when cache drains
+        return false;
+    }
     snprintf(sdDirCache.entries[sdDirCache.count].filename,
              sizeof(sdDirCache.entries[0].filename), "%s", fullPath);
     sdDirCache.entries[sdDirCache.count].epoch = epoch;
