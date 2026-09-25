@@ -343,6 +343,55 @@ async def get_active_session_recording(user_id: int) -> dict | None:
                 named = _json.loads(named)
             all_named.extend(named)
 
+        # Filter out Whisper segments that are too short to be meaningful speech.
+        # These are typically false positives from ambient noise (car engine, wind,
+        # radio) that Whisper transcribes as filler words. Segments under 300ms
+        # are dropped regardless; segments under 1s that are single short words
+        # (e.g. "thank you", "bye", "amen") are also dropped.
+        MIN_DUR_S = 0.3  # absolute floor
+        SHORT_WORD_DUR_S = 1.0  # single-word threshold
+        SHORT_WORDS = frozenset(
+            (
+                "thank you",
+                "thanks",
+                "bye",
+                "hi",
+                "hello",
+                "amen",
+                "yes",
+                "no",
+                "oh",
+                "uh",
+                "um",
+                "hmm",
+                "mm-hmm",
+                "mmhm",
+                "yeah",
+                "yep",
+                "yup",
+                "okay",
+                "ok",
+                "peace",
+                "love you",
+                "goodbye",
+            )
+        )
+
+        def _is_junk_segment(seg: dict) -> bool:
+            text = (seg.get("text") or "").strip().lower()
+            start = float(seg.get("start") or 0)
+            end = float(seg.get("end") or 0)
+            dur = end - start
+            if dur < MIN_DUR_S:
+                return True
+            if dur < SHORT_WORD_DUR_S:
+                stripped = text.strip().rstrip(".,!?;:")
+                if stripped in SHORT_WORDS or len(text.split()) == 1:
+                    return True
+            return False
+
+        all_segments = [s for s in all_segments if not _is_junk_segment(s)]
+
         audio_files = [
             utt["audio_filename"] for utt in utterances if utt["audio_filename"]
         ]
