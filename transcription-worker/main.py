@@ -497,6 +497,15 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
             complete = transcribe_audio(
                 models, audio_np, sample_rate, language=language
             )
+            # Filter low-quality segments before storing in DB.
+            # Thresholds match ws_instant's client-side filter so the stored
+            # quick transcript matches what the dashboard receives live.
+            complete["segments"] = [
+                s
+                for s in complete.get("segments", [])
+                if s.get("no_speech_prob", 0) <= 0.8
+                and s.get("avg_logprob", 0) > -1.0
+            ]
             complete["utterance_spans"] = [
                 {
                     "utterance_id": utterance_ids[i],

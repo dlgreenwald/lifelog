@@ -503,16 +503,6 @@ def transcribe_audio(
         diarization, {"segments": aligned_segments}
     )
     segments = _as_segment_dicts(diarized.get("segments", aligned_segments))
-
-    # Filter low-quality segments before storage and speaker grouping.
-    # Thresholds match ws_instant's client-side filter so the stored
-    # transcript is identical to what the dashboard receives live.
-    segments = [
-        s
-        for s in segments
-        if s.get("no_speech_prob", 0) <= 0.8 and s.get("avg_logprob", 0) > -1.0
-    ]
-
     groups = group_into_speaker_segments(segments)
     speaker_segments = []
     for group in groups:
