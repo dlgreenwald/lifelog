@@ -51,7 +51,14 @@ uint32_t getRingFillLevel() {
 
 void sdTake() {
     if (sdMutex == NULL) return;
-    xSemaphoreTakeRecursive(sdMutex, portMAX_DELAY);
+    uint32_t now = millis();
+    BaseType_t acquired = xSemaphoreTakeRecursive(sdMutex, portMAX_DELAY);
+    uint32_t waited_ms = millis() - now;
+    if (waited_ms > 5) {
+        ESP_LOGW(TAG, "sdTake: task=%s waited %lums for mutex",
+                 pcTaskGetName(xTaskGetCurrentTaskHandle()), (unsigned long)waited_ms);
+    }
+    (void)acquired;
 }
 
 void sdGive() {
@@ -64,11 +71,12 @@ void sdGive() {
 void audioInit() {
     sdMutex = xSemaphoreCreateRecursiveMutex();
 
+    // Initialize writer (Opus encoder, upload queue, upload task).
+    // Called before i2sFeInit so uploadTask's queue is ready early — AFE init takes ~15s.
+    writerInit();
+
     // Initialize I2S microphone + AFE (VAD + NS + AGC)
     i2sFeInit();
-
-    // Initialize writer (Opus encoder, upload queue, upload task)
-    writerInit();
 
     // Allocate ring buffer in PSRAM via RTOS xRingbuffer (thread-safe, no mutex needed)
     uint8_t *ringStorage = (uint8_t *)ps_malloc(RING_TOTAL_BYTES);

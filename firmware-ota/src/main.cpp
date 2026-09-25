@@ -14,6 +14,7 @@
 #include <ArduinoJson.h>
 #include <mbedtls/platform.h>
 #include <esp_heap_caps.h>
+#include <esp_sntp.h>
 #include "config.h"
 #include "settings.h"
 #include "audio.h"
@@ -472,6 +473,10 @@ static void setupSD() {
         SD.mkdir("lifelog");
         ESP_LOGI("SD", "Created /lifelog");
     }
+
+    sdDirCacheInit();
+    startUploadMonitorTask();
+    startUploadTask(NULL);  // async upload task — owns buffer lifetime, handles SD fallback
 }
 
 // ── Forward declarations ──────────────────────────────────────────
@@ -564,6 +569,15 @@ void setup() {
         gmtOffset = (int32_t)tzMinutes * 60;
         ESP_LOGI("TIME", "gmtOffset=%ld seconds (%ld minutes east of UTC)", (long)gmtOffset, (long)tzMinutes);
     }
+
+    // SNTP sync callback — fires once when NTP first updates the system clock
+    sntp_set_time_sync_notification_cb([](struct timeval *tv) {
+        char buf[32];
+        time_t t = tv->tv_sec;
+        struct tm *tm_info = localtime(&t);
+        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
+        ESP_LOGI("TIME", "SNTP synced: %s (epoch %ld)", buf, (long)tv->tv_sec);
+    });
 
     setupOTA();  // Register AFTER dash.begin() so we override RisalDash's /update routes
 
@@ -678,6 +692,5 @@ void loop() {
         lastDashPush = millis();
         dash.update();
     }
-
-    ledLoop();
+    //ledLoop();
 }

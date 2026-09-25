@@ -278,7 +278,8 @@ static std::vector<UploadCall> mock_upload_calls;
 static bool mock_upload_should_succeed = true;
 static std::vector<std::string> mock_uploaded_files;
 
-inline bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool final) {
+inline bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx,
+                       bool final, time_t recordedAt, uint32_t startMs, uint32_t endMs) {
     UploadCall call = {std::string(filename), uttId, chunkIdx, final};
     mock_upload_calls.push_back(call);
     mock_uploaded_files.push_back(std::string(filename));
@@ -292,13 +293,17 @@ struct UploadMemCall {
     uint32_t utteranceId;
     uint32_t chunkIndex;
     bool isFinal;
+    time_t recordedAt;
+    uint32_t startMs;
+    uint32_t endMs;
 };
 static std::vector<UploadMemCall> mock_upload_mem_calls;
 
 inline bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
                                  const char *filename, uint32_t uttId,
-                                 uint32_t chunkIdx, bool final) {
-    UploadMemCall call = {data, size, std::string(filename), uttId, chunkIdx, final};
+                                 uint32_t chunkIdx, bool final,
+                                 time_t recordedAt, uint32_t startMs, uint32_t endMs) {
+    UploadMemCall call = {data, size, std::string(filename), uttId, chunkIdx, final, recordedAt, startMs, endMs};
     if (size < 4096) return true;  // Short clip — discard (matches real impl)
     mock_upload_mem_calls.push_back(call);
     return mock_upload_should_succeed;

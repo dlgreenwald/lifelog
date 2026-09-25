@@ -355,8 +355,30 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                     transcript_error = f"{type(e).__name__}: {e}"
 
                 elapsed_s = time.monotonic() - chunk_start
+
+                # Filter low-quality segments (model uncertain or silence-like audio).
+                # Thresholds mirror the server-side final-transcription filter in worker.py.
+                filtered_segments = [
+                    s
+                    for s in segments
+                    if s.get("no_speech_prob", 0) <= 0.8
+                    and s.get("avg_logprob", 0) > -1.0
+                ]
+
                 full_text = " ".join(
-                    s["text"].strip() for s in segments if s.get("text", "").strip()
+                    s["text"].strip()
+                    for s in filtered_segments
+                    if s.get("text", "").strip()
+                )
+
+                # Aggregate quality metrics from raw segments for logging
+                raw_nsp = [s.get("no_speech_prob", 0) for s in segments]
+                raw_alp = [s.get("avg_logprob", 0) for s in segments]
+                avg_no_speech_prob = (
+                    round(sum(raw_nsp) / len(raw_nsp), 4) if raw_nsp else 0.0
+                )
+                avg_avg_logprob = (
+                    round(sum(raw_alp) / len(raw_alp), 4) if raw_alp else 0.0
                 )
 
                 # On first successful transcription, cache detected language for session
@@ -391,7 +413,10 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                     rms_dbfs=round(rms_dbfs, 1),
                     peak_dbfs=round(peak_dbfs, 1),
                     clipping_pct=clipping_pct,
-                    segment_count=len(segments),
+                    segment_count=len(filtered_segments),
+                    raw_segment_count=len(segments),
+                    avg_no_speech_prob=avg_no_speech_prob,
+                    avg_avg_logprob=avg_avg_logprob,
                     transcript=full_text[:500],
                     language=session_language or "auto",
                     elapsed_s=round(elapsed_s, 3),
@@ -420,12 +445,12 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                                     "end": s["end"],
                                     "text": s["text"],
                                 }
-                                for s in segments
+                                for s in filtered_segments
                             ],
                             # Also flag as silent if Whisper ran but found no speech.
                             # This catches audio that passed the RMS guard but produced
                             # no transcript segments (e.g. very quiet real speech).
-                            "is_silent": len(segments) == 0,
+                            "is_silent": len(filtered_segments) == 0,
                         }
                     )
             except Exception as e:
@@ -484,6 +509,14 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
             complete = transcribe_audio(
                 models, audio_np, sample_rate, language=language
             )
+            # Filter low-quality segments before storing in DB.
+            # Thresholds match ws_instant's client-side filter so the stored
+            # quick transcript matches what the dashboard receives live.
+            complete["segments"] = [
+                s
+                for s in complete.get("segments", [])
+                if s.get("no_speech_prob", 0) <= 0.8 and s.get("avg_logprob", 0) > -1.0
+            ]
             complete["utterance_spans"] = [
                 {
                     "utterance_id": utterance_ids[i],

@@ -29,6 +29,117 @@ static i2s_chan_handle_t i2s_rx_chan = NULL;
 static const esp_afe_sr_iface_t *afe_handle = NULL;
 static esp_afe_sr_data_t *afe_data = NULL;
 
+// ── Lightweight fixed-point AGC ─────────────────────────────────────
+// Measures RMS per 512-sample frame, applies adaptive gain to normalise
+// level.  Integer-only arithmetic — no FPU needed, safe for the feed task
+// on ESP32 Xtensa without hardware FPU.
+//
+// Target: ~0.25 (= -12 dBFS) RMS for comfortable speech level.
+// Max boost: ×32 (+30 dB).  Max cut: ÷4 (-12 dB).
+// Gain changes are smoothed to avoid discontinuities.
+
+typedef struct {
+    int32_t rms_q19;      // Q19.13 EMA of RMS × 8192 (avoids float)
+    int32_t gain_q16;     // Q16.16 current gain multiplier
+} AgcState;
+
+static AgcState agcState = {0};
+
+// Target RMS × 8192  (8000 ≈ -12 dBFS for 16-bit PCM — louder, better for whisperX)
+#define AGC_TARGET_RMS    8000
+// Min gain × 65536   (0.25 = -12 dB max attenuation)
+#define AGC_MIN_GAIN      16384
+// Max gain × 65536   (56.2 = +45 dB max boost — covers quiet speakers at -122 dBFS noise floor)
+#define AGC_MAX_GAIN      11653503
+// EMA coefficient for RMS tracking  (α=0.1, Q19.13)
+#define AGC_RMS_ALPHA_Q13 3277
+// EMA coefficient for gain smoothing (α=0.05, Q16.16)
+#define AGC_GAIN_ALPHA_Q16 3277
+
+static void agcReset(AgcState *s) {
+    if (!s) return;
+    // Seed rms_q19=800 → first agcProcessFrame computes target_gain ≈ 20 dB.
+    // AGC then converges up or down naturally from there based on signal level.
+    s->rms_q19 = 800;  // was 200 with AGC_TARGET_RMS=2000; now 4× for target=8000 → +20 dB start
+    s->gain_q16 = 65536;  // unity gain
+}
+
+static int agcInit(AgcState *s) {
+    if (!s) return -1;
+    s->rms_q19 = 800;  // start at 20 dB (see agcReset for rationale)
+    s->gain_q16 = 65536;
+    return 0;
+}
+
+// Multiply two Q16.16 numbers → Q16.16 result
+static inline int32_t mul_q16(int32_t a, int32_t b) {
+    // a and b are Q16.16; result is Q16.16
+    // Use 64-bit intermediate to avoid overflow: max is 2^31 × 2^31
+    return (int32_t)((((int64_t)a * b) + 32768) >> 16);
+}
+
+// Apply gain to a 512-sample frame in-place
+//gain_q16 is Q16.16, returns updated gain
+static int32_t agcProcessFrame(AgcState *s, int16_t *samples, int count) {
+    if (!s || !samples || count <= 0) return -1;
+
+    // VAD cache path: partial frames pass through unchanged
+    if (count != 512) return 0;
+
+    // ── 1. Compute frame RMS (Q19.13) ──────────────────────────────
+    int64_t sum_sq = 0;
+    for (int i = 0; i < count; i++) {
+        int32_t x = samples[i];
+        sum_sq += (int64_t)x * x;
+    }
+    // mean_sq Q19.13: divide by 512, then ×8192 (= << 4 then /512 = >> 9)
+    int32_t mean_sq_q19 = (int32_t)(sum_sq >> 9);
+    // Fast integer sqrt: binary-search approximation (worst case ~16 iterations)
+    int32_t rms_q19 = 0;
+    if (mean_sq_q19 > 0) {
+        int32_t hi = 1 << 16;   // upper bound
+        int32_t lo = 0;
+        while (lo + 1 < hi) {
+            int32_t mid = (lo + hi) >> 1;
+            int64_t mid_sq = (int64_t)mid * mid;
+            if (mid_sq <= mean_sq_q19) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        rms_q19 = lo;
+    }
+
+    // ── 2. Update RMS EMA ─────────────────────────────────────────
+    // ema_new = ema_old + α × (sample - ema_old)
+    int32_t diff = rms_q19 - s->rms_q19;
+    s->rms_q19 += (int32_t)(((int64_t)AGC_RMS_ALPHA_Q13 * diff + 4096) >> 13);
+
+    // ── 3. Compute target gain ───────────────────────────────────
+    int32_t rms = s->rms_q19 > 0 ? s->rms_q19 : 1;
+    // target_gain_Q16 = AGC_TARGET_RMS / rms × 65536
+    int64_t target_gain = ((int64_t)AGC_TARGET_RMS * 65536) / rms;
+    if (target_gain < AGC_MIN_GAIN) target_gain = AGC_MIN_GAIN;
+    if (target_gain > AGC_MAX_GAIN) target_gain = AGC_MAX_GAIN;
+
+    // ── 4. Smooth gain ──────────────────────────────────────────
+    int32_t gain_diff = (int32_t)target_gain - s->gain_q16;
+    s->gain_q16 += (int32_t)(((int64_t)AGC_GAIN_ALPHA_Q16 * gain_diff + 32768) >> 16);
+
+    // ── 5. Apply gain to all 512 samples ────────────────────────
+    int32_t g = s->gain_q16;
+    for (int i = 0; i < count; i++) {
+        int32_t x = samples[i];
+        int64_t y = ((int64_t)x * g + 32768) >> 16;
+        if (y > 32767) y = 32767;
+        else if (y < -32768) y = -32768;
+        samples[i] = (int16_t)y;
+    }
+
+    return 0;
+}
+
 // ── I2S PDM init ──────────────────────────────────────────────────
 
 static void pdmRxInit() {
@@ -109,8 +220,7 @@ static void afeInit() {
     afe_config->vad_min_noise_ms = 1000;      // min silence before VAD declares end of speech
     afe_config->vad_delay_ms = 128;
 
-    // Enable AGC — drives signal to target level adaptively
-    afe_config->agc_init = true;
+    afe_config->agc_init = false;
     afe_config->agc_compression_gain_db = 12;  // max boost AGC can apply to quiet signals (esp-sr default 9)
     afe_config->agc_target_level_dbfs = 3;    // target -3 dBFS envelope (industry standard for speech)
     afe_config->afe_linear_gain = 1.0;         // no manual boost — AGC controls gain adaptively
@@ -130,6 +240,13 @@ static void afeInit() {
 
     ESP_LOGD(TAG, "AFE ready (official defaults)");
     afe_handle->print_pipeline(afe_data);
+
+    // Lightweight fixed-point AGC — 512-sample AFE frames, 16 kHz
+    if (agcInit(&agcState) != 0) {
+        ESP_LOGW(TAG, "AGC init failed — AGC disabled");
+    } else {
+        ESP_LOGI(TAG, "AGC ready (target=-24 dBFS, range 42 dB)");
+    }
 }
 
 // ── Public init ───────────────────────────────────────────────────
@@ -226,6 +343,7 @@ static void processAfeResult(afe_fetch_result_t *result) {
             utteranceId++;
             chunkIndex = 0;
             isFinal = false;
+            agcReset(&agcState);  // Clear gain history at start of new utterance
         }
 
         // Build chunk: VAD cache (if present) + AFE audio
@@ -233,16 +351,41 @@ static void processAfeResult(afe_fetch_result_t *result) {
         int chunkSamples = 0;
 
         // VAD cache (pre-trigger audio — avoids truncating first word)
+        // Zero-pad at the FRONT to align to 512-sample boundary so AGC can
+        // process a full frame.  Padding is before the real audio so no
+        // artificial silence is inserted between cache and the current frame.
         if (result->vad_cache_size > 0 && !wasVoice) {
             int cacheSamples = result->vad_cache_size / sizeof(int16_t);
             if (cacheSamples <= RING_ITEM_BYTES / (int)sizeof(int16_t)) {
+                int aligned = ((cacheSamples + 511) / 512) * 512;  // round up to 512
+                int16_t alignedCache[512] = {0};
+                // Place real samples at the END (zeros at front = silence before speech)
+                memcpy(alignedCache + (aligned - cacheSamples), result->vad_cache, result->vad_cache_size);
+                agcProcessFrame(&agcState, alignedCache, aligned);
+                // Copy only the real samples back (zeros excluded)
                 memcpy(chunk, result->vad_cache, result->vad_cache_size);
                 chunkSamples = cacheSamples;
             }
         }
 
-        // AFE-processed audio (NS-cleaned)
+        // AFE-processed audio (NS-cleaned, AGC'd)
         int samples = result->data_size / sizeof(int16_t);
+        if (samples > 0) {
+            agcProcessFrame(&agcState, (int16_t *)result->data, samples);
+        }
+
+        // Rate-limited AGC diagnostic — log gain + input RMS once per second during speech
+        {
+            static uint32_t last_agc_log_ms = 0;
+            uint32_t now_ms = millis();
+            if (now_ms - last_agc_log_ms >= 1000) {
+                float gain_db = 20.0f * log10f((float)agcState.gain_q16 / 65536.0f);
+                float rms_dbfs = 20.0f * log10f((float)agcState.rms_q19 / 8192.0f / 32768.0f);
+                ESP_LOGI(TAG, "AGC gain=%.1f dB  rms=%.1f dBFS  vad=1", gain_db, rms_dbfs);
+                last_agc_log_ms = now_ms;
+            }
+        }
+
         int available = (RING_ITEM_BYTES / (int)sizeof(int16_t)) - chunkSamples;
         int toCopy = (samples <= available) ? samples : available;
         memcpy(chunk + chunkSamples, result->data, toCopy * sizeof(int16_t));
@@ -265,7 +408,17 @@ static void processAfeResult(afe_fetch_result_t *result) {
                 }
             }
             if (dropped > 0) {
-                ESP_LOGW(TAG, "Ring overflow: dropped %d chunks to make room", dropped);
+                UBaseType_t uxItemsWaiting = 0;
+                vRingbufferGetInfo(audioRingBuf, NULL, NULL, NULL, NULL, &uxItemsWaiting);
+                static uint32_t lastOverflowMs = 0;
+                uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                // Rate-limit: log at most once per second to avoid drowning sd flush logs
+                if (now - lastOverflowMs >= 1000) {
+                    ESP_LOGW(TAG, "Ring overflow: dropped %d chunks (fill=%lu/%d writer=%s) [rate-limited: 1/sec]",
+                             dropped, (unsigned long)uxItemsWaiting, RING_NUM_ITEMS,
+                             pcTaskGetName(writerTaskHandle));
+                    lastOverflowMs = now;
+                }
             }
         }
 

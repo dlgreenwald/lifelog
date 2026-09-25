@@ -1,0 +1,13 @@
+# uv
+uv.lock
+
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Test / coverage
+htmlcov/

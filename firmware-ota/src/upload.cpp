@@ -11,6 +11,119 @@ extern "C" esp_err_t esp_crt_bundle_attach(void *conf);
 
 static const char* TAG = "UPLOAD";
 
+// Forward declaration — defined later in this file
+static time_t _parse_epoch_from_filename(const char *filename);
+
+// ── SD directory cache — populated once, served from PSRAM ──────────
+
+#define SD_CACHE_MAX_ENTRIES 64
+
+struct SdCacheEntry {
+    char filename[64];
+    time_t epoch;
+};
+
+static struct {
+    SdCacheEntry entries[SD_CACHE_MAX_ENTRIES];
+    uint16_t count;
+    bool valid;
+    bool wasFull;  // true if cache hit 64-entry limit at any point
+} sdDirCache;
+
+// Alphanumeric qsort comparison — rec_<epoch>_<index>.opus filenames sort chronologically
+static int _cache_cmp(const void *a, const void *b) {
+    return strcmp(((const SdCacheEntry *)a)->filename, ((const SdCacheEntry *)b)->filename);
+}
+
+void sdDirCacheInit() {
+    memset(&sdDirCache, 0, sizeof(sdDirCache));
+
+    File root = SD.open("/lifelog");
+    if (!root) {
+        ESP_LOGW(TAG, "sdDirCache: failed to open /lifelog");
+        return;
+    }
+
+    uint16_t n = 0;
+    while (n < SD_CACHE_MAX_ENTRIES) {
+        File f = root.openNextFile();
+        if (!f) break;
+#ifdef AUDIO_FORMAT_OPUS_ACTIVE
+        if (!String(f.name()).endsWith(".opus")) { f.close(); continue; }
+#else
+        if (!String(f.name()).endsWith(".wav")) { f.close(); continue; }
+#endif
+        const char *name = f.name();
+        if (strncmp(name, "lifelog/", 8) == 0) name += 8;
+        snprintf(sdDirCache.entries[n].filename, sizeof(sdDirCache.entries[n].filename),
+                 "/lifelog/%s", name);
+        sdDirCache.entries[n].epoch = _parse_epoch_from_filename(name);
+        n++;
+        f.close();
+    }
+    root.close();
+
+    // Sort alphanumerically — stable, fast, zero allocation
+    if (n > 1) {
+        qsort(sdDirCache.entries, n, sizeof(SdCacheEntry), _cache_cmp);
+    }
+    sdDirCache.count = n;
+    sdDirCache.valid = true;
+    sdDirCache.wasFull = false;
+
+    ESP_LOGI(TAG, "sdDirCache: scanned %u entries from /lifelog", n);
+}
+
+const char *sdDirCacheGetEntry(uint16_t i, time_t *outEpoch) {
+    if (!sdDirCache.valid || i >= sdDirCache.count) return nullptr;
+    if (outEpoch) *outEpoch = sdDirCache.entries[i].epoch;
+    return sdDirCache.entries[i].filename;
+}
+
+uint16_t sdDirCacheGetCount() {
+    return sdDirCache.valid ? sdDirCache.count : 0;
+}
+
+void sdDirCacheRemove(const char *filename) {
+    if (!sdDirCache.valid || sdDirCache.count == 0) return;
+    for (uint16_t i = 0; i < sdDirCache.count; i++) {
+        if (strcmp(sdDirCache.entries[i].filename, filename) == 0) {
+            // Shift remaining entries down
+            for (uint16_t j = i; j < sdDirCache.count - 1; j++) {
+                sdDirCache.entries[j] = sdDirCache.entries[j + 1];
+            }
+            sdDirCache.count--;
+            ESP_LOGD(TAG, "sdDirCache: removed %s (%u remaining)", filename, sdDirCache.count);
+
+            // If cache drained after being full, rebuild to pick up overflow files
+            if (sdDirCache.count == 0 && sdDirCache.wasFull) {
+                ESP_LOGI(TAG, "sdDirCache: drained after overflow, rebuilding");
+                sdDirCache.wasFull = false;
+                sdDirCacheInit();
+            }
+            return;
+        }
+    }
+}
+
+void sdDirCacheInvalidate() {
+    sdDirCache.valid = false;
+    sdDirCache.count = 0;
+}
+
+bool sdDirCacheAdd(const char *fullPath, time_t epoch) {
+    if (!sdDirCache.valid) return false;
+    if (sdDirCache.count >= SD_CACHE_MAX_ENTRIES) {
+        sdDirCache.wasFull = true;  // mark for rebuild when cache drains
+        return false;
+    }
+    snprintf(sdDirCache.entries[sdDirCache.count].filename,
+             sizeof(sdDirCache.entries[0].filename), "%s", fullPath);
+    sdDirCache.entries[sdDirCache.count].epoch = epoch;
+    sdDirCache.count++;
+    return true;
+}
+
 bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool isFinal,
                 time_t recordedAt, uint32_t startMs, uint32_t endMs) {
     if (WiFi.status() != WL_CONNECTED) {
@@ -39,9 +152,14 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool is
             if (file) {
                 file.read(buf, fileSize);
                 file.close();
-                SD.remove(filename);
                 sdGive();
                 bool ok = uploadFileFromMemory(buf, fileSize, filename, uttId, chunkIdx, isFinal, recordedAt, startMs, endMs);
+
+                if (ok) {
+                    SD.remove(filename);
+                    sdDirCacheRemove(filename);
+                }
+
                 free(buf);
                 return ok;
             }
@@ -206,6 +324,13 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool is
                    filename, (unsigned long)elapsed, (unsigned long)rate,
                    (unsigned long)getUploadQueueDepth(),
                    (unsigned long)startMs, (unsigned long)endMs);
+
+        // Delete file from SD and cache on successful upload
+        sdTake();
+        SD.remove(filename);
+        sdGive();
+        sdDirCacheRemove(filename);
+
         return true;
     } else {
         ESP_LOGE(TAG, "Upload failed: %s %lums q=%lu status=%d", filename,
@@ -260,6 +385,19 @@ void uploadAllRecordings() {
 
 static TaskHandle_t autoUploadTaskHandle = NULL;
 
+// Parse epoch from filename like "rec_1726926612_042.opus" → returns 1726926612, or 0 if invalid
+static time_t _parse_epoch_from_filename(const char *filename) {
+    // Strip path prefix
+    const char *base = strrchr(filename, '/');
+    base = base ? base + 1 : filename;
+    // Expected format: rec_<epoch>_<index>.opus
+    if (strncmp(base, "rec_", 4) != 0) return 0;
+    char *end = nullptr;
+    time_t epoch = strtoll(base + 4, &end, 10);
+    if (end == base + 4 || epoch <= 0) return 0;
+    return epoch;
+}
+
 static void autoUploadTask(void *pvParameters) {
     const TickType_t interval = pdMS_TO_TICKS(30000);  // 30 seconds
     while (true) {
@@ -272,6 +410,7 @@ static void autoUploadTask(void *pvParameters) {
         if (!root) { sdGive(); continue; }
 
         char paths[32][64];
+        time_t epochs[32];
         int count = 0;
         while (count < 32) {
             sdTake();
@@ -287,6 +426,7 @@ static void autoUploadTask(void *pvParameters) {
                 const char *fname = f.name();
                 if (strncmp(fname, "lifelog/", 8) == 0) fname += 8;
                 snprintf(paths[count], sizeof(paths[count]), "/lifelog/%s", fname);
+                epochs[count] = _parse_epoch_from_filename(fname);
                 count++;
             }
         }
@@ -302,7 +442,7 @@ static void autoUploadTask(void *pvParameters) {
 
         uint32_t orphanId = 0x80000000;
         for (int i = 0; i < count; i++) {
-            if (uploadFile(paths[i], orphanId++, 0, true, 0, 0, 0)) {
+            if (uploadFile(paths[i], orphanId++, 0, true, epochs[i], 0, 0)) {
                 sdTake();
                 SD.remove(paths[i]);
                 sdGive();
@@ -317,6 +457,53 @@ void startAutoUploadTask() {
     xTaskCreatePinnedToCore(autoUploadTask, "autoUpload", 12288, NULL, 1, &autoUploadTaskHandle, 1);
     ESP_LOGI(TAG, "Auto-upload task started (every 30s, core 1, stack 12288)");
 }
+
+static TaskHandle_t uploadMonitorTaskHandle = NULL;
+
+// ── Upload monitor: logs WiFi + cache status, uploads files when WiFi up ──
+
+static void uploadMonitorTask(void *pvParameters) {
+    const TickType_t interval = pdMS_TO_TICKS(30000);  // 30 seconds
+    uint32_t orphanId = 0x80000000;
+
+    while (true) {
+        vTaskDelay(interval);
+
+        bool wifi = WiFi.status() == WL_CONNECTED;
+        uint16_t cached = sdDirCacheGetCount();
+
+        ESP_LOGI(TAG, "uploadMonitor: WiFi=%s cache=%u", wifi ? "up" : "DOWN", cached);
+
+        if (!wifi || cached == 0) continue;
+
+        // Upload all cached files — always process index 0 since remove shifts the array
+        while (sdDirCacheGetCount() > 0 && WiFi.status() == WL_CONNECTED) {
+            time_t epoch = 0;
+            const char *path = sdDirCacheGetEntry(0, &epoch);
+
+            ESP_LOGI(TAG, "uploadMonitor: attempting %s", path);
+
+            if (uploadFile(path, orphanId++, 0, true, epoch, 0, 0)) {
+                sdTake();
+                SD.remove(path);
+                sdGive();
+                sdDirCacheRemove(path);
+                ESP_LOGI(TAG, "uploadMonitor: uploaded and deleted %s", path);
+            } else {
+                ESP_LOGW(TAG, "uploadMonitor: upload failed, stopping");
+                break;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(500));  // brief delay between files
+        }
+    }
+}
+
+void startUploadMonitorTask() {
+    xTaskCreatePinnedToCore(uploadMonitorTask, "uploadMon", 12288, NULL, 1, &uploadMonitorTaskHandle, 1);
+    ESP_LOGI(TAG, "Upload monitor task started (every 30s, core 1, stack 12288)");
+}
+
 bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
                           const char* filename, uint32_t uttId,
                           uint32_t chunkIdx, bool isFinal, time_t recordedAt,
@@ -464,5 +651,84 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
         ESP_LOGE(TAG, "Upload failed: %s %lums q=%lu status=%d", filename,
                    (unsigned long)elapsed, (unsigned long)getUploadQueueDepth(), httpStatus);
         return false;
+    }
+}
+
+// ── Async upload task — receives UploadRequests from writer, uploads, frees buffer ─
+
+// uploadQueue is owned by upload.cpp — writer.cpp calls setUploadQueueHandle() to register it.
+// This avoids cross-TU extern linkage issues on ESP32.
+static QueueHandle_t s_uploadQueue = NULL;
+
+void setUploadQueueHandle(QueueHandle_t q) {
+    s_uploadQueue = q;
+}
+
+QueueHandle_t getUploadQueueHandle() {
+    return s_uploadQueue;
+}
+
+// Forward declaration — SD fallback writes using the same mem_buf position as the original job
+extern void write_file_to_sd_from_buf(uint8_t *mem_buf, uint32_t mem_buf_pos,
+                                       time_t utterance_epoch, uint32_t segment);
+
+static void uploadTask(void *pvParameters) {
+    // Wait for writerInit() to call setUploadQueueHandle() (it runs after scheduler starts).
+    // writerInit() is called from audioInit() in main setup, so this is typically <1s.
+    uint32_t wait_ticks = 0;
+    while (s_uploadQueue == NULL) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        wait_ticks++;
+        if (wait_ticks % 50 == 0) {  // every ~5s
+            ESP_LOGW(TAG, "uploadTask: waiting for uploadQueue (writerInit not yet called)...");
+        }
+    }
+    ESP_LOGI(TAG, "uploadTask: queue ready (waited %lu ticks)", (unsigned long)wait_ticks);
+
+    UploadRequest job;
+    uint32_t peak = 0;
+
+    for (;;) {
+        if (xQueueReceive(s_uploadQueue, &job, portMAX_DELAY) != pdTRUE) continue;
+
+        // Track high-water mark
+        uint32_t qlen = uxQueueMessagesWaiting(s_uploadQueue);
+        if (qlen > peak) {
+            peak = qlen;
+            ESP_LOGI(TAG, "uploadTask: queue high-water mark: %lu", (unsigned long)peak);
+        }
+
+        // Generate filename from epoch + segment
+        char filename[64];
+        generateFilenameUtc(filename, sizeof(filename), job.recorded_at, job.chunkIndex, true);
+
+        bool ok = false;
+        if (job.mem_ptr && job.mem_size > 0) {
+            // In-memory upload — upload task owns the buffer
+            ok = uploadFileFromMemory(job.mem_ptr, job.mem_size,
+                                      filename, job.utteranceId,
+                                      job.chunkIndex, job.isFinal,
+                                      job.recorded_at, job.start_ms, job.end_ms);
+            if (!ok) {
+                // Upload failed — fall back to SD write
+                ESP_LOGW(TAG, "uploadTask: upload failed, writing to SD");
+                write_file_to_sd_from_buf(job.mem_ptr, job.mem_size,
+                                          job.recorded_at, job.chunkIndex);
+            }
+            free(job.mem_ptr);  // always free — owns the buffer
+        }
+
+        ESP_LOGD(TAG, "uploadTask: done %s %s", filename, ok ? "uploaded" : "SD fallback");
+    }
+}
+
+void startUploadTask(TaskHandle_t *outHandle) {
+    TaskHandle_t handle;
+    BaseType_t created = xTaskCreatePinnedToCore(uploadTask, "uploadTask", 16384, NULL, 2, &handle, 1);
+    if (created == pdPASS) {
+        ESP_LOGI(TAG, "Upload task started (core 1, stack 16384)");
+        if (outHandle) *outHandle = handle;
+    } else {
+        ESP_LOGE(TAG, "Upload task failed to start");
     }
 }

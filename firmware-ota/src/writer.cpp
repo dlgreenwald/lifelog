@@ -21,14 +21,14 @@
 static const char* TAG = "WRITER";
 
 // ── Upload state ──────────────────────────────────────────────────
-static QueueHandle_t uploadQueue = NULL;
 static TaskHandle_t uploadTaskHandle = NULL;
 
 // Buffer health counter
 static uint32_t totalSamplesWritten = 0;
 
 uint32_t getUploadQueueDepth() {
-    return uploadQueue ? uxQueueMessagesWaiting(uploadQueue) : 0;
+    QueueHandle_t q = getUploadQueueHandle();
+    return q ? uxQueueMessagesWaiting(q) : 0;
 }
 
 TaskHandle_t getUploadTaskHandle() {
@@ -36,21 +36,6 @@ TaskHandle_t getUploadTaskHandle() {
 }
 
 uint32_t getTotalSamplesWritten() { return totalSamplesWritten; }
-
-// ── Upload request (metadata captured at file-close time) ──────────
-
-struct UploadRequest {
-    char filename[64];
-    uint8_t *mem_ptr;        // NULL if reading from SD
-    uint32_t mem_size;
-    uint32_t utteranceId;
-    uint32_t chunkIndex;
-    bool isFinal;
-    bool from_sd;
-    time_t recorded_at;      // UTC epoch seconds; 0 if clock invalid
-    uint32_t start_ms;      // system uptime ms when voice start was detected
-    uint32_t end_ms;        // system uptime ms when voice end was detected
-};
 
 // ── Forward declarations ──────────────────────────────────────────
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
@@ -60,13 +45,12 @@ static void opus_init_stream();
 static int opus_encode_to_buffer(const int16_t* pcm, int samples);
 static void opus_file_end();
 #endif
-static void closePendingFile();
 
 // ── PSRAM memory buffer constants ──────────────────────────────────
-#define MEM_BUF_INITIAL_SIZE    (64 * 1024)        // 64KB initial
-#define MEM_BUF_MAX_SIZE        (4 * 1024 * 1024)  // 4MB max
-#define MEM_BUF_GROW_SIZE       (128 * 1024)       // 128KB growth increments
-#define SD_FLUSH_THRESHOLD      (2 * 1024 * 1024)  // Flush to SD at 2MB if WiFi down
+#define MEM_BUF_INITIAL_SIZE    (1 * 1024 * 1024)   // 1MB initial
+#define MEM_BUF_MAX_SIZE        (1 * 1024 * 1024)   // 1MB max
+#define MEM_BUF_GROW_SIZE       (128 * 1024)        // 128KB growth increments
+#define SD_FLUSH_THRESHOLD      (MEM_BUF_MAX_SIZE - 256 * 1024)  // 768KB — flush before EOS encode runs out of headroom
 
 // ── Opus encoder state (used when AUDIO_FORMAT_OPUS_ACTIVE) ────────
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
@@ -89,6 +73,7 @@ static uint8_t *mem_buf = NULL;       // Growing PSRAM buffer for entire OGG str
 static uint32_t mem_buf_pos = 0;
 static uint32_t mem_buf_capacity = 0;
 static bool mem_to_sd = false;        // True if flushed to SD (fallback)
+static bool firstSdFlush = true;     // true at utterance start; false after first flush to SD
 static char sd_filename[64];
 uint32_t getMemBufUsed() { return mem_buf_pos; }
 uint32_t getMemBufCapacity() { return mem_buf_capacity; }
@@ -147,13 +132,18 @@ static void opus_deinit() {
 // Allocates growing PSRAM buffer for entire OGG stream.
 // No SD file — upload from memory after voice ends.
 
+// Epoch (from time()) at utterance start — used for stable filename across flushes
+static time_t s_utterance_start_epoch = 0;
+
 static void opus_init_stream() {
+    firstSdFlush = true;   // reset flush gate for new utterance
     ogg_stream_reset_serialno(&ogg_stream, ogg_serialno);
 
     opus_granulepos = 0;
     opus_packetno = 2;      // head=0, tags=1, first audio=2
-    mem_to_sd = false;
+    mem_to_sd = false;  // Reset so this utterance's flushes create/append to its own file
     mem_buf_pos = 0;
+    s_utterance_start_epoch = time(nullptr);
 
     // Allocate or reuse growing PSRAM buffer
     if (!mem_buf || mem_buf_capacity < MEM_BUF_INITIAL_SIZE) {
@@ -198,50 +188,13 @@ static void opus_init_stream() {
     ESP_LOGD(TAG, "opus_init_stream: PSRAM buffer %luKB (header=%lu bytes)",
              (unsigned long)(mem_buf_capacity / 1024), (unsigned long)mem_buf_pos);
 }
-static void mem_flush_to_sd() {
-    if (mem_buf_pos == 0 || mem_to_sd) return;
-    if (sdMutex == NULL) {
-        ESP_LOGE(TAG, "mem_flush_to_sd: sdMutex is NULL, cannot flush");
-        return;
-    }
 
-    time_t now = time(nullptr);
-    if (now > 0) {
-        generateFilenameUtc(sd_filename, sizeof(sd_filename), now, fileIndex++, true);
-    } else {
-        snprintf(sd_filename, sizeof(sd_filename), "/lifelog/rec_%05lu.opus", fileIndex++);
-    }
-
-    sdTake();
-    opus_file = SD.open(sd_filename, FILE_WRITE);
-    sdGive();
-
-    if (!opus_file) {
-        ESP_LOGE(TAG, "mem_flush_to_sd: failed to open %s", sd_filename);
-        return;
-    }
-
-    // Write in 64KB chunks with yields to avoid watchdog
-    uint32_t written = 0;
-    while (written < mem_buf_pos) {
-        uint32_t chunk = mem_buf_pos - written;
-        if (chunk > 65536) chunk = 65536;
-        sdTake();
-        opus_file.write(mem_buf + written, chunk);
-        sdGive();
-        written += chunk;
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-
-    strcpy(lastSavedFile, sd_filename);
-    mem_to_sd = true;
-
-    ESP_LOGI(TAG, "mem_flush_to_sd: wrote %lu bytes to %s",
-             (unsigned long)mem_buf_pos, sd_filename);
-}
-
-// Grow mem_buf if needed; returns false on failure (hit max or realloc failed).
+// Grow mem_buf if needed; returns true if data fits (either grew or had room),
+// false only if growth was needed but failed (hit max or realloc failed).
 static bool mem_buf_grow(uint32_t needed) {
+    if (mem_buf_pos + needed <= mem_buf_capacity) {
+        return true;  // Already fits — no growth needed
+    }
     uint32_t new_cap = mem_buf_capacity + MEM_BUF_GROW_SIZE;
     while (new_cap < mem_buf_pos + needed) {
         new_cap += MEM_BUF_GROW_SIZE;
@@ -290,203 +243,118 @@ static int opus_encode_to_buffer(const int16_t* pcm, int samples) {
         }
     }
 
-    // Drain OGG pages from stream into mem_buf
+    // Drain OGG pages from stream into growing PSRAM buffer.
+    // Threshold flushes are handled by the caller in the main loop condition.
     while (ogg_stream_pageout(&ogg_stream, &ogg_page_buf) != 0) {
         int page_size = ogg_page_buf.header_len + ogg_page_buf.body_len;
-
-        if (!mem_to_sd) {
-            // SD fallback: flush if WiFi is down and buffer exceeds threshold,
-            // or if PSRAM can't grow further.
-            if (WiFi.status() != WL_CONNECTED && mem_buf_pos > SD_FLUSH_THRESHOLD) {
-                ESP_LOGW(TAG, "WiFi down, flushing %lu bytes to SD",
-                         (unsigned long)mem_buf_pos);
-                mem_flush_to_sd();
-            } else if (!mem_buf_grow(page_size)) {
-                ESP_LOGW(TAG, "mem_buf full, flushing to SD");
-                mem_flush_to_sd();
-            }
-
-            if (mem_to_sd) {
-                // Write directly to SD file
-                sdTake();
-                opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
-                opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
-                sdGive();
-            } else {
-                memcpy(mem_buf + mem_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
-                mem_buf_pos += ogg_page_buf.header_len;
-                memcpy(mem_buf + mem_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
-                mem_buf_pos += ogg_page_buf.body_len;
-            }
-        } else {
-            // Already flushed to SD — write directly
-            sdTake();
-            opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
-            opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
-            sdGive();
+        if (!mem_buf_grow(page_size)) {
+            ESP_LOGE(TAG, "mem_buf_grow failed — mem_buf_pos=%lu needed=%d",
+                     (unsigned long)mem_buf_pos, page_size);
         }
+        memcpy(mem_buf + mem_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
+        mem_buf_pos += ogg_page_buf.header_len;
+        memcpy(mem_buf + mem_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
+        mem_buf_pos += ogg_page_buf.body_len;
     }
 
     return remaining;
 }
 
-// ── Deferred file close — writer returns immediately after queuing upload ──
-static File pendingCloseFile;
-static bool hasPendingClose = false;
-
-static void closePendingFile() {
-    if (!hasPendingClose) return;
-    sdTake();
-    pendingCloseFile.close();
-    sdGive();
-    hasPendingClose = false;
-    ESP_LOGD(TAG, "Deferred file close completed");
-}
-
 static void opus_file_end() {
-    if (mem_to_sd) {
-        // SD fallback — write EOS to SD file, defer close
-        closePendingFile();
-
-        sdTake();
-        ogg_write_page(opus_file);
-
-        uint8_t eos_data = 0;
-        ogg_packet eos_op = {0};
-        eos_op.packet = &eos_data;
-        eos_op.bytes = 1;
-        eos_op.b_o_s = 0;
-        eos_op.e_o_s = 1;
-        eos_op.granulepos = opus_granulepos;
-        eos_op.packetno = opus_packetno;
-        ogg_stream_packetin(&ogg_stream, &eos_op);
-
-        if (ogg_stream_flush(&ogg_stream, &ogg_page_buf) != 0) {
-            opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
-            opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
-        }
-
-        opus_file.flush();
-        pendingCloseFile = opus_file;
-        hasPendingClose = true;
-        sdGive();
-
-        ESP_LOGD(TAG, "opus_file_end: SD fallback %lu bytes, granule=%lld",
-                 (unsigned long)pendingCloseFile.size(), (long long)opus_granulepos);
-    } else if (mem_buf_pos > 0) {
-        // Memory path — finalize EOS packet in buffer, no SD touch
-        uint8_t eos_data = 0;
-        ogg_packet eos_op = {0};
-        eos_op.packet = &eos_data;
-        eos_op.bytes = 1;
-        eos_op.b_o_s = 0;
-        eos_op.e_o_s = 1;
-        eos_op.granulepos = opus_granulepos;
-        eos_op.packetno = opus_packetno;
-        ogg_stream_packetin(&ogg_stream, &eos_op);
-
-        // Flush EOS page into mem_buf
-        while (ogg_stream_pageout(&ogg_stream, &ogg_page_buf) != 0) {
-            int page_size = ogg_page_buf.header_len + ogg_page_buf.body_len;
-            if (!mem_buf_grow(page_size)) {
-                // Fallback: flush to SD if can't grow
-                mem_flush_to_sd();
-                if (mem_to_sd) {
-                    sdTake();
-                    opus_file.write(ogg_page_buf.header, ogg_page_buf.header_len);
-                    opus_file.write(ogg_page_buf.body, ogg_page_buf.body_len);
-                    sdGive();
-                }
-            }
-            if (!mem_to_sd) {
-                memcpy(mem_buf + mem_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
-                mem_buf_pos += ogg_page_buf.header_len;
-                memcpy(mem_buf + mem_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
-                mem_buf_pos += ogg_page_buf.body_len;
-            }
-        }
-
-        ESP_LOGD(TAG, "opus_file_end: PSRAM %lu bytes, granule=%lld",
-                 (unsigned long)mem_buf_pos, (long long)opus_granulepos);
-    } else {
+    if (mem_buf_pos == 0) {
         ESP_LOGD(TAG, "opus_file_end: no data (short utterance)");
-    }
-}
-
-// ── Persist helper — get recording off device (server or SD) ─────────
-
-static void persistFile(const UploadRequest &req) {
-    // WiFi offline: flush to SD immediately
-    if (WiFi.status() != WL_CONNECTED) {
-        mem_flush_to_sd();   // idempotent guard (mem_to_sd checked inside)
-        free(req.mem_ptr);  // NULL = safe no-op
         return;
     }
 
-    // WiFi connected
-    bool ok = false;
-    if (!req.from_sd && req.mem_ptr) {
-        // Memory path — try server, fall back to SD on failure
-        ESP_LOGD(TAG, "persistFile: uploading from memory: %s (%luKB, utt=%lu chunk=%lu, voice=%lu-%lums)...",
-                 req.filename, (unsigned long)(req.mem_size / 1024),
-                 (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex,
-                 (unsigned long)req.start_ms, (unsigned long)req.end_ms);
-        ok = uploadFileFromMemory(req.mem_ptr, req.mem_size,
-                                 req.filename, req.utteranceId,
-                                 req.chunkIndex, req.isFinal, req.recorded_at,
-                                 req.start_ms, req.end_ms);
-        if (!ok) {
-            // Server down — flush to SD; autoUploadTask picks it up
-            ESP_LOGW(TAG, "persistFile: server error, flushing to SD for retry...");
-            mem_flush_to_sd();
+    // Finalize EOS packet into PSRAM buffer
+    uint8_t eos_data = 0;
+    ogg_packet eos_op = {0};
+    eos_op.packet = &eos_data;
+    eos_op.bytes = 1;
+    eos_op.b_o_s = 0;
+    eos_op.e_o_s = 1;
+    eos_op.granulepos = opus_granulepos;
+    eos_op.packetno = opus_packetno;
+    ogg_stream_packetin(&ogg_stream, &eos_op);
+
+    // Flush EOS page into mem_buf
+    while (ogg_stream_pageout(&ogg_stream, &ogg_page_buf) != 0) {
+        int page_size = ogg_page_buf.header_len + ogg_page_buf.body_len;
+        if (!mem_buf_grow(page_size)) {
+            // PSRAM exhausted — drop this segment rather than write past allocation
+            ESP_LOGE(TAG, "opus_file_end: PSRAM exhausted, discarding segment");
+            mem_buf_pos = 0;
+            return;
         }
-        free(req.mem_ptr);
-    } else {
-        // SD path — file already on SD, just upload
-        ESP_LOGD(TAG, "persistFile: uploading from SD: %s (utt=%lu chunk=%lu, voice=%lu-%lums)...",
-                 req.filename, (unsigned long)req.utteranceId, (unsigned long)req.chunkIndex,
-                 (unsigned long)req.start_ms, (unsigned long)req.end_ms);
-        ok = uploadFile(req.filename, req.utteranceId, req.chunkIndex, req.isFinal, req.recorded_at,
-                        req.start_ms, req.end_ms);
-        if (ok) {
-            sdTake();
-            SD.remove(req.filename);
-            sdGive();
-            ESP_LOGD(TAG, "persistFile: uploaded and deleted %s", req.filename);
-        }
-        if (req.from_sd) {
-            closePendingFile();
-        }
+        memcpy(mem_buf + mem_buf_pos, ogg_page_buf.header, ogg_page_buf.header_len);
+        mem_buf_pos += ogg_page_buf.header_len;
+        memcpy(mem_buf + mem_buf_pos, ogg_page_buf.body, ogg_page_buf.body_len);
+        mem_buf_pos += ogg_page_buf.body_len;
     }
-    if (!ok) {
-        ESP_LOGW(TAG, "persistFile: upload failed: %s", req.filename);
-    }
+
+    ESP_LOGD(TAG, "opus_file_end: PSRAM %lu bytes, granule=%lld",
+             (unsigned long)mem_buf_pos, (long long)opus_granulepos);
 }
 
-// ── Upload worker task — non-blocking upload from queue ────────────
+// ── Write current mem_buf to SD as a single file ─────────────────────
 
-static void uploadWorkerTask(void *pvParameters) {
-    UploadRequest req;
-    while (true) {
-        if (xQueueReceive(uploadQueue, &req, portMAX_DELAY) == pdTRUE) {
-            persistFile(req);
-        }
+// Write pre-encoded audio to SD — called by upload task on HTTP fallback.
+// Generates filename from epoch + segment. Caller owns the buffer.
+void write_file_to_sd_from_buf(uint8_t *mem_buf, uint32_t mem_buf_pos,
+                                time_t utterance_epoch, uint32_t segment) {
+    if (mem_buf_pos == 0 || sdMutex == NULL) return;
+
+    char sd_filename[64];
+    generateFilenameUtc(sd_filename, sizeof(sd_filename), utterance_epoch, segment, true);
+    char full_path[64];
+    snprintf(full_path, sizeof(full_path), "/lifelog/%s", sd_filename);
+
+    uint32_t t0 = millis();
+    sdTake();
+    ESP_LOGI(TAG, "write_file_to_sd_from_buf: %lu bytes to %s", (unsigned long)mem_buf_pos, full_path);
+    File f = SD.open(full_path, FILE_WRITE);
+    if (!f) {
+        sdGive();
+        ESP_LOGE(TAG, "write_file_to_sd_from_buf: failed to open %s", full_path);
+        return;
     }
-}
 
-// ── Writer init — creates upload queue, spawns upload task ─────────
+    uint32_t written = 0;
+    while (written < mem_buf_pos) {
+        uint32_t chunk = mem_buf_pos - written;
+        if (chunk > 65536) chunk = 65536;
+        f.write(mem_buf + written, chunk);
+        written += chunk;
+        vTaskDelay(pdMS_TO_TICKS(1));  // yield to avoid watchdog
+    }
+
+    f.flush();
+    f.close();
+    ESP_LOGI(TAG, "write_file_to_sd_from_buf: closed %s", full_path);
+    sdGive();
+
+    strcpy(lastSavedFile, full_path);
+    ESP_LOGI(TAG, "write_file_to_sd_from_buf: done %lu bytes in %lums",
+             (unsigned long)written, (unsigned long)(millis() - t0));
+
+    sdDirCacheAdd(full_path, utterance_epoch);
+}
 
 void writerInit() {
-    uploadQueue = xQueueCreate(8, sizeof(UploadRequest));
-    xTaskCreatePinnedToCore(uploadWorkerTask, "uploader", 16384, NULL, 1, &uploadTaskHandle, 1);
-    ESP_LOGD(TAG, "Upload task started (queue depth=8)");
-    startAutoUploadTask();
+    // Idempotent — safe to call multiple times (e.g., once before AFE init, once after)
+    if (getUploadQueueHandle() != NULL) return;  // already initialized
 
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
     opus_init();
 #endif
 
     // mem_buf allocated lazily in opus_init_stream() on first voice start
+
+    // Queue created here and registered with upload.cpp.
+    // uploadTask polls until this is set before processing any jobs.
+    QueueHandle_t q = xQueueCreate(3, sizeof(UploadRequest));
+    assert(q);
+    setUploadQueueHandle(q);
 }
 
 // ── Write task (reads PSRAM, writes SD, uploads) ──────────────────
@@ -497,6 +365,7 @@ void writerTask(void *pvParameters) {
     int16_t frame_buf[512];
     int frame_rem = 0;
     bool prev_recording = false;
+    uint32_t s_segment = 0;  // segment counter per utterance
 
     // Local PCM buffer for accumulating ring items — allocated in PSRAM.
     const int pcm_buf_capacity = RING_NUM_ITEMS * (RING_ITEM_BYTES / sizeof(int16_t));
@@ -504,7 +373,16 @@ void writerTask(void *pvParameters) {
     assert(pcm_buf);
 
     while (true) {
-        // ── Voice start: init OGG stream in memory (no SD file) ──
+        // Health log — once per second
+        static uint32_t lastHealthLogMs = 0;
+        uint32_t nowMs = millis();
+        if (recording && nowMs - lastHealthLogMs >= 1000) {
+            ESP_LOGI(TAG, "writer: healthy mem_buf_pos=%lu/%lu",
+                        (unsigned long)mem_buf_pos, (unsigned long)SD_FLUSH_THRESHOLD);
+            lastHealthLogMs = nowMs;
+        }
+
+        // ── Voice start detected ──────────────────────────────────────
         if (!prev_recording && recording) {
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
             opus_init_stream();
@@ -521,19 +399,20 @@ void writerTask(void *pvParameters) {
             strcpy(lastSavedFile, filename);
 #endif
             prev_recording = true;
+            s_segment = 0;
         }
 
-        // ── Voice end: close file or discard, prepare for next stream ──
-        if (prev_recording && !recording) {
-            ESP_LOGD(TAG, "writer: voice ended, finalizing");
+        // ── Voice end detected *OR* buffer full ───────────────────────
+        // Two independent flush triggers:
+        //   1. prev_recording && !recording  — utterance ended
+        //   2. recording && mem_buf_pos > SD_FLUSH_THRESHOLD — buffer full mid-utterance
+        if ((prev_recording && !recording) || (recording && mem_buf_pos > SD_FLUSH_THRESHOLD)) {
+            ESP_LOGI(TAG, "writer: flush block%s",
+                     (!recording) ? " (voice end)" : " (buffer threshold)");
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
-            // Drain any remaining ring items before finalizing.
-            // Bug fix: voice-end skipped the ring drain loop, stranding up to 64ms
-            // of audio that was still in the ring when silence was detected.
+            // Drain any remaining ring items before finalizing the segment
             int drain_count = 0;
             if (frame_rem > 0) {
-                // Carry over stale PCM remainder from previous drain (bug fix:
-                // frame_rem was never reset — up to 19.9ms of tail audio was lost).
                 memcpy(pcm_buf, frame_buf, frame_rem * sizeof(int16_t));
                 drain_count = frame_rem;
                 frame_rem = 0;
@@ -554,55 +433,53 @@ void writerTask(void *pvParameters) {
             if (drain_count > 0) {
                 opus_encode_to_buffer(pcm_buf, drain_count);
             }
-            opus_file_end();
 
-            // Requirement 1: flush to SD if WiFi is offline and data is in PSRAM
-            if (!mem_to_sd && mem_buf_pos > 0 && WiFi.status() != WL_CONNECTED) {
-                ESP_LOGW(TAG, "WiFi offline, flushing %lu bytes to SD", (unsigned long)mem_buf_pos);
-                mem_flush_to_sd();
+            opus_file_end();  // flush EOS page into mem_buf
+
+            // Async persist: copy buffer, enqueue job, reinit stream immediately.
+            // Upload task owns the copy — uploads, falls back to SD on failure, frees it.
+            uint32_t this_chunk = chunkIndex;
+            bool this_is_final = !recording;
+            uint32_t this_end_ms = millis();
+
+            uint32_t copy_size = mem_buf_pos;  // save before reset
+            uint8_t *copy = (uint8_t *)ps_malloc(copy_size);
+            assert(copy);
+            memcpy(copy, mem_buf, copy_size);
+
+            mem_buf_pos = 0;  // reset writer buffer before reinit
+            opus_init_stream();  // fresh buffer for continuation
+
+            UploadRequest req = {};
+            req.mem_ptr = copy;
+            req.mem_size = copy_size;
+            req.utteranceId = utteranceId;
+            req.chunkIndex = this_chunk;
+            req.isFinal = this_is_final;
+            req.recorded_at = s_utterance_start_epoch;
+            req.start_ms = listenStartMs;
+            req.end_ms = this_end_ms;
+
+            if (xQueueSend(getUploadQueueHandle(), &req, 0) != pdTRUE) {
+                ESP_LOGW(TAG, "writer: upload queue full, dropping segment %lu", (unsigned long)this_chunk);
+                free(copy);  // drop if queue is full
             }
+
+            chunkIndex++;   // each segment gets its own chunkIndex
+            s_segment++;
+
+            // Reinitialize Opus stream for the continuation of this utterance.
+            // prev_recording is still true (voice hasn't ended), so the voice-start
+            // block above won't fire — we must reinit here instead.
+            opus_init_stream();
 #endif
-            prev_recording = false;
-
-            bool has_data = mem_to_sd ? (strlen(sd_filename) > 0) : (mem_buf_pos > 0);
-            if (has_data) {
-                UploadRequest req;
-                memset(&req, 0, sizeof(req));
-                if (mem_to_sd) {
-                    // SD fallback path
-                    strncpy(req.filename, sd_filename, sizeof(req.filename) - 1);
-                    req.from_sd = true;
-                } else {
-                    // Memory path — hand off mem_buf to upload task
-                    strncpy(req.filename, lastSavedFile, sizeof(req.filename) - 1);
-                    req.from_sd = false;
-                }
-                // Always transfer mem_buf ownership to the request for cleanup in upload_if_connected
-                req.mem_ptr = mem_buf;
-                req.mem_size = mem_buf_pos;
-                mem_buf = NULL;
-                mem_buf_pos = 0;
-                mem_buf_capacity = 0;
-                req.filename[sizeof(req.filename) - 1] = '\0';
-                req.utteranceId = utteranceId;
-                req.chunkIndex = chunkIndex;
-                req.isFinal = isFinal;
-                // Requirement 3: correct recorded_at to UTC epoch
-                req.recorded_at = time(nullptr) - gmtOffset;
-                req.start_ms = listenStartMs;   // system uptime ms at voice start
-                req.end_ms = millis();          // system uptime ms at voice end
-                chunkIndex++;
-                if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
-                    ESP_LOGW(TAG, "Upload queue full (%lu/%d), skipping %s",
-                             (unsigned long)uxQueueMessagesWaiting(uploadQueue), 8, req.filename);
-                    // Free memory if queue is full
-                    if (!req.from_sd && req.mem_ptr) free(req.mem_ptr);
-                }
-            } else {
-                ESP_LOGI(TAG, "writer: no data to upload (short utterance)");
+            // Reset prev_recording only on true voice end (not buffer-threshold flush)
+            if (!recording) {
+                prev_recording = false;
             }
-        } else {
-            // ── Drain ring buffer into local PCM buffer ──
+        }
+        // ── Normal audio drain ────────────────────────────────────────
+        else {
             int pcm_count = 0;
             // Carry over remainder from previous drain
             if (frame_rem > 0) {
@@ -618,14 +495,14 @@ void writerTask(void *pvParameters) {
                 int samples = itemSize / sizeof(int16_t);
                 if (pcm_count + samples > pcm_buf_capacity) {
                     vRingbufferReturnItem(audioRingBuf, item);
-                    break;  // pcm_buf full — process what we have
+                    break;
                 }
                 memcpy(pcm_buf + pcm_count, item, itemSize);
                 pcm_count += samples;
                 vRingbufferReturnItem(audioRingBuf, item);
             }
 
-            // Fill level for dashboard
+            // Warning: AFE is outrunning the writer — check BEFORE drain
             UBaseType_t uxItemsWaiting = 0;
             vRingbufferGetInfo(audioRingBuf, NULL, NULL, NULL, NULL, &uxItemsWaiting);
             uint32_t fill = (uint32_t)uxItemsWaiting;
@@ -634,13 +511,14 @@ void writerTask(void *pvParameters) {
                 uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
                 if (now - lastFillWarnMs >= 2000) {
                     ESP_LOGW(TAG, "writer: ring fill %lu/%d (%lu%%)",
-                             (unsigned long)fill, RING_NUM_ITEMS, (unsigned long)(fill * 100 / RING_NUM_ITEMS));
+                             (unsigned long)fill, RING_NUM_ITEMS,
+                             (unsigned long)(fill * 100 / RING_NUM_ITEMS));
                     lastFillWarnMs = now;
                 }
             }
 
             if (pcm_count == 0) {
-                // Ring empty — block until notification or 50ms timeout.
+                // Ring empty — block until notification or 50ms timeout
                 ulTaskNotifyTake(pdFALSE, pdMS_TO_TICKS(50));
             }
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
@@ -652,24 +530,19 @@ void writerTask(void *pvParameters) {
                 int unconsumed = 0;
 #ifdef AUDIO_FORMAT_OPUS_ACTIVE
                 totalSamplesWritten += pcm_count - frame_rem;
-
-                // Encode frames, returns unconsumed count
                 unconsumed = opus_encode_to_buffer(pcm_buf, pcm_count);
                 if (unconsumed > 0) {
-                    // Save remainder for next iteration (must be < opus_frame_size_samples)
                     memmove(frame_buf, pcm_buf + (pcm_count - unconsumed),
                             unconsumed * sizeof(int16_t));
                 }
                 frame_rem = unconsumed;
 #else
-                // WAV fallback: write file on voice end (handled below)
                 totalSamplesWritten += pcm_count;
 #endif
             }
         }
 
         // Always yield — IDLE task needs CPU to feed the task watchdog.
-        // 1ms is negligible vs 32ms chunk interval.
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
