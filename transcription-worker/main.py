@@ -503,8 +503,7 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
             complete["segments"] = [
                 s
                 for s in complete.get("segments", [])
-                if s.get("no_speech_prob", 0) <= 0.8
-                and s.get("avg_logprob", 0) > -1.0
+                if s.get("no_speech_prob", 0) <= 0.8 and s.get("avg_logprob", 0) > -1.0
             ]
             complete["utterance_spans"] = [
                 {
