@@ -371,6 +371,16 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                     if s.get("text", "").strip()
                 )
 
+                # Aggregate quality metrics from raw segments for logging
+                raw_nsp = [s.get("no_speech_prob", 0) for s in segments]
+                raw_alp = [s.get("avg_logprob", 0) for s in segments]
+                avg_no_speech_prob = (
+                    round(sum(raw_nsp) / len(raw_nsp), 4) if raw_nsp else 0.0
+                )
+                avg_avg_logprob = (
+                    round(sum(raw_alp) / len(raw_alp), 4) if raw_alp else 0.0
+                )
+
                 # On first successful transcription, cache detected language for session
                 if session_language is None and segments:
                     detected = None
@@ -405,6 +415,8 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                     clipping_pct=clipping_pct,
                     segment_count=len(filtered_segments),
                     raw_segment_count=len(segments),
+                    avg_no_speech_prob=avg_no_speech_prob,
+                    avg_avg_logprob=avg_avg_logprob,
                     transcript=full_text[:500],
                     language=session_language or "auto",
                     elapsed_s=round(elapsed_s, 3),
