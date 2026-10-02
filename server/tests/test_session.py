@@ -632,6 +632,111 @@ class TestHourlyReprocessing:
         assert "audio" not in saved[0]
         mock_db.mark_session_processed.assert_awaited_once_with(1)
 
+    @pytest.mark.asyncio
+    async def test_finalize_with_topic_splits_deletes_old_recordings(self):
+        """When topic splits are detected, old session recordings are deleted first."""
+        from lifelog.worker import _finalize_completed_sessions
+
+        session = {
+            "id": 1,
+            "user_id": 1,
+            "started_at": datetime(2026, 9, 28, 10, 0, 0, tzinfo=UTC),
+            "ended_at": datetime(2026, 9, 28, 10, 30, 0, tzinfo=UTC),
+            "retry_count": 0,
+        }
+        jobs = [
+            {
+                "id": 10,
+                "session_id": 1,
+                "job_type": "full",
+                "status": "completed",
+                "window_start": datetime(2026, 9, 28, 10, 0, 0, tzinfo=UTC),
+                "window_end": datetime(2026, 9, 28, 10, 30, 0, tzinfo=UTC),
+                "result": {
+                    "segments": [],
+                    "speaker_map": {},
+                    "speaker_segments": [
+                        {
+                            "speaker": "SPEAKER_00",
+                            "start": 0,
+                            "end": 5,
+                            "text": "first topic here",
+                            "audio": "YQ==",
+                        },
+                        {
+                            "speaker": "SPEAKER_01",
+                            "start": 5,
+                            "end": 10,
+                            "text": "second topic here",
+                            "audio": "YQ==",
+                        },
+                    ],
+                },
+            }
+        ]
+
+        with (
+            patch("lifelog.worker.db") as mock_db,
+            patch("lifelog.ingest.db", mock_db),
+            patch("lifelog.ingest.ingest_recording", new_callable=AsyncMock),
+            patch(
+                "lifelog.worker.get_user_secret",
+                new_callable=AsyncMock,
+                return_value={"encryption_secret": "s", "key_salt": b"salt"},
+            ),
+            patch(
+                "lifelog.worker.audio_crypto.encrypt_audio", return_value="segment.enc"
+            ),
+            patch(
+                "lifelog.worker.summarize_partition",
+                return_value={
+                    "category": "personal",
+                    "title": "Test",
+                    "summary": "s",
+                    "long_summary": "Longer summary",
+                    "decisions": [],
+                    "todos": [],
+                    "calendar": [],
+                    "notes": [],
+                },
+            ),
+            # Two splits: one at 5s (between speakers), one at 7s (within SPEAKER_01)
+            patch(
+                "lifelog.worker.detect_splits",
+                return_value={
+                    "topic_splits": [
+                        {"at_seconds": 5.0, "reason": "topic change"},
+                        {"at_seconds": 7.0, "reason": "another topic"},
+                    ]
+                },
+            ),
+            patch("lifelog.worker._reidentify_recording", new_callable=AsyncMock),
+            patch("lifelog.worker._daily_reprocess_user", new_callable=AsyncMock),
+        ):
+            mock_db.get_sessions_for_reprocessing = AsyncMock(return_value=[session])
+            mock_db.get_transcription_jobs = AsyncMock(return_value=jobs)
+            mock_db.get_recording_audio_filenames = AsyncMock(return_value=["full.enc"])
+            mock_db.get_recording = AsyncMock(return_value=None)
+            mock_db.save_session_recording = AsyncMock(return_value=99)
+            mock_db.save_partition_recording = AsyncMock(return_value=100)
+            mock_db.mark_session_processed = AsyncMock()
+            mock_db.get_unknown_speakers = AsyncMock(return_value=[])
+            mock_db.get_user_settings = AsyncMock(
+                return_value={"language": "auto", "llm_context": ""}
+            )
+            mock_db.check_and_end_inactive_session = AsyncMock(return_value=False)
+            mock_db.delete_session_recordings = AsyncMock(return_value=1)
+            await _finalize_completed_sessions()
+
+        # delete_session_recordings must be called BEFORE save_session_recording
+        # when topic splits are detected
+        mock_db.delete_session_recordings.assert_awaited_once_with(1)
+        # 2 splits create 2 partitions: part_idx=0 (session-level) + part_idx=1 (split)
+        # Note: segment at start=5 lands in partition 0 (boundary is inclusive: >=5.0),
+        # so only 1 partition is created beyond the session-level one.
+        assert mock_db.save_session_recording.call_count == 1
+        assert mock_db.save_partition_recording.call_count == 1
+
 
 class TestDailyReprocessing:
     @pytest.mark.asyncio

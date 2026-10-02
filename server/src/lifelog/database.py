@@ -295,6 +295,19 @@ async def delete_recording(user_id: int, recording_id: int) -> bool:
         return result == "DELETE 1"
 
 
+async def delete_session_recordings(session_id: int) -> int:
+    """Delete all recordings for a session. Returns count of deleted rows."""
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM recordings WHERE session_id = $1",
+            session_id,
+        )
+        # result is like "DELETE 5"
+        if result == "DELETE 0":
+            return 0
+        return int(result.split()[-1])
+
+
 async def get_active_session_recording(user_id: int) -> dict | None:
     """Build a recording-like dict from the active session's utterances.
 

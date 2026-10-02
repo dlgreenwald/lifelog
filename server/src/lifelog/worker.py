@@ -56,21 +56,18 @@ _last_cleanup: float = 0.0
 
 
 async def _session_worker(session_id: int) -> None:
-    """Continuously drain the session's utterance queue, feeding audio to the
-    WebSocket as items arrive, and polling for transcript events in parallel.
+    """Process session utterances one at a time.
 
-    Design principles:
-    - Never block the feed loop waiting for transcript results.  Feed the next
-      audio item as soon as it is in the queue.
-    - Poll for events from the WebSocket in a tight non-blocking loop so they
-      are applied as they arrive.
-    - When the queue is empty, drain any remaining events then exit.  The
-      session is closed by _drain_session_queue() / process_utterance gap
-      detection — not by this worker.
+    Serialized design: dequeue one item → feed audio → wait for transcription
+    result → create DB row → repeat.  This guarantees the utt_id at result time
+    is always the correct one for that audio.
 
-    Each queue item is a dict:
-        user_id, utterance_id, audio_opus (bytes), utterance_timestamp (datetime),
-        language (str|None), done_event (asyncio.Event)
+    Error handling:
+    - Feed error: reconnect and retry once; if it fails again, fall back to a
+      quick job and stop the instant pipeline for this session.
+    - Transcription timeout (30s): fall back to a quick job, keep processing.
+    - Queue empty for 300s: close the WebSocket and exit.  A new worker starts
+      when the next utterance arrives.
     """
     queue = _session_queues.get(session_id)
     if queue is None:
@@ -79,26 +76,28 @@ async def _session_worker(session_id: int) -> None:
     logger.info("session_worker_started", session_id=session_id)
 
     try:
-        # Open (or reuse) the session WebSocket.
         await instant_open_session(session_id)
     except Exception:
         logger.exception("session_worker_ws_open_error", session_id=session_id)
         return
 
+    transcription_timeout = 30.0
+    idle_timeout = 300.0
+
     while True:
-        # ------------------------------------------------------------------
-        # 1. Wait for the next item in the queue.
-        # ------------------------------------------------------------------
+        # 1. Wait for next item (with idle timeout so we don't block forever).
         try:
-            item = await queue.get()
-        except asyncio.CancelledError:
-            logger.info("session_worker_cancelled", session_id=session_id)
+            item = await asyncio.wait_for(queue.get(), timeout=idle_timeout)
+        except TimeoutError:
+            # Queue empty for 300s — close and exit.
+            logger.info("session_worker_idle_timeout", session_id=session_id)
             break
 
         utt_id = item["utterance_id"]
         audio_opus = item["audio_opus"]
         utterance_time = item["utterance_timestamp"]
         language = item.get("language", "auto")
+        audio_fn = item.get("audio_filename", "")
         done_event = item["done_event"]
 
         logger.info(
@@ -125,20 +124,36 @@ async def _session_worker(session_id: int) -> None:
             queue.task_done()
             continue
 
-        # ------------------------------------------------------------------
-        # 2. Feed audio to WebSocket immediately — do NOT wait for transcript.
-        # ------------------------------------------------------------------
+        # 2. Feed audio.  On failure, reconnect and retry once.
+        feed_error = False
         try:
             await instant_feed_audio(session_id, audio_opus)
-        except Exception:
-            logger.exception(
-                "session_worker_feed_error",
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "session_worker_feed_error_retry",
                 session_id=session_id,
                 utterance_id=utt_id,
             )
+            feed_error = True
+
+        if feed_error:
+            # Reconnect and retry once.
+            try:
+                await instant_close_session(session_id)
+                await instant_open_session(session_id)
+                await instant_feed_audio(session_id, audio_opus)
+                feed_error = False
+            except Exception:
+                logger.exception(
+                    "session_worker_feed_error_giving_up",
+                    session_id=session_id,
+                    utterance_id=utt_id,
+                )
+
+        if feed_error:
+            # Fall back to quick job and stop the instant pipeline.
             done_event.set()
             queue.task_done()
-            # Fall back to quick job and stop this session's instant pipeline.
             try:
                 await db.create_session_quick_job(
                     session_id,
@@ -158,155 +173,75 @@ async def _session_worker(session_id: int) -> None:
             _drain_session_queue(session_id)
             return
 
-        # Default to silent until proven otherwise.
-        item["is_silent"] = True
+        # 3. Wait for transcription result (30s timeout).
+        event = await instant_wait_for_event(session_id, timeout=transcription_timeout)
 
-        # ------------------------------------------------------------------
-        # 3. Drain all queued transcript events for this utterance.
-        #    Non-blocking poll — do not wait for events before feeding the
-        #    next audio item.
-        # ------------------------------------------------------------------
-        while True:
-            event = await instant_wait_for_event(session_id, timeout=0.5)
-            if event is None:
-                # No event waiting; check if the queue has more items.
-                if queue.empty():
-                    # Queue is drained — wait up to session_gap_minutes for the next
-                    # utterance before closing the WebSocket.  This keeps the socket
-                    # alive across normal inter-utterance gaps (VAD brief pauses).
-                    # If the timeout fires, the queue is stale; the next
-                    # process_utterance will create a fresh queue and a new worker.
-                    idle_timeout = settings.session_gap_minutes * 60
-                    logger.info(
-                        "session_worker_idle_waiting",
-                        session_id=session_id,
-                        idle_timeout_s=idle_timeout,
-                    )
-                    try:
-                        item = await asyncio.wait_for(queue.get(), timeout=idle_timeout)
-                    except TimeoutError:
-                        # Still empty — close the socket and exit.  A new worker
-                        # will start on the next utterance.
-                        logger.info(
-                            "session_worker_idle_timeout",
-                            session_id=session_id,
-                        )
-                        await instant_close_session(session_id)
-                        return
-                    # Got a new item — process it immediately.
-                    # Re-loop to feed this item without calling queue.get() again.
-                    done_event = item["done_event"]
-                    utt_id = item["utterance_id"]
-                    audio_opus = item["audio_opus"]
-                    utterance_time = item["utterance_timestamp"]
-                    language = item.get("language", "auto")
-                    logger.info(
-                        "session_worker_dequeue",
-                        session_id=session_id,
-                        utterance_id=utt_id,
-                        audio_bytes=len(audio_opus),
-                    )
-                    hwm = _session_high_water.get(session_id, 0)
-                    if utt_id <= hwm:
-                        logger.warning(
-                            "utterance_skipped_below_high_water",
-                            session_id=session_id,
-                            utterance_id=utt_id,
-                            high_water=hwm,
-                        )
-                        done_event.set()
-                        queue.task_done()
-                        continue
-                    if instant_uses_fallback(session_id):
-                        done_event.set()
-                        queue.task_done()
-                        continue
-                    try:
-                        await instant_feed_audio(session_id, audio_opus)
-                    except Exception:
-                        logger.exception(
-                            "session_worker_feed_error",
-                            session_id=session_id,
-                            utterance_id=utt_id,
-                        )
-                        done_event.set()
-                        queue.task_done()
-                        try:
-                            await db.create_session_quick_job(
-                                session_id,
-                                [utt_id],
-                                utterance_time,
-                                utterance_time,
-                                language=language,
-                            )
-                            instant_mark_fallback(session_id)
-                        except Exception:
-                            logger.exception(
-                                "session_worker_fallback_error",
-                                session_id=session_id,
-                                utterance_id=utt_id,
-                            )
-                        await instant_close_session(session_id)
-                        _drain_session_queue(session_id)
-                        return
-                    item["is_silent"] = True
-                    continue  # re-enter the event-polling loop for this item
-                # More items waiting — break to feed the next audio immediately.
-                done_event.set()
-                queue.task_done()
-                break
-
-            # Apply the event.
-            if event.get("is_silent"):
-                item["is_silent"] = True
-            else:
-                item["is_silent"] = False
-                if event.get("type") == "segment":
-                    segments = event.get("segments", [])
-                    # Append the utterance to the session if not already done.
-                    # process_utterance is fire-and-forget, so the worker owns the
-                    # append here.  The audio_filename is stored on the item dict
-                    # by _submit_to_session_queue so we can retrieve it.
-                    audio_fn = item.get("audio_filename", "")
-                    try:
-                        await db.append_session_utterance(
-                            session_id,
-                            utt_id,
-                            audio_fn,
-                            {},
-                            [],
-                            utterance_timestamp=utterance_time,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "session_worker_append_error",
-                            session_id=session_id,
-                            utterance_id=utt_id,
-                        )
-                    if segments:
-                        try:
-                            await db.update_session_utterance_transcript(
-                                session_id,
-                                utt_id,
-                                {"segments": segments},
-                            )
-                        except Exception:
-                            logger.exception(
-                                "session_worker_apply_error",
-                                session_id=session_id,
-                                utterance_id=utt_id,
-                            )
-                _session_high_water[session_id] = max(
-                    _session_high_water.get(session_id, 0), utt_id
+        # 4. Create DB row with the transcript (or empty if timeout/silent).
+        segments: list[dict] = []
+        if event is None:
+            logger.warning(
+                "session_worker_transcribe_timeout",
+                session_id=session_id,
+                utterance_id=utt_id,
+            )
+            # Fall back to quick job for this utterance.
+            try:
+                await db.create_session_quick_job(
+                    session_id,
+                    [utt_id],
+                    utterance_time,
+                    utterance_time,
+                    language=language,
                 )
-                logger.info(
-                    "utterance_transcribed_in_session",
+            except Exception:
+                logger.exception(
+                    "session_worker_fallback_error",
                     session_id=session_id,
                     utterance_id=utt_id,
-                    high_water=_session_high_water[session_id],
                 )
+        elif event.get("is_silent"):
+            # Short/rejected chunk — row gets empty segments.
+            pass
+        else:
+            if event.get("type") == "segment":
+                segments = event.get("segments", [])
 
-        # Loop back to step 1 to feed the next queued audio immediately.
+        try:
+            await db.append_session_utterance(
+                session_id,
+                utt_id,
+                audio_fn,
+                {"segments": segments},
+                [],
+                utterance_timestamp=utterance_time,
+            )
+            logger.info(
+                "session_worker_row_inserted",
+                session_id=session_id,
+                utterance_id=utt_id,
+                segment_count=len(segments),
+            )
+        except Exception:
+            logger.exception(
+                "session_worker_append_error",
+                session_id=session_id,
+                utterance_id=utt_id,
+            )
+
+        _session_high_water[session_id] = max(
+            _session_high_water.get(session_id, 0), utt_id
+        )
+        logger.info(
+            "utterance_transcribed_in_session",
+            session_id=session_id,
+            utterance_id=utt_id,
+            high_water=_session_high_water[session_id],
+        )
+
+        done_event.set()
+        queue.task_done()
+
+    await instant_close_session(session_id)
 
 
 def _submit_to_session_queue(
@@ -1025,18 +960,6 @@ def _normalise_summary(result: dict) -> dict:
     return result
 
 
-def _filter_low_quality_segments(segments: list[dict]) -> list[dict]:
-    """Drop Whisper segments with low confidence (noise, silence, or overlap).
-
-    Drops segments where ``no_speech_prob > 0.8`` or ``avg_logprob < -1.0``.
-    """
-    return [
-        seg
-        for seg in segments
-        if seg.get("no_speech_prob", 0) <= 0.8 and seg.get("avg_logprob", 0) > -1.0
-    ]
-
-
 def _apply_topic_splits(
     flat_segments: list[dict], topic_splits: list[dict]
 ) -> list[list[dict]]:
@@ -1371,18 +1294,8 @@ async def _finalize_completed_sessions() -> None:
                 await db.mark_session_processed(session["id"])
                 continue
 
-            # ── Audio quality filter: drop Whisper's low-confidence segments ──
-            clean_segments = _filter_low_quality_segments(speaker_segments)
-            if not clean_segments:
-                logger.warning(
-                    "session_all_segments_low_quality",
-                    session_id=session["id"],
-                )
-                await db.mark_session_processed(session["id"])
-                continue
-
             # ── Pass 1: detect topic splits in the full conversation ──
-            all_persisted = _persist_partition_segments(clean_segments, user)
+            all_persisted = _persist_partition_segments(speaker_segments, user)
             all_named = _named_from_persisted(all_persisted)
             splits_result = detect_splits(all_named, llm_context=llm_context)
             topic_splits = splits_result.get("topic_splits", [])
@@ -1395,7 +1308,7 @@ async def _finalize_completed_sessions() -> None:
             # ── Build final partitions: topic splits → sub-partitions ──
             if topic_splits:
                 # Apply LLM-detected topic boundaries
-                final_partitions = _apply_topic_splits(clean_segments, topic_splits)
+                final_partitions = _apply_topic_splits(speaker_segments, topic_splits)
                 logger.info(
                     "topic_splits_applied",
                     session_id=session["id"],
@@ -1403,7 +1316,7 @@ async def _finalize_completed_sessions() -> None:
                 )
             else:
                 # Fall back to gap-based partitions
-                final_partitions = _partition_segments(clean_segments)
+                final_partitions = _partition_segments(speaker_segments)
                 logger.info(
                     "gap_partitions_used",
                     session_id=session["id"],
@@ -1432,6 +1345,18 @@ async def _finalize_completed_sessions() -> None:
                         logger.warning(
                             "decisions_save_failed", recording_id=recording_id
                         )
+
+            # If we're splitting, delete any existing recordings for this session first.
+            # This replaces the old session-level (partition_index=-1) recording with
+            # fresh split recordings rather than leaving a stale partial record.
+            if topic_splits:
+                deleted = await db.delete_session_recordings(session["id"])
+                logger.info(
+                    "split_recordings_replaced",
+                    session_id=session["id"],
+                    deleted_count=deleted,
+                    new_partition_count=len(final_partitions),
+                )
 
             all_recording_ids: list[int] = []
             for part_idx, partition in enumerate(final_partitions):

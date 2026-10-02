@@ -121,6 +121,13 @@ e2e/voices/
 .vscode/launch.json
 .vscode/ipch/
 
+# CMake backend outputs (when using platformio run --environment with CMake)
+firmware-ota/CMakeLists.txt
+firmware-ota/dependencies.lock
+firmware-ota/managed_components/
+firmware-ota/sdkconfig.*
+firmware-ota/src/CMakeLists.txt
+
 # ---------- Logs ----------
 *.log
 logs/
