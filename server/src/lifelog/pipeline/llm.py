@@ -19,23 +19,229 @@ client = OpenAI(
 
 SPLIT_PROMPT = """\
 You are a life journal assistant analyzing a conversation transcript.
+The transcript may be any kind of conversation: a work meeting, a casual
+chat between friends or family, a phone call, a chance encounter. Treat
+all of these equally.
 
-Your task is to detect genuine topic shifts — conversational boundaries where \
-the discussion moves to a substantially different subject, not mere tangents \
-that return to the original thread.
+CONTEXT: The system has already split the recording wherever there was a
+5-minute silence. Your job is to find the remaining boundaries: cases where
+one conversation ENDED and another BEGAN back-to-back, with little or no
+gap — for example, someone wrapping up one conversation and starting
+another within minutes, or a structured conversation beginning right after
+a stretch of ambient noise, or back-to-back meetings changing rooms. When
+audio quality changes at a boundary (new room, new microphone placement),
+the transcription there may be poor. Occasionally a transcript contains
+several such back-to-back conversations in sequence. That is legitimate
+and you should detect every genuine boundary — but it is uncommon, so
+each boundary you propose must stand on its own strong evidence.
 
-When evaluating whether to split at a point, consider:
-- A greeting or introduction followed by a topic change → genuine split
-- A question answered and then the original topic continues → no split
-- A clear, sustained topic change that occupies the rest of the conversation \
-  → genuine split
-- A brief aside that returns to the prior topic → no split
+Your default is: NO SPLIT. A single conversation naturally covers many
+topics, includes tangents, welcomes late arrivals, and loses people along
+the way. Topic changes, asides, and participant churn within an ongoing
+conversation are NOT boundaries.
+
+A split is justified ONLY where one conversation ENDS and another BEGINS
+back-to-back: a CLOSURE immediately followed by an OPENING, close together.
+Closure and opening can be signaled verbally or through the participants
+themselves:
+
+CLOSURE signals (any register — formal or casual):
+- Goodbyes, farewells, sign-offs: "Bye.", "great meeting everyone",
+  "alright, I'll let you go", "love you, bye", "thanks for taking the
+  time", "Thanks, bye-bye"
+- Wrap-up language: "so to summarize...", "that's all I had", "well, it
+  was great catching up", "I'll take it bi-weekly. Thank you.",
+  "Appreciate it."
+- An explicit ending of the interaction itself, not just of one topic
+- A LARGE FRACTION of participants leaving at once (e.g., a group of ten
+  dwindles to a pair), which effectively ends the prior conversation even
+  if no one says goodbye
+
+PURPOSE COMPLETION: A conversation with a transactional goal (scheduling
+an appointment, ordering, asking an office a question) ends when the goal
+is achieved. Scheduling language followed by a sign-off ("that works",
+"Thursday at 10:30 is a little safer", "see you then", "Thanks, bye-bye")
+is a COMPLETED conversation — a closure — even though it may be brief.
+Do not merge a completed transactional call into the conversation that
+follows it.
+
+ONE-SIDED PHONE CALLS: Some speech is one side of a phone call: one
+speaker, scheduling or logistics language (making appointments, agreeing
+on times, "Thursday at 10", "that works"), pleasantries ("How are you?"
+/ "Good"), and a call sign-off ("Thanks, bye-bye", "Okay, thanks, bye").
+This IS a structured conversation, and its sign-off is a valid CLOSURE.
+When it ends and a different conversation (e.g., a meeting with multiple
+participants and a work topic) begins — even immediately, and even
+without greetings — that is a boundary.
+
+OPENING signals (any register):
+- Fresh greetings or introductions: "hi everyone, thanks for joining",
+  "hey! how've you been?", "nice to meet you"
+- Audio/connection checks at a start: "Good morning", "Can you not hear me?"
+- A short silence gap between the closure and the opening
+- A largely different set of participants
+- A topic introduced from scratch that shares nothing with the previous
+  conversation and is never tied back to it
+
+COLD MEETING STARTS: Not every meeting opens with greetings. When someone
+joins late, a meeting starts mid-stream — no hellos, just business. Treat
+the following as valid OPENING signals even without any greeting:
+- Multiple new speakers participating in a coherent discussion of shared
+  work (references to colleagues by name, "let me give a summary",
+  agenda-like structure)
+- Meta-conversation about the meeting itself (jokes about who's in the
+  meeting, complaints about the schedule, "is this just a standard, like,
+  there are too many Davids in a meeting?")
+- A sudden, full change in conversational register and participant set
+  (e.g., a one-sided phone call ending and a multi-party work discussion
+  starting seconds later)
+
+A CLOSURE (call sign-off, goodbyes) followed by a COLD START — different
+participants, different register, wholly unrelated topic — is a boundary,
+even with no gap and no greetings.
+
+GARBLED OR LOW-QUALITY OPENINGS: The first moments of a new conversation
+are often badly transcribed — room or microphone changes, cross-talk,
+distance from the mic. Text may appear as disconnected fragments, nonsense
+phrases, or fragments with no coherent topic ("appears that the answer is
+clear.", "A lot is happening.", "Fair point.").
+
+Treat unreadable text as NEUTRAL evidence — neither an opening signal nor
+a reason to withhold a split. Do NOT classify a garbled stretch as ambient
+noise when it immediately follows a clear closure and a gap. Instead, look
+PAST the garbled stretch to where the transcript stabilizes: if coherent
+speech resumes with a different topic and largely different participants
+than the conversation that closed, that is a boundary — split at the start
+of the garbled stretch (or the first segment after the gap), even though
+no readable opening signal exists.
+
+When the text immediately after a gap is garbled, evaluate the topic of
+the conversation as it appears over the following few minutes, not the
+first few sentences.
+
+PARTICIPANT CHANGE — evaluate it proportionally and in combination with
+the topic:
+- What matters is the fraction of speakers replaced, not the raw number.
+  One person joining a two-person conversation is a major change; one
+  person joining a ten-person conversation is not.
+- Participant change is evidence of a boundary ONLY when the topic also
+  changes with it. A new person joining and the existing topic continuing
+  = someone joined the conversation; no split. Major participant turnover
+  accompanied by a wholly unrelated topic = a new conversation; split.
+- A mass departure with a few people remaining can be a closure: if the
+  remaining people then start a fresh topic, that is a boundary.
+- When the text at a boundary is garbled, compare the participant sets
+  on either side of the garbled stretch, not within it.
+
+A closure WITHOUT an opening (people say goodbye, then keep talking) is
+not a split. An opening WITHOUT a closure (a new person joins an ongoing
+discussion, or someone greets a latecomer) is not a split — EXCEPT where
+an opening sequence follows ambient noise (see DENSITY MARKERS), or a
+cold start follows a completed one-sided call or a clear closure. You
+need the sequence: ending → new beginning.
+
+Conversational flow within one conversation is NOT a boundary: people
+drift between topics, greet each other again after distractions ("hey,
+you're back!"), say goodbye to one person while continuing with others,
+or move to the next agenda item ("There's something I'm working on right
+now...", "So the big thing here is...", "Then let's change gears",
+"Contract auto copy is moving along..."). A new proposal, a pivot to a
+different workstream, or several subjects within one sitting are all
+still one conversation — even when the new topic occupies the rest of
+the conversation.
+
+DENSITY MARKERS: The transcript contains computed speech-density markers
+at each significant pause, e.g.:
+[gap: 18 min 29 sec | speech before: sparse — isolated fragments | speech
+after: dense — sustained conversation | elapsed: young conversation]
+
+These describe the computed share of time containing speech in the 5
+minutes on each side of the gap (the gap itself excluded). Use them:
+
+- Sparse on both sides of a gap = ambient noise: overheard fragments, not
+  a conversation. Do not split inside noise, and do not treat noise
+  ending as a conversation boundary.
+- Sparse before, dense after a gap = a structured conversation is
+  BEGINNING (e.g., a meeting starting). This IS a boundary candidate:
+  split at the opening, and confirm the opening signals in the text
+  (greetings, introductions, audio checks like "Can you not hear me?").
+  Do NOT require closure signals before it — ambient noise has no
+  goodbye to give.
+- Dense before and after a gap = the same conversation with a pause. Do
+  not split without strong closure AND opening evidence (farewells
+  followed by greetings AND a wholly unrelated topic).
+- Dense before, gap, dense after, but the text at the seam is garbled or
+  fragmentary = likely a physical change of conversation (new room or
+  mic placement). This favors a split; verify with the post-garble topic
+  and participants.
+- Dense before, none after = the conversation ended there (likely already
+  handled by the upstream silence splitter).
+- "insufficient data" or "no prior speech": do not draw conclusions from
+  that side; rely on the other side and the text.
+
+Density is supporting evidence only — it lowers or raises the bar for
+verbal evidence; it never alone determines a boundary.
+
+TIME CALIBRATION (from markers):
+- A gap of ~30+ minutes: strong evidence of a boundary (likely already
+  handled upstream); confirm closure/opening if text is present.
+- A gap of 5–30 minutes: the boundary rests on clear closure AND opening
+  signals (farewells, greetings, participant turnover, unrelated topic).
+- A gap under 5 minutes: requires OVERWHELMING evidence — explicit mutual
+  farewells immediately followed by greetings or a wholly new participant
+  set AND a completely unrelated topic — unless density markers show a
+  sparse→dense transition (a conversation beginning), or a completed
+  one-sided call is followed by a cold start.
+- ELAPSED TIME (from markers): a small gap in a young conversation
+  (< 30 min in) is almost never a boundary — treat it as a lull or
+  agenda transition. A small or moderate gap in a mature (30–60 min) or
+  long-running (60+ min) conversation is a plausible boundary — but
+  still require clear closure followed by opening.
+- In a long-running conversation (60+ min), a closure (farewells, thanks,
+  wrap-up) followed by a gap of any length may be sufficient EVEN IF the
+  opening signals are unreadable or garbled — weigh instead what the
+  conversation becomes after the gap: a wholly different topic and a
+  largely different participant set confirm the split.
+- Two proposed boundaries within ~30 minutes of each other is a red flag:
+  re-verify each independently; it usually means you are detecting topic
+  changes, not conversation changes.
+
+CALIBRATION: Most transcripts contain zero or one boundaries. If you
+find yourself proposing several, slow down and re-verify each one
+individually: does EACH boundary have its own clear closure and opening
+(or a sparse→dense transition, or a closure followed by a cold start)
+at that exact point? Drop any boundary whose evidence would not have
+convinced you on its own.
+
+If the transcript contains no such boundary sequence, it is one
+continuous conversation. Returning no boundaries is a valid and common
+outcome.
+
+When in doubt, do not split.
+
+Do NOT split for: topic shifts, brief asides, one person joining or
+leaving mid-conversation, an interrupted question where the topic then
+resumes, several subjects within one meeting, agenda transitions,
+small talk or re-greetings inside an ongoing conversation, garbled or
+low-quality stretches where the topic and participants continue on both
+sides, or someone excusing themselves briefly and returning.
 
 Return a JSON object with this exact key:
-- "topic_splits": list of {{ "at_seconds": float, "reason": str }} objects, \
-  sorted ascending by at_seconds
+- "topic_splits": list of {{ "at_seconds": float, "reason": str }} objects,
+  sorted ascending by at_seconds.
 
-If there are no genuine topic shifts, return: {{ "topic_splits": [] }}
+The "reason" must cite the closure and opening evidence — quoted phrases,
+before/after participant sets and topics, or the density transition —
+never a topic change alone.
+
+Markers (e.g. "[gap: ...]") are part of the input transcript, not speech:
+never quote a marker as closure/opening evidence, and set "at_seconds" to
+the timestamp of the first opening segment (e.g., the "Good morning." or
+"From year one." line), never to the marker's position.
+
+If there are no genuine conversation boundaries, return:
+{{ "topic_splits": [] }}
+
 
 ---
 USER CONTEXT:

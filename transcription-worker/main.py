@@ -55,6 +55,58 @@ def _cuda_allocated_mib() -> int:
     return 0
 
 
+def _spectral_flatness(audio: np.ndarray) -> float:
+    """Compute spectral flatness: geometric_mean / arithmetic_mean of power spectrum.
+
+    - ~0.0 = pure tone / structured (speech formants)
+    - ~1.0 = white/pink noise (impulsive, click-like)
+    - Speech typically: 0.1–0.4
+    - Clicks/transients: 0.5–1.0
+    """
+    if len(audio) < 64:
+        return 1.0
+    windowed = audio * np.hanning(len(audio))
+    fft = np.fft.rfft(windowed)
+    power = np.abs(fft) ** 2
+    power = power[power > 1e-12]  # avoid log(0)
+    if len(power) == 0:
+        return 1.0
+    geometric_mean = np.exp(np.mean(np.log(power)))
+    arithmetic_mean = np.mean(power)
+    return geometric_mean / arithmetic_mean if arithmetic_mean > 1e-12 else 1.0
+
+
+def _chunk_impulsive(audio_np: np.ndarray, sr: int) -> bool:
+    """Return True if the audio chunk appears to be an impulsive transient, not real speech.
+
+    Clicks and pops are broadband impulses: high spectral flatness (~0.6–1.0).
+    Real speech has formant structure: low spectral flatness (~0.1–0.4).
+
+    For longer chunks (>1s) we check the most-energetic 300ms window to avoid
+    averaging across silence/pauses in real speech.
+    """
+    FLATNESS_THRESHOLD = 0.55
+
+    duration = len(audio_np) / sr
+    if duration <= 1.0:
+        flatness = _spectral_flatness(audio_np)
+    else:
+        # Find the most-energetic 300ms window
+        window_size = int(0.3 * sr)
+        step = window_size // 4
+        best_rms = -np.inf
+        best_window = audio_np[:window_size]
+        for i in range(0, len(audio_np) - window_size + 1, step):
+            window = audio_np[i : i + window_size]
+            rms = float(np.mean(window**2))
+            if rms > best_rms:
+                best_rms = rms
+                best_window = window
+        flatness = _spectral_flatness(best_window)
+
+    return flatness > FLATNESS_THRESHOLD
+
+
 class Settings(BaseSettings):
     idle_unload_seconds: int = 300  # 0 disables unloading; matches speaker-id default
     warm_keepalive_seconds: int = (
@@ -267,6 +319,7 @@ async def ws_instant(websocket: WebSocket, session_id: int):
         while True:
             opus_data = await websocket.receive_bytes()
             model_manager.begin_job()
+            model_manager.record_activity()
             chunk_start = time.monotonic()
             try:
                 # Decode Opus/OGG to float32 numpy via soundfile (in-process, no subprocess)
@@ -274,7 +327,13 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                 audio_duration_s = len(audio_np) / sr if sr else 0.0
 
                 # Audio metrics (float32 normalized to [-1.0, 1.0])
+                decoded_samples = 0
+                audio_max_abs = 0.0
+                audio_mean = 0.0
                 if audio_np.size > 0:
+                    decoded_samples = audio_np.size
+                    audio_max_abs = float(np.max(np.abs(audio_np)))
+                    audio_mean = float(np.mean(audio_np.astype(np.float64)))
                     rms = float(np.sqrt(np.mean(audio_np.astype(np.float64) ** 2)))
                     rms_dbfs = (20 * np.log10(rms)) if rms > 0 else -96.0
                     peak = float(np.max(np.abs(audio_np)))
@@ -289,6 +348,10 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                     "instant_audio_received",
                     session_id=session_id,
                     audio_duration_s=round(audio_duration_s, 2),
+                    decoded_samples=decoded_samples,
+                    sample_rate=sr,
+                    audio_max_abs=round(audio_max_abs, 6),
+                    audio_mean=round(audio_mean, 6),
                     rms_dbfs=round(rms_dbfs, 1),
                     peak_dbfs=round(peak_dbfs, 1),
                     clipping_pct=clipping_pct,
@@ -308,6 +371,9 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                         "instant_silence_rejected",
                         session_id=session_id,
                         audio_duration_s=round(audio_duration_s, 2),
+                        decoded_samples=decoded_samples,
+                        sample_rate=sr,
+                        audio_max_abs=round(audio_max_abs, 6),
                         rms_dbfs=round(rms_dbfs, 1),
                     )
                     # Tell the server this utterance is silent so it can:
@@ -315,6 +381,27 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                     # - Skip starting/continuing a session with silence
                     await websocket.send_json(
                         {"type": "segment", "segments": [], "is_silent": True}
+                    )
+                    model_manager.end_job()
+                    continue
+
+                # Guard: short audio chunks (<1s) are unreliable for instant transcription —
+                # both false positives ("Thank you") and true negatives (silence) cluster below
+                # this threshold. The chunk is still streamed for final transcription; we just
+                # don't show it live.
+                if audio_duration_s < 1.0:
+                    logger.info(
+                        "instant_short_chunk_rejected",
+                        session_id=session_id,
+                        audio_duration_s=round(audio_duration_s, 2),
+                        decoded_samples=decoded_samples,
+                        sample_rate=sr,
+                        audio_max_abs=round(audio_max_abs, 6),
+                        rms_dbfs=round(rms_dbfs, 1),
+                        peak_dbfs=round(peak_dbfs, 1),
+                    )
+                    await websocket.send_json(
+                        {"type": "segment", "segments": [], "is_silent": False}
                     )
                     model_manager.end_job()
                     continue
@@ -330,9 +417,32 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                 if not whisper_model:
                     raise RuntimeError("ASR model not available after load")
 
+                # Sanity check: confirm decoded audio has real signal before wasting GPU cycles.
+                # Catches soundfile Opus decode failures that silently produce zeros.
+                if audio_max_abs < 1e-5:
+                    logger.warning(
+                        "instant_zero_audio_rejected",
+                        session_id=session_id,
+                        audio_duration_s=round(audio_duration_s, 2),
+                        decoded_samples=decoded_samples,
+                        sample_rate=sr,
+                        audio_max_abs=audio_max_abs,
+                        audio_mean=audio_mean,
+                        rms_dbfs=round(rms_dbfs, 1),
+                    )
+                    await websocket.send_json(
+                        {"type": "segment", "segments": [], "is_silent": True}
+                    )
+                    model_manager.end_job()
+                    continue
+
                 # Transcribe — use cached session language; detect on first utterance only
                 segments = []
                 transcript_error = None
+                no_speech_prob = None
+                avg_log_prob = None
+                compression_ratio = None
+                info_duration = None
                 try:
                     result = whisper_model.transcribe(
                         audio_np,
@@ -351,35 +461,62 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                             segments = []
                     else:
                         segments = []
+
+                    # Extract TranscriptionInfo diagnostics from the result tuple.
+                    # faster-whisper returns (segments_generator, info) when word_timestamps
+                    # is False (default). info contains no_speech_prob, avg_log_prob, etc.
+                    # These fields help diagnose why Whisper returns empty segments.
+                    if isinstance(result, tuple) and len(result) > 1:
+                        info = result[1]
+                        no_speech_prob = getattr(info, "no_speech_prob", None)
+                        avg_log_prob = getattr(info, "avg_log_prob", None)
+                        compression_ratio = getattr(info, "compression_ratio", None)
+                        info_duration = getattr(info, "duration", None)
+
+                    # Detect whether Whisper applied its combined no-speech rejection.
+                    # Condition: no_speech_prob > 0.6 AND avg_log_prob < -1.0 simultaneously.
+                    # If true, Whisper considers the audio silence even if it has energy.
+                    whisper_rejected_as_silence = (
+                        no_speech_prob is not None
+                        and avg_log_prob is not None
+                        and no_speech_prob > 0.6
+                        and avg_log_prob < -1.0
+                    )
+
+                    logger.debug(
+                        "instant_whisper_info",
+                        session_id=session_id,
+                        audio_duration_s=round(audio_duration_s, 2),
+                        info_duration=round(info_duration, 2)
+                        if info_duration
+                        else None,
+                        no_speech_prob=round(no_speech_prob, 4)
+                        if no_speech_prob is not None
+                        else None,
+                        avg_log_prob=round(avg_log_prob, 4)
+                        if avg_log_prob is not None
+                        else None,
+                        compression_ratio=round(compression_ratio, 4)
+                        if compression_ratio is not None
+                        else None,
+                        segment_count=len(segments),
+                        whisper_rejected_as_silence=whisper_rejected_as_silence,
+                    )
                 except Exception as e:
                     transcript_error = f"{type(e).__name__}: {e}"
 
                 elapsed_s = time.monotonic() - chunk_start
 
-                # Filter low-quality segments (model uncertain or silence-like audio).
-                # Thresholds mirror the server-side final-transcription filter in worker.py.
-                filtered_segments = [
-                    s
-                    for s in segments
-                    if s.get("no_speech_prob", 0) <= 0.8
-                    and s.get("avg_logprob", 0) > -1.0
-                ]
-
                 full_text = " ".join(
-                    s["text"].strip()
-                    for s in filtered_segments
-                    if s.get("text", "").strip()
+                    s["text"].strip() for s in segments if s.get("text", "").strip()
                 )
 
-                # Aggregate quality metrics from raw segments for logging
-                raw_nsp = [s.get("no_speech_prob", 0) for s in segments]
-                raw_alp = [s.get("avg_logprob", 0) for s in segments]
-                avg_no_speech_prob = (
-                    round(sum(raw_nsp) / len(raw_nsp), 4) if raw_nsp else 0.0
-                )
-                avg_avg_logprob = (
-                    round(sum(raw_alp) / len(raw_alp), 4) if raw_alp else 0.0
-                )
+                # Hallucination detection: compute spectral flatness to distinguish
+                # impulsive transients (clicks/pops that fired device VAD) from real speech.
+                # Flatness: ~0.0 = structured/speech, ~1.0 = impulsive/noise.
+                # Impulsive chunks (clicks) tend to flatness > 0.55.
+                chunk_flatness = round(_spectral_flatness(audio_np), 4)
+                chunk_impulsive = _chunk_impulsive(audio_np, sr)
 
                 # On first successful transcription, cache detected language for session
                 if session_language is None and segments:
@@ -402,21 +539,18 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                             language=detected,
                         )
 
-                print(
-                    f"[DEBUG ws_instant] session={session_id} BEFORE instant_transcribe logger.info",
-                    flush=True,
-                )
                 logger.info(
                     "instant_transcribe",
                     session_id=session_id,
                     audio_duration_s=round(audio_duration_s, 2),
+                    decoded_samples=decoded_samples,
+                    sample_rate=sr,
+                    audio_max_abs=round(audio_max_abs, 6),
+                    audio_mean=round(audio_mean, 6),
                     rms_dbfs=round(rms_dbfs, 1),
                     peak_dbfs=round(peak_dbfs, 1),
                     clipping_pct=clipping_pct,
-                    segment_count=len(filtered_segments),
-                    raw_segment_count=len(segments),
-                    avg_no_speech_prob=avg_no_speech_prob,
-                    avg_avg_logprob=avg_avg_logprob,
+                    segment_count=len(segments),
                     transcript=full_text[:500],
                     language=session_language or "auto",
                     elapsed_s=round(elapsed_s, 3),
@@ -424,6 +558,22 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                     if elapsed_s > 0
                     else 0,
                     transcript_error=transcript_error,
+                    chunk_flatness=chunk_flatness,
+                    chunk_impulsive=chunk_impulsive,
+                    # Whisper TranscriptionInfo diagnostics
+                    no_speech_prob=round(no_speech_prob, 4)
+                    if no_speech_prob is not None
+                    else None,
+                    avg_log_prob=round(avg_log_prob, 4)
+                    if avg_log_prob is not None
+                    else None,
+                    compression_ratio=round(compression_ratio, 4)
+                    if compression_ratio is not None
+                    else None,
+                    info_duration=round(info_duration, 2)
+                    if info_duration is not None
+                    else None,
+                    whisper_rejected_as_silence=whisper_rejected_as_silence,
                 )
 
                 if transcript_error:
@@ -431,9 +581,20 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                         "instant_transcribe_warning",
                         session_id=session_id,
                         audio_duration_s=round(audio_duration_s, 2),
+                        decoded_samples=decoded_samples,
+                        sample_rate=sr,
+                        audio_max_abs=round(audio_max_abs, 6),
                         rms_dbfs=round(rms_dbfs, 1),
                         peak_dbfs=round(peak_dbfs, 1),
                         error=transcript_error,
+                        chunk_flatness=chunk_flatness,
+                        chunk_impulsive=chunk_impulsive,
+                        no_speech_prob=round(no_speech_prob, 4)
+                        if no_speech_prob is not None
+                        else None,
+                        avg_log_prob=round(avg_log_prob, 4)
+                        if avg_log_prob is not None
+                        else None,
                     )
                 else:
                     await websocket.send_json(
@@ -445,12 +606,12 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                                     "end": s["end"],
                                     "text": s["text"],
                                 }
-                                for s in filtered_segments
+                                for s in segments
                             ],
                             # Also flag as silent if Whisper ran but found no speech.
                             # This catches audio that passed the RMS guard but produced
                             # no transcript segments (e.g. very quiet real speech).
-                            "is_silent": len(filtered_segments) == 0,
+                            "is_silent": len(segments) == 0,
                         }
                     )
             except Exception as e:
@@ -458,10 +619,25 @@ async def ws_instant(websocket: WebSocket, session_id: int):
                 logger.error(
                     "instant_transcribe_error",
                     session_id=session_id,
-                    audio_duration_s=round(audio_duration_s, 2),
-                    rms_dbfs=round(rms_dbfs, 1),
-                    peak_dbfs=round(peak_dbfs, 1),
+                    audio_duration_s=round(audio_duration_s, 2)
+                    if "audio_duration_s" in dir()
+                    else None,
+                    decoded_samples=decoded_samples
+                    if "decoded_samples" in dir()
+                    else None,
+                    sample_rate=sr if "sr" in dir() else None,
+                    audio_max_abs=round(audio_max_abs, 6)
+                    if "audio_max_abs" in dir()
+                    else None,
+                    rms_dbfs=round(rms_dbfs, 1) if "rms_dbfs" in dir() else None,
+                    peak_dbfs=round(peak_dbfs, 1) if "peak_dbfs" in dir() else None,
                     error=f"{type(e).__name__}: {e}",
+                    chunk_flatness=chunk_flatness
+                    if "chunk_flatness" in dir()
+                    else None,
+                    chunk_impulsive=chunk_impulsive
+                    if "chunk_impulsive" in dir()
+                    else None,
                 )
             finally:
                 model_manager.end_job()
@@ -509,14 +685,6 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
             complete = transcribe_audio(
                 models, audio_np, sample_rate, language=language
             )
-            # Filter low-quality segments before storing in DB.
-            # Thresholds match ws_instant's client-side filter so the stored
-            # quick transcript matches what the dashboard receives live.
-            complete["segments"] = [
-                s
-                for s in complete.get("segments", [])
-                if s.get("no_speech_prob", 0) <= 0.8 and s.get("avg_logprob", 0) > -1.0
-            ]
             complete["utterance_spans"] = [
                 {
                     "utterance_id": utterance_ids[i],
