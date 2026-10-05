@@ -711,11 +711,36 @@ async def _process_job(client: httpx.AsyncClient, job: dict) -> None:
             f"{SERVER_URL}/internal/transcription/complete/{job_id}", json=complete
         )
         response.raise_for_status()
-    except Exception:
-        logger.exception("transcription_failed job_id=%d", job_id)
+    except Exception as exc:
+        total_bytes = (
+            sum(len(s) for s in audio_segments) if "audio_segments" in dir() else 0
+        )
+        logger.error(
+            "transcription_failed",
+            job_id=job_id,
+            session_id=job.get("session_id"),
+            job_type=job_type,
+            language=language,
+            audio_segment_count=len(audio_segments)
+            if "audio_segments" in dir()
+            else None,
+            total_audio_bytes=total_bytes,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         try:
             await client.post(
-                f"{SERVER_URL}/internal/transcription/fail/{job_id}", json={}
+                f"{SERVER_URL}/internal/transcription/fail/{job_id}",
+                json={
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "job_type": job_type,
+                    "language": language,
+                    "audio_segment_count": len(audio_segments)
+                    if "audio_segments" in dir()
+                    else None,
+                    "total_audio_bytes": total_bytes,
+                    "session_id": job.get("session_id"),
+                },
             )
         except Exception:
             logger.exception("failed_to_mark_job_failed job_id=%d", job_id)

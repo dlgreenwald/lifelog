@@ -782,17 +782,25 @@ async def _apply_quick_transcripts() -> None:
 
 
 def _window_ranges(utterances: list[dict]) -> list[tuple[datetime, datetime]]:
+    if not utterances:
+        return []
 
     first = utterances[0]["created_at"].replace(tzinfo=None)
     last = utterances[-1]["created_at"].replace(tzinfo=None)
     duration = timedelta(minutes=max(1, settings.reprocess_chunk_minutes))
     count = max(1, int((last - first) / duration) + 1)
-    return [
+    windows = [
         (
             first + index * duration,
             min(first + (index + 1) * duration, last + timedelta(seconds=1)),
         )
         for index in range(count)
+    ]
+    # Skip windows with no utterances inside them
+    return [
+        w
+        for w in windows
+        if any(w[0] <= u["created_at"].replace(tzinfo=None) < w[1] for u in utterances)
     ]
 
 
@@ -845,12 +853,69 @@ async def _process_offline_session(session: dict) -> None:
     """Fire transcription jobs for an ended offline session.
 
     Does NOT block on LLM summarization — the poll loop's
-    _finalize_completed_sessions() picks it up when jobs complete.
+    _finalize_offline_session() picks it up when jobs complete.
     """
     try:
         await _reprocess_session(session)
     except Exception:
         logger.exception("offline_session_process_error", session_id=session["id"])
+
+
+async def _finalize_offline_session(session: dict) -> None:
+    """Finalize an offline session whose transcription jobs are complete.
+
+    Called by the poll loop when get_offline_sessions_for_finalization() returns
+    the session (transcription done, session_processed_at IS NULL).
+    Reuses the core _finalize logic by temporarily adjusting session status.
+    """
+    try:
+        jobs = await db.get_transcription_jobs(session["id"])
+        full_jobs = [job for job in jobs if (job.get("job_type") or "full") == "full"]
+        if not full_jobs:
+            logger.info("offline_finalize_no_full_jobs", session_id=session["id"])
+            return
+        pending_or_processing = [
+            job for job in full_jobs if job.get("status") in {"pending", "processing"}
+        ]
+        if pending_or_processing:
+            logger.info(
+                "offline_finalize_waiting_for_jobs",
+                session_id=session["id"],
+                waiting_count=len(pending_or_processing),
+            )
+            return
+        failed_jobs = [job for job in full_jobs if job.get("status") == "failed"]
+        if failed_jobs:
+            logger.warning(
+                "offline_finalize_has_failed_jobs",
+                session_id=session["id"],
+                failed_count=len(failed_jobs),
+            )
+        # Write transcripts from done jobs to session_utterances
+        first = min(job["window_start"] for job in full_jobs if job.get("status") == "done")
+        transcript_segments = []
+        for job in sorted(full_jobs, key=lambda j: j.get("window_start") or _NAIVE_MIN):
+            if job.get("status") != "done":
+                continue
+            result = job.get("result")
+            if not result:
+                continue
+            offset = (job["window_start"] - first).total_seconds()
+            segments = _shifted_segments(result.get("segments", []), offset)
+            transcript_segments.extend(segments)
+        if transcript_segments:
+            await db.update_session_utterances_transcript_by_session(
+                session["id"], {"segments": transcript_segments}
+            )
+        # Mark session fully processed (sets session_processed_at)
+        await db.mark_session_processed(session["id"])
+        logger.info(
+            "offline_session_finalized",
+            session_id=session["id"],
+            segment_count=len(transcript_segments),
+        )
+    except Exception:
+        logger.exception("offline_finalize_error", session_id=session["id"])
 
 
 def _shifted_segments(segments: list[dict], offset: float) -> list[dict]:
@@ -1631,6 +1696,9 @@ async def worker_loop():
                 # Mark processed immediately so it is not re-selected on next poll
                 await db.mark_offline_session_processed(session["id"])
                 asyncio.create_task(_process_offline_session(session))
+            # Offline sessions with transcription done but not yet finalized
+            for session in await db.get_offline_sessions_for_finalization():
+                asyncio.create_task(_finalize_offline_session(session))
             try:
                 await _finalize_completed_sessions()
             except Exception:

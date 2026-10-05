@@ -1167,9 +1167,24 @@ async def mark_offline_session_processed(session_id: int) -> None:
     """Mark an offline session as processed so it is not re-selected."""
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE sessions SET processed_at = NOW() WHERE id = $1",
+            "UPDATE sessions SET status = 'processed', processed_at = NOW() WHERE id = $1",
             session_id,
         )
+
+
+async def get_offline_sessions_for_finalization() -> list[dict]:
+    """Offline sessions with transcription done but not yet finalized (session_processed_at IS NULL)."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, user_id, started_at, ended_at, retry_count
+            FROM sessions
+            WHERE status = 'processed' AND offline = true AND processed_at IS NOT NULL
+              AND session_processed_at IS NULL
+            ORDER BY processed_at
+            """
+        )
+        return [dict(row) for row in rows]
 
 
 async def check_and_end_inactive_session(session_id: int) -> bool:
@@ -1709,6 +1724,21 @@ async def update_session_utterance_transcript(
             """,
             session_id,
             utterance_id,
+            transcript,
+        )
+
+
+async def update_session_utterances_transcript_by_session(
+    session_id: int, transcript: dict
+) -> None:
+    """Update transcript for all utterances in a session (offline sessions)."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE session_utterances SET transcript = $2::jsonb
+            WHERE session_id = $1
+            """,
+            session_id,
             transcript,
         )
 
