@@ -14,6 +14,37 @@ static const char* TAG = "UPLOAD";
 // Forward declaration — defined later in this file
 static time_t _parse_epoch_from_filename(const char *filename);
 
+// ── Offline session tracking ────────────────────────────────────────
+
+// Cached offline session ID across a batch upload burst.
+// 0 means no active offline session (first file of burst or after burst-end).
+static uint32_t s_offlineSessionId = 0;
+
+// Parse "session_id":N from a JSON response body (simple substring scan, no library).
+static uint32_t _parse_session_id_from_json(const char *body, size_t body_len) {
+    // Look for "session_id":<number>
+    const char *key = "\"session_id\":";
+    size_t key_len = strlen(key);
+    const char *p = body;
+    for (size_t i = 0; i + key_len < body_len; i++) {
+        if (strncmp(p + i, key, key_len) == 0) {
+            const char *val = p + i + key_len;
+            // Skip whitespace
+            while (*val == ' ' || *val == '\t') val++;
+            // Parse unsigned integer
+            char *end = nullptr;
+            uint32_t id = strtoul(val, &end, 10);
+            if (end != val && id != 0) {
+                return id;
+            }
+        }
+    }
+    return 0;
+}
+
+// Forward declaration — defined later in this file
+static bool burstEndOfflineSession(uint32_t sessionId);
+
 // ── SD directory cache — populated once, served from PSRAM ──────────
 
 #define SD_CACHE_MAX_ENTRIES 64
@@ -69,9 +100,16 @@ void sdDirCacheInit() {
     }
     sdDirCache.count = n;
     sdDirCache.valid = true;
-    sdDirCache.wasFull = false;
+    // Preserve wasFull across rebuilds: only true if we hit the entry limit,
+    // meaning there are likely more files on SD we haven't picked up yet.
+    // Once we scan and find fewer than 64 entries, wasFull stays false
+    // and the cache will correctly drain to 0 without another rebuild.
+    if (n == SD_CACHE_MAX_ENTRIES) {
+        sdDirCache.wasFull = true;
+    }
 
-    ESP_LOGI(TAG, "sdDirCache: scanned %u entries from /lifelog", n);
+    ESP_LOGI(TAG, "sdDirCache: scanned %u entries from /lifelog%s", n,
+             sdDirCache.wasFull ? " (more files on SD)" : "");
 }
 
 const char *sdDirCacheGetEntry(uint16_t i, time_t *outEpoch) {
@@ -97,9 +135,11 @@ void sdDirCacheRemove(const char *filename) {
 
             // If cache drained after being full, rebuild to pick up overflow files
             if (sdDirCache.count == 0 && sdDirCache.wasFull) {
-                ESP_LOGI(TAG, "sdDirCache: drained after overflow, rebuilding");
+                ESP_LOGI(TAG, "sdDirCache: drained after overflow, rebuilding in 5s");
+                vTaskDelay(pdMS_TO_TICKS(5000));
                 sdDirCache.wasFull = false;
                 sdDirCacheInit();
+                vTaskDelay(pdMS_TO_TICKS(5000));
             }
             return;
         }
@@ -174,19 +214,15 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool is
         return false;
     }
 
-    // Build multipart metadata prefix
+    // Build multipart metadata prefix — offline endpoint only needs file + recorded_at + session_id
     String boundary = "----LifeLogBoundary" + String(millis());
     String prefix = "";
-    prefix += "--" + boundary + "\r\n";
-    prefix += "Content-Disposition: form-data; name=\"utterance_id\"\r\n\r\n";
-    prefix += String(uttId) + "\r\n";
-    prefix += "--" + boundary + "\r\n";
-    prefix += "Content-Disposition: form-data; name=\"chunk_index\"\r\n\r\n";
-    prefix += String(chunkIdx) + "\r\n";
-    prefix += "--" + boundary + "\r\n";
-    prefix += "Content-Disposition: form-data; name=\"is_final\"\r\n\r\n";
-    prefix += isFinal ? "true" : "false";
-    prefix += "\r\n";
+    // session_id: omit on first file of burst (s_offlineSessionId==0)
+    if (s_offlineSessionId != 0) {
+        prefix += "--" + boundary + "\r\n";
+        prefix += "Content-Disposition: form-data; name=\"session_id\"\r\n\r\n";
+        prefix += String(s_offlineSessionId) + "\r\n";
+    }
     if (recordedAt > 0) {
         char recordedAtStr[32];
         snprintf(recordedAtStr, sizeof(recordedAtStr), "%ld", (long)recordedAt);
@@ -195,13 +231,6 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool is
         prefix += recordedAtStr;
         prefix += "\r\n";
     }
-    // System uptime ms for gap analysis between utterances
-    prefix += "--" + boundary + "\r\n";
-    prefix += "Content-Disposition: form-data; name=\"utterance_start_ms\"\r\n\r\n";
-    prefix += String(startMs) + "\r\n";
-    prefix += "--" + boundary + "\r\n";
-    prefix += "Content-Disposition: form-data; name=\"utterance_end_ms\"\r\n\r\n";
-    prefix += String(endMs) + "\r\n";
 
     // File part header
     String fileHeader = "--" + boundary + "\r\n";
@@ -210,20 +239,20 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool is
     String suffix = "\r\n--" + boundary + "--\r\n";
     uint32_t contentLength = prefix.length() + fileHeader.length() + fileSize + suffix.length();
 
-    // Build URL — detect scheme from serverHost
+    // Build URL — always use /api/v1/upload/offline for offline batch uploads
     char url[256];
     bool useTls = false;
     if (strncmp(deviceSettings.serverHost, "https://", 8) == 0) {
         useTls = true;
-        snprintf(url, sizeof(url), "%s:%u%s",
-                 deviceSettings.serverHost, deviceSettings.serverPort, deviceSettings.serverPath);
+        snprintf(url, sizeof(url), "%s:%u/api/v1/upload/offline",
+                 deviceSettings.serverHost, deviceSettings.serverPort);
     } else if (strncmp(deviceSettings.serverHost, "http://", 7) == 0) {
-        snprintf(url, sizeof(url), "%s:%u%s",
-                 deviceSettings.serverHost, deviceSettings.serverPort, deviceSettings.serverPath);
+        snprintf(url, sizeof(url), "%s:%u/api/v1/upload/offline",
+                 deviceSettings.serverHost, deviceSettings.serverPort);
     } else {
         // Plain IP or hostname — default to http
-        snprintf(url, sizeof(url), "http://%s:%u%s",
-                 deviceSettings.serverHost, deviceSettings.serverPort, deviceSettings.serverPath);
+        snprintf(url, sizeof(url), "http://%s:%u/api/v1/upload/offline",
+                 deviceSettings.serverHost, deviceSettings.serverPort);
     }
 
     esp_http_client_config_t config = {};
@@ -310,6 +339,26 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool is
             ESP_LOGD(TAG, "Auth failed, retrying with new token");
             continue;
         }
+        // Parse session_id from response body before closing the connection
+        if (httpStatus == 200) {
+            char respBuf[256];
+            int respLen = 0;
+            int n;
+            while (respLen < (int)sizeof(respBuf) - 1) {
+                n = oauth2Client().read(respBuf + respLen, sizeof(respBuf) - 1 - respLen);
+                if (n <= 0) break;
+                respLen += n;
+            }
+            if (respLen > 0) {
+                respBuf[respLen] = '\0';
+                uint32_t newSid = _parse_session_id_from_json(respBuf, respLen);
+                if (newSid != 0 && newSid != s_offlineSessionId) {
+                    ESP_LOGI(TAG, "Offline session: %lu -> %lu",
+                             (unsigned long)s_offlineSessionId, (unsigned long)newSid);
+                    s_offlineSessionId = newSid;
+                }
+            }
+        }
         break;  // Got final status
     }
 
@@ -380,6 +429,12 @@ void uploadAllRecordings() {
         }
     }
     ESP_LOGI(TAG, "Done: %d files uploaded", uploaded);
+
+    // Signal end of offline upload burst
+    if (s_offlineSessionId != 0) {
+        burstEndOfflineSession(s_offlineSessionId);
+        s_offlineSessionId = 0;
+    }
 }
 // ── Requirement 2: Auto batch upload task ──────────────────────────
 
@@ -450,6 +505,12 @@ static void autoUploadTask(void *pvParameters) {
             }
             vTaskDelay(pdMS_TO_TICKS(500));  // brief delay between files
         }
+
+        // Signal end of this batch upload burst
+        if (s_offlineSessionId != 0) {
+            burstEndOfflineSession(s_offlineSessionId);
+            s_offlineSessionId = 0;
+        }
     }
 }
 
@@ -496,12 +557,96 @@ static void uploadMonitorTask(void *pvParameters) {
 
             vTaskDelay(pdMS_TO_TICKS(500));  // brief delay between files
         }
+
+        // If we drained all files (cache now empty), signal burst-end to close the session
+        if (sdDirCacheGetCount() == 0 && s_offlineSessionId != 0) {
+            ESP_LOGI(TAG, "uploadMonitor: burst complete, calling burst-end session=%lu",
+                     (unsigned long)s_offlineSessionId);
+            burstEndOfflineSession(s_offlineSessionId);
+            s_offlineSessionId = 0;  // clear until next batch
+        }
     }
 }
 
 void startUploadMonitorTask() {
     xTaskCreatePinnedToCore(uploadMonitorTask, "uploadMon", 12288, NULL, 1, &uploadMonitorTaskHandle, 1);
     ESP_LOGI(TAG, "Upload monitor task started (every 30s, core 1, stack 12288)");
+}
+
+// ── Burst-end helper: signal end of offline upload burst ────────────
+
+static bool burstEndOfflineSession(uint32_t sessionId) {
+    if (WiFi.status() != WL_CONNECTED) {
+        ESP_LOGW(TAG, "burst-end: no WiFi");
+        return false;
+    }
+    if (!oauth2Client().hasValidToken()) {
+        ESP_LOGW(TAG, "burst-end: no valid OAuth token");
+        return false;
+    }
+
+    // Build URL
+    char url[256];
+    bool useTls = false;
+    if (strncmp(deviceSettings.serverHost, "https://", 8) == 0) {
+        useTls = true;
+        snprintf(url, sizeof(url), "%s:%u/api/v1/upload/offline/burst-end",
+                 deviceSettings.serverHost, deviceSettings.serverPort);
+    } else if (strncmp(deviceSettings.serverHost, "http://", 7) == 0) {
+        snprintf(url, sizeof(url), "%s:%u/api/v1/upload/offline/burst-end",
+                 deviceSettings.serverHost, deviceSettings.serverPort);
+    } else {
+        snprintf(url, sizeof(url), "http://%s:%u/api/v1/upload/offline/burst-end",
+                 deviceSettings.serverHost, deviceSettings.serverPort);
+    }
+
+    // Build form data: session_id
+    String body = "session_id=" + String(sessionId);
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.method = HTTP_METHOD_POST;
+    config.timeout_ms = 15000;
+    if (useTls) {
+        config.skip_cert_common_name_check = true;
+    }
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE(TAG, "burst-end: failed to init HTTP client");
+        return false;
+    }
+
+    esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+    oauth2Client().setTransport(client);
+
+    int httpStatus = 0;
+    bool ok = false;
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        oauth2Client().open(body.length());
+        oauth2Client().write(body.c_str(), body.length());
+        oauth2Client().fetch_headers();
+        httpStatus = oauth2Client().get_status_code();
+
+        if (httpStatus == -401) {
+            ESP_LOGD(TAG, "burst-end: auth failed, retrying");
+            continue;
+        }
+        ok = (httpStatus == 200);
+        break;
+    }
+
+    oauth2Client().close();
+    esp_http_client_cleanup(client);
+
+    if (ok) {
+        ESP_LOGI(TAG, "burst-end: session %lu ended OK", (unsigned long)sessionId);
+    } else {
+        ESP_LOGW(TAG, "burst-end: session %lu failed status=%d",
+                  (unsigned long)sessionId, httpStatus);
+    }
+    return ok;
 }
 
 bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
@@ -522,19 +667,15 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
         return false;
     }
 
-    // Build multipart metadata prefix
+    // Build multipart metadata prefix — use offline endpoint
     String boundary = "----LifeLogBoundary" + String(millis());
     String prefix = "";
-    prefix += "--" + boundary + "\r\n";
-    prefix += "Content-Disposition: form-data; name=\"utterance_id\"\r\n\r\n";
-    prefix += String(uttId) + "\r\n";
-    prefix += "--" + boundary + "\r\n";
-    prefix += "Content-Disposition: form-data; name=\"chunk_index\"\r\n\r\n";
-    prefix += String(chunkIdx) + "\r\n";
-    prefix += "--" + boundary + "\r\n";
-    prefix += "Content-Disposition: form-data; name=\"is_final\"\r\n\r\n";
-    prefix += isFinal ? "true" : "false";
-    prefix += "\r\n";
+    // session_id: omit on first file of burst (s_offlineSessionId==0)
+    if (s_offlineSessionId != 0) {
+        prefix += "--" + boundary + "\r\n";
+        prefix += "Content-Disposition: form-data; name=\"session_id\"\r\n\r\n";
+        prefix += String(s_offlineSessionId) + "\r\n";
+    }
     if (recordedAt > 0) {
         char recordedAtStr[32];
         snprintf(recordedAtStr, sizeof(recordedAtStr), "%ld", (long)recordedAt);
@@ -543,15 +684,10 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
         prefix += recordedAtStr;
         prefix += "\r\n";
     }
-    // System uptime ms for gap analysis between utterances
-    prefix += "--" + boundary + "\r\n";
-    prefix += "Content-Disposition: form-data; name=\"utterance_start_ms\"\r\n\r\n";
-    prefix += String(startMs) + "\r\n";
-    prefix += "--" + boundary + "\r\n";
-    prefix += "Content-Disposition: form-data; name=\"utterance_end_ms\"\r\n\r\n";
-    prefix += String(endMs) + "\r\n";
+    // duration_s: optional hint from firmware
+    // (not included here; firmware doesn't compute it for in-memory uploads)
 
-    // File part header
+    // File part header (file field must be last before suffix per HTTP spec)
     String fileHeader = "--" + boundary + "\r\n";
     fileHeader += "Content-Disposition: form-data; name=\"file\"; filename=\"" + String(filename) + "\"\r\n";
     fileHeader += "Content-Type: application/octet-stream\r\n\r\n";
@@ -559,19 +695,19 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
     String suffix = "\r\n--" + boundary + "--\r\n";
     uint32_t contentLength = prefix.length() + fileHeader.length() + size + suffix.length();
 
-    // Build URL — detect scheme from serverHost
+    // Build URL — always use /api/v1/upload/offline for offline batch uploads
     char url[256];
     bool useTls = false;
     if (strncmp(deviceSettings.serverHost, "https://", 8) == 0) {
         useTls = true;
-        snprintf(url, sizeof(url), "%s:%u%s",
-                 deviceSettings.serverHost, deviceSettings.serverPort, deviceSettings.serverPath);
+        snprintf(url, sizeof(url), "%s:%u/api/v1/upload/offline",
+                 deviceSettings.serverHost, deviceSettings.serverPort);
     } else if (strncmp(deviceSettings.serverHost, "http://", 7) == 0) {
-        snprintf(url, sizeof(url), "%s:%u%s",
-                 deviceSettings.serverHost, deviceSettings.serverPort, deviceSettings.serverPath);
+        snprintf(url, sizeof(url), "%s:%u/api/v1/upload/offline",
+                 deviceSettings.serverHost, deviceSettings.serverPort);
     } else {
-        snprintf(url, sizeof(url), "http://%s:%u%s",
-                 deviceSettings.serverHost, deviceSettings.serverPort, deviceSettings.serverPath);
+        snprintf(url, sizeof(url), "http://%s:%u/api/v1/upload/offline",
+                 deviceSettings.serverHost, deviceSettings.serverPort);
     }
 
     esp_http_client_config_t config = {};

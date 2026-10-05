@@ -841,6 +841,18 @@ async def _reprocess_session(session: dict):
         )
 
 
+async def _process_offline_session(session: dict) -> None:
+    """Fire transcription jobs for an ended offline session.
+
+    Does NOT block on LLM summarization — the poll loop's
+    _finalize_completed_sessions() picks it up when jobs complete.
+    """
+    try:
+        await _reprocess_session(session)
+    except Exception:
+        logger.exception("offline_session_process_error", session_id=session["id"])
+
+
 def _shifted_segments(segments: list[dict], offset: float) -> list[dict]:
     shifted = []
     for segment in segments:
@@ -1614,6 +1626,11 @@ async def worker_loop():
                         )
             except Exception:
                 logger.exception("idle_sessions_end_error")
+            # Offline sessions: ended offline sessions ready for transcription
+            for session in await db.get_ended_offline_sessions():
+                # Mark processed immediately so it is not re-selected on next poll
+                await db.mark_offline_session_processed(session["id"])
+                asyncio.create_task(_process_offline_session(session))
             try:
                 await _finalize_completed_sessions()
             except Exception:

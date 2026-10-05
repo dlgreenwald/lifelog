@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Form, Header, HTTPException, UploadFile
 
 from lifelog import database
 from lifelog.auth import validate_bearer_token
+from lifelog.crypto import audio_crypto
 from lifelog.database import save_utterance_chunk
 
 
@@ -272,3 +273,126 @@ async def get_utterance_status(
         if row["completed_at"]
         else None,
     }
+
+
+@router.post("/upload/offline")
+async def upload_offline(
+    file: UploadFile,
+    session_id: int | None = Form(None),
+    recorded_at: int = Form(...),
+    duration_s: float | None = Form(None),
+    user: dict = Depends(validate_upload_auth),
+):
+    """Accept an offline-recorded Opus audio file.
+
+    Stores the recording with its original backdated ``recorded_at`` timestamp
+    and groups it into an offline session. The firmware signals end-of-burst
+    separately via POST /upload/offline/burst-end.
+    """
+    audio_bytes = await file.read()
+    if len(audio_bytes) > MAX_CHUNK_SIZE:
+        raise HTTPException(status_code=413, detail="File too large")
+    user_id = user["id"]
+
+    # Convert Unix epoch to naive UTC datetime — accept any positive value
+    recorded_at_dt = datetime.fromtimestamp(recorded_at, tz=UTC).replace(tzinfo=None)
+
+    # Resolve or create offline session:
+    # Case 1: session_id provided and session is active → extend it
+    # Case 2: session_id provided but session ended → if recorded_at within range,
+    #          add to that session (firmware lost s_offlineSessionId after WiFi drop)
+    # Case 3: no session_id, or ended session with no overlap → create new session
+    resolved_session_id = None
+    if session_id is not None:
+        async with database.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, status, started_at, ended_at
+                FROM sessions
+                WHERE id = $1 AND user_id = $2 AND offline = true
+                """,
+                session_id,
+                user_id,
+            )
+        if row is not None:
+            if row["status"] == "active":
+                # Case 1/2a: active session — extend and use it
+                resolved_session_id = row["id"]
+                await database.update_offline_session_range(resolved_session_id, recorded_at_dt)
+            elif row["status"] == "ended":
+                # Case 2b: ended session — if recorded_at overlaps, add to it
+                started_at = row["started_at"] or recorded_at_dt
+                ended_at = row["ended_at"] or recorded_at_dt
+                if started_at <= recorded_at_dt <= ended_at:
+                    # recorded_at falls within this ended session — add to it
+                    resolved_session_id = row["id"]
+                    # Don't update session range since it's ended
+
+    if resolved_session_id is None:
+        # Case 3: no valid session found — create a new one
+        resolved_session_id = await database.create_offline_session(user_id, recorded_at_dt)
+
+    session_id = resolved_session_id
+
+    # Encrypt and save audio — user from validate_upload_auth already has encryption_secret/key_salt
+    audio_filename = audio_crypto.encrypt_audio(
+        audio_bytes,
+        user["encryption_secret"],
+        bytes(user["key_salt"]),
+    )
+
+    # Save recording with backdated timestamp
+    recording_id = await database.save_offline_recording(
+        user_id,
+        audio_filename,
+        session_id,
+        recorded_at_dt,
+    )
+
+    logger.info(
+        "upload_offline",
+        user_id=user_id,
+        session_id=session_id,
+        recording_id=recording_id,
+        recorded_at=recorded_at,
+        size_bytes=len(audio_bytes),
+    )
+    return {"status": "ok", "session_id": session_id, "recording_id": recording_id}
+
+
+@router.post("/upload/offline/burst-end")
+async def burst_end(
+    session_id: int = Form(...),
+    user: dict = Depends(validate_upload_auth),
+):
+    """Signal end of an offline upload burst.
+
+    Closes the offline session and fires asynchronous transcription processing.
+    """
+    user_id = user["id"]
+
+    # Verify session belongs to user and is offline
+    async with database.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, user_id FROM sessions
+            WHERE id = $1 AND user_id = $2 AND offline = true AND status = 'active'
+            """,
+            session_id,
+            user_id,
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Active offline session not found")
+
+    # End session with current server time
+    ended_at = datetime.now(UTC).replace(tzinfo=None)
+    await database.end_offline_session(session_id, ended_at)
+
+    # Fire-and-forget: run full transcription pipeline
+    from lifelog.worker import _process_offline_session
+
+    session = {"id": session_id, "user_id": user_id}
+    asyncio.create_task(_process_offline_session(session))
+
+    logger.info("offline_burst_end", user_id=user_id, session_id=session_id)
+    return {"status": "ok", "session_id": session_id}
