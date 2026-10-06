@@ -892,7 +892,9 @@ async def _finalize_offline_session(session: dict) -> None:
                 failed_count=len(failed_jobs),
             )
         # Write transcripts from done jobs to session_utterances
-        first = min(job["window_start"] for job in full_jobs if job.get("status") == "done")
+        first = min(
+            job["window_start"] for job in full_jobs if job.get("status") == "done"
+        )
         transcript_segments = []
         for job in sorted(full_jobs, key=lambda j: j.get("window_start") or _NAIVE_MIN):
             if job.get("status") != "done":

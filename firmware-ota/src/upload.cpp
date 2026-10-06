@@ -239,19 +239,19 @@ bool uploadFile(const char* filename, uint32_t uttId, uint32_t chunkIdx, bool is
     String suffix = "\r\n--" + boundary + "--\r\n";
     uint32_t contentLength = prefix.length() + fileHeader.length() + fileSize + suffix.length();
 
-    // Build URL — always use /api/v1/upload/offline for offline batch uploads
+    // Build URL — use /api/v1/upload for live recordings (instant transcription + session grouping)
     char url[256];
     bool useTls = false;
     if (strncmp(deviceSettings.serverHost, "https://", 8) == 0) {
         useTls = true;
-        snprintf(url, sizeof(url), "%s:%u/api/v1/upload/offline",
+        snprintf(url, sizeof(url), "%s:%u/api/v1/upload",
                  deviceSettings.serverHost, deviceSettings.serverPort);
     } else if (strncmp(deviceSettings.serverHost, "http://", 7) == 0) {
-        snprintf(url, sizeof(url), "%s:%u/api/v1/upload/offline",
+        snprintf(url, sizeof(url), "%s:%u/api/v1/upload",
                  deviceSettings.serverHost, deviceSettings.serverPort);
     } else {
         // Plain IP or hostname — default to http
-        snprintf(url, sizeof(url), "http://%s:%u/api/v1/upload/offline",
+        snprintf(url, sizeof(url), "http://%s:%u/api/v1/upload",
                  deviceSettings.serverHost, deviceSettings.serverPort);
     }
 
@@ -667,15 +667,22 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
         return false;
     }
 
-    // Build multipart metadata prefix — use offline endpoint
+    // Build multipart metadata prefix — use /upload for live endpoint
     String boundary = "----LifeLogBoundary" + String(millis());
     String prefix = "";
-    // session_id: omit on first file of burst (s_offlineSessionId==0)
-    if (s_offlineSessionId != 0) {
-        prefix += "--" + boundary + "\r\n";
-        prefix += "Content-Disposition: form-data; name=\"session_id\"\r\n\r\n";
-        prefix += String(s_offlineSessionId) + "\r\n";
-    }
+    // utterance_id
+    prefix += "--" + boundary + "\r\n";
+    prefix += "Content-Disposition: form-data; name=\"utterance_id\"\r\n\r\n";
+    prefix += String(uttId) + "\r\n";
+    // chunk_index
+    prefix += "--" + boundary + "\r\n";
+    prefix += "Content-Disposition: form-data; name=\"chunk_index\"\r\n\r\n";
+    prefix += String(chunkIdx) + "\r\n";
+    // is_final
+    prefix += "--" + boundary + "\r\n";
+    prefix += "Content-Disposition: form-data; name=\"is_final\"\r\n\r\n";
+    prefix += isFinal ? "true" : "false";
+    prefix += "\r\n";
     if (recordedAt > 0) {
         char recordedAtStr[32];
         snprintf(recordedAtStr, sizeof(recordedAtStr), "%ld", (long)recordedAt);
@@ -684,8 +691,6 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
         prefix += recordedAtStr;
         prefix += "\r\n";
     }
-    // duration_s: optional hint from firmware
-    // (not included here; firmware doesn't compute it for in-memory uploads)
 
     // File part header (file field must be last before suffix per HTTP spec)
     String fileHeader = "--" + boundary + "\r\n";
@@ -695,18 +700,18 @@ bool uploadFileFromMemory(const uint8_t *data, uint32_t size,
     String suffix = "\r\n--" + boundary + "--\r\n";
     uint32_t contentLength = prefix.length() + fileHeader.length() + size + suffix.length();
 
-    // Build URL — always use /api/v1/upload/offline for offline batch uploads
+    // Build URL — use /api/v1/upload for live recordings
     char url[256];
     bool useTls = false;
     if (strncmp(deviceSettings.serverHost, "https://", 8) == 0) {
         useTls = true;
-        snprintf(url, sizeof(url), "%s:%u/api/v1/upload/offline",
+        snprintf(url, sizeof(url), "%s:%u/api/v1/upload",
                  deviceSettings.serverHost, deviceSettings.serverPort);
     } else if (strncmp(deviceSettings.serverHost, "http://", 7) == 0) {
-        snprintf(url, sizeof(url), "%s:%u/api/v1/upload/offline",
+        snprintf(url, sizeof(url), "%s:%u/api/v1/upload",
                  deviceSettings.serverHost, deviceSettings.serverPort);
     } else {
-        snprintf(url, sizeof(url), "http://%s:%u/api/v1/upload/offline",
+        snprintf(url, sizeof(url), "http://%s:%u/api/v1/upload",
                  deviceSettings.serverHost, deviceSettings.serverPort);
     }
 

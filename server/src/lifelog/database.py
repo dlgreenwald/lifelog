@@ -151,17 +151,27 @@ async def save_offline_recording(
     (which reads from session_utterances) can process offline recordings.
     """
     async with pool.acquire() as conn:
+        # Get next partition_index for this session (auto-increment per session)
+        part_row = await conn.fetchrow(
+            """
+            SELECT COALESCE(MAX(partition_index), -1) + 1 AS next_index
+            FROM recordings WHERE session_id = $1
+            """,
+            session_id,
+        )
+        next_index = part_row["next_index"]
         # Insert recording
         row = await conn.fetchrow(
             """
-            INSERT INTO recordings (user_id, timestamp, session_id, category, audio_filename)
-            VALUES ($1, $2, $3, 'offline', $4)
+            INSERT INTO recordings (user_id, timestamp, session_id, category, audio_filename, partition_index)
+            VALUES ($1, $2, $3, NULL, $4, $5)
             RETURNING id
             """,
             user_id,
             recorded_at.replace(tzinfo=None),
             session_id,
             audio_filename,
+            next_index,
         )
         recording_id = row["id"]
         # Insert session_utterances entry so transcription pipeline can find this audio.
@@ -1119,6 +1129,21 @@ async def get_active_offline_session(user_id: int) -> dict | None:
             user_id,
         )
         return dict(row) if row else None
+
+
+async def get_last_offline_recording_time(session_id: int) -> datetime | None:
+    """Get the timestamp of the most recent recording in an offline session."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT timestamp FROM recordings
+            WHERE session_id = $1
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            session_id,
+        )
+        return row["timestamp"] if row else None
 
 
 async def update_offline_session_range(session_id: int, recorded_at: datetime) -> None:

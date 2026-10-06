@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Form, Header, HTTPException, UploadFile
 
 from lifelog import database
 from lifelog.auth import validate_bearer_token
+from lifelog.config import settings
 from lifelog.crypto import audio_crypto
 from lifelog.database import save_utterance_chunk
 
@@ -301,7 +302,9 @@ async def upload_offline(
     # Case 1: session_id provided and session is active → extend it
     # Case 2: session_id provided but session ended → if recorded_at within range,
     #          add to that session (firmware lost s_offlineSessionId after WiFi drop)
-    # Case 3: no session_id, or ended session with no overlap → create new session
+    # Case 3: no session_id → look up most recent active offline session and check
+    #          time gap (same grouping as live /upload path)
+    # Case 4: no active session with overlap → create new session
     resolved_session_id = None
     if session_id is not None:
         async with database.pool.acquire() as conn:
@@ -318,7 +321,9 @@ async def upload_offline(
             if row["status"] == "active":
                 # Case 1/2a: active session — extend and use it
                 resolved_session_id = row["id"]
-                await database.update_offline_session_range(resolved_session_id, recorded_at_dt)
+                await database.update_offline_session_range(
+                    resolved_session_id, recorded_at_dt
+                )
             elif row["status"] == "ended":
                 # Case 2b: ended session — if recorded_at overlaps, add to it
                 started_at = row["started_at"] or recorded_at_dt
@@ -329,9 +334,37 @@ async def upload_offline(
                     # Don't update session range since it's ended
 
     if resolved_session_id is None:
-        # Case 3: no valid session found — create a new one
-        resolved_session_id = await database.create_offline_session(user_id, recorded_at_dt)
-
+        # Case 3: no session_id from firmware, or session ended with no overlap.
+        # Look up the most recent active offline session and check time proximity
+        # (same grouping logic as the live /upload path).
+        active = await database.get_active_offline_session(user_id)
+        if active is not None:
+            # Get the most recent recording in this session to compute gap
+            last_rec = await database.get_last_offline_recording_time(active["id"])
+            ref_time = last_rec if last_rec is not None else active["started_at"]
+            gap_minutes = (
+                recorded_at_dt - ref_time.replace(tzinfo=None)
+            ).total_seconds() / 60
+            if gap_minutes <= settings.session_gap_minutes:
+                # Within gap threshold — extend and reuse this session
+                resolved_session_id = active["id"]
+                await database.update_offline_session_range(
+                    resolved_session_id, recorded_at_dt
+                )
+            else:
+                # Gap too large — end old session, create new one
+                await database.end_offline_session(
+                    active["id"],
+                    datetime.now(UTC).replace(tzinfo=None),
+                )
+                resolved_session_id = await database.create_offline_session(
+                    user_id, recorded_at_dt
+                )
+        else:
+            # No active offline session — create one
+            resolved_session_id = await database.create_offline_session(
+                user_id, recorded_at_dt
+            )
     session_id = resolved_session_id
 
     # Encrypt and save audio — user from validate_upload_auth already has encryption_secret/key_salt
