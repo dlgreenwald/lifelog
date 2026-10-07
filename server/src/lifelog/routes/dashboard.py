@@ -109,6 +109,10 @@ def _resolve_transcript_speaker_labels(rec: dict, speaker_segments: list) -> Non
             transcript = json.loads(transcript)
         except (json.JSONDecodeError, ValueError):
             transcript = None
+        else:
+            # Write the parsed dict back so the resolved labels persist in the
+            # returned object and are serialized correctly by FastAPI.
+            rec["transcript"] = transcript
     if not isinstance(transcript, dict) or not isinstance(
         transcript.get("segments"), list
     ):
