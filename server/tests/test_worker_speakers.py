@@ -128,3 +128,48 @@ async def test_reidentify_label_without_audio_left_raw():
     assert speakers[0]["name"] == "SPEAKER_00"
     assert updated[0]["speaker"] == "SPEAKER_00"
     assert updated[0]["raw_speaker"] == "SPEAKER_00"
+
+
+def test_shifted_segments_shifts_word_timestamps():
+    """Word-level timestamps must be shifted to absolute timebase, not left chunk-relative."""
+    from lifelog.worker import _shifted_segments
+
+    segments = [
+        {
+            "start": 0.0,
+            "end": 3.5,
+            "speaker": "SPEAKER_00",
+            "words": [
+                {"word": "hello", "start": 0.0, "end": 0.8},
+                {"word": "world", "start": 0.9, "end": 1.5},
+            ],
+        },
+        {
+            "start": 10.0,
+            "end": 13.0,
+            "speaker": "SPEAKER_01",
+            "words": [
+                {"word": "goodbye", "start": 10.0, "end": 11.0},
+            ],
+        },
+    ]
+
+    # offset = 4351.5  (second chunk starts at 4351.5s into the recording)
+    result = _shifted_segments(segments, 4351.5)
+
+    # Segment-level timestamps
+    assert result[0]["start"] == pytest.approx(4351.5)
+    assert result[0]["end"] == pytest.approx(4355.0)
+    assert result[1]["start"] == pytest.approx(4361.5)
+
+    # Word-level timestamps must ALSO be shifted
+    assert result[0]["words"][0]["start"] == pytest.approx(4351.5)
+    assert result[0]["words"][0]["end"] == pytest.approx(4352.3)
+    assert result[0]["words"][1]["start"] == pytest.approx(4352.4)
+    assert result[0]["words"][1]["end"] == pytest.approx(4353.0)
+    assert result[1]["words"][0]["start"] == pytest.approx(4361.5)
+    assert result[1]["words"][0]["end"] == pytest.approx(4362.5)
+
+    # Original segments must NOT be mutated
+    assert segments[0]["words"][0]["start"] == 0.0
+    assert segments[0]["start"] == 0.0

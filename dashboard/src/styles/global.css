@@ -502,11 +502,80 @@ header nav a.search-trigger:hover {
   padding: 16px;
   border-radius: 8px;
   overflow-y: auto;
-  max-height: 60vh;
 }
 
 .speakers ul {
   list-style: none;
+}
+
+/* Two-column recording layout — each column scrolls independently */
+@media (min-width: 768px) {
+  .recording-layout {
+    display: flex;
+    flex-direction: row;
+    gap: 16px;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .recording-left-col {
+    width: 320px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .recording-right-col {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* Left column: decisions and todos fill available space */
+  .recording-left-col .decisions,
+  .recording-left-col .todos {
+    background: var(--muted);
+    border-radius: 8px;
+    padding: 16px;
+  }
+
+  .recording-left-col .decisions ul,
+  .recording-left-col .todos ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .recording-left-col .decisions li,
+  .recording-left-col .todos li {
+    padding: 10px;
+    background: var(--card);
+    border-radius: 4px;
+    margin-bottom: 8px;
+  }
+
+  .recording-left-col .decisions li:last-child,
+  .recording-left-col .todos li:last-child {
+    margin-bottom: 0;
+  }
+
+  .recording-left-col .todos li.completed {
+    text-decoration: line-through;
+    opacity: 0.6;
+  }
+
+  /* Right column: audio and speakers each take their content height */
+  .recording-right-col .audio-player,
+  .recording-right-col .speakers {
+    background: var(--muted);
+    border-radius: 8px;
+    padding: 16px;
+  }
 }
 
 .speakers li {

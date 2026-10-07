@@ -929,6 +929,20 @@ def _shifted_segments(segments: list[dict], offset: float) -> list[dict]:
             item["start"] += offset
         if isinstance(item.get("end"), (int, float)):
             item["end"] += offset
+        # Word timestamps are chunk-relative (WhisperX operates on the chunk audio
+        # array) and are never shifted by the transcription worker.  Shift them here
+        # so the dashboard's word-level speaker resolution can match them against the
+        # absolute-timebase diarization segments.
+        if isinstance(item.get("words"), list):
+            shifted_words = []
+            for w in item["words"]:
+                new_w = dict(w)
+                if isinstance(new_w.get("start"), (int, float)):
+                    new_w["start"] += offset
+                if isinstance(new_w.get("end"), (int, float)):
+                    new_w["end"] += offset
+                shifted_words.append(new_w)
+            item["words"] = shifted_words
         shifted.append(item)
     return shifted
 
