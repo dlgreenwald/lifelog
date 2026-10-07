@@ -314,7 +314,7 @@ export default function RecordingDetail() {
 
   const [reprocessing, setReprocessing] = useState(false);
   const [reidentifying, setReidentifying] = useState(false);
-  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [transcriptOpen, setTranscriptOpen] = useState(true);
   const handleReprocess = async () => {
     if (!id || isLive || reprocessing) return;
     if (!confirm('Reprocess this recording? It will be regenerated at the next hourly run.')) return;

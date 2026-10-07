@@ -88,12 +88,7 @@ describe('RecordingDetail', () => {
 
     renderDetail();
 
-    // Open the collapsible transcript section
-    const trigger = await waitFor(() =>
-      screen.getByRole('button', { name: 'Transcript' }),
-    );
-    await act(async () => { await userEvent.click(trigger); });
-
+    // Transcript is open by default; content immediately visible
     await waitFor(() => {
       expect(screen.getByText(/Let us plan Q1/)).toBeInTheDocument();
       expect(screen.getByText(/Sounds good/)).toBeInTheDocument();
@@ -114,11 +109,7 @@ describe('RecordingDetail', () => {
 
     renderDetail();
 
-    const trigger = await waitFor(() =>
-      screen.getByRole('button', { name: 'Transcript' }),
-    );
-    await act(async () => { await userEvent.click(trigger); });
-
+    // Transcript is open by default; Unknown segment immediately visible
     await waitFor(() => {
       expect(screen.getByText('Mystery')).toBeInTheDocument();
     });
