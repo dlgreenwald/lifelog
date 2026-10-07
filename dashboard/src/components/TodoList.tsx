@@ -127,7 +127,7 @@ export default function TodoList() {
           style={{ backgroundColor: 'hsl(221.2,83.2%,53.3%)', color: 'hsl(0,0%,98%)', border: 'none' }}
         >
           <Plus className="h-4 w-4 mr-1" />
-          {showForm ? 'Cancel' : '+ Add Todo'}
+          {showForm ? 'Cancel' : 'Add Todo'}
         </Button>
       </div>
 
@@ -207,56 +207,58 @@ export default function TodoList() {
             </button>
           </div>
 
-          <ul className="rounded-lg border bg-card text-card-foreground shadow-sm" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            <li className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-3 px-4 py-2 border-b border-border bg-muted/30 text-xs font-medium text-muted-foreground">
-              <div className="w-5"></div>
-              <div>Task</div>
-              <div className="w-16 text-right">Created</div>
-              <div className="w-16 text-center">Priority</div>
-              <div className="w-7"></div>
-            </li>
-            {filteredTodos.map((todo, i) => (
-              <li
-                key={todo.id}
-                className={`group grid grid-cols-[auto_1fr_auto_auto_auto] gap-3 px-4 py-3 items-center ${todo.completed ? 'opacity-60' : ''} ${todo.recording_id ? 'cursor-pointer hover:bg-muted/50' : ''} transition-colors ${i > 0 ? 'border-t border-border' : ''}`}
-                onClick={() => {
-                  if (todo.recording_id) navigate(`/recording/${todo.recording_id}`);
-                }}
-              >
-                <Checkbox
-                  checked={todo.completed}
-                  onCheckedChange={() => handleToggle(todo)}
-                  onClick={e => e.stopPropagation()}
-                  className="shrink-0"
-                  aria-label={`Mark "${todo.task}" as ${todo.completed ? 'incomplete' : 'complete'}`}
-                />
-                <div className="min-w-0">
-                  <span className="text-sm font-medium leading-tight block truncate">{todo.task}</span>
-                  <span className="text-xs text-muted-foreground"> - {todo.owner}{todo.due ? ` (due: ${todo.due})` : ''}</span>
-                </div>
-                <div className="w-16 text-right text-xs text-muted-foreground tabular-nums shrink-0">
-                  {formatDate(todo.created_at)}
-                </div>
-                <div className="w-16 text-center shrink-0">
-                  <span className="text-xs font-medium" style={{
-                    backgroundColor: todo.priority === 'high' ? '#fee2e2' : todo.priority === 'medium' ? '#fef3c7' : '#dcfce7',
-                    color: todo.priority === 'high' ? '#991b1b' : todo.priority === 'medium' ? '#92400e' : '#166534',
-                    padding: '2px 6px',
-                    borderRadius: '4px',
-                  }}>{todo.priority}</span>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity"
-                  onClick={e => { e.stopPropagation(); handleDelete(todo.id); }}
-                  aria-label={`Delete todo: ${todo.task}`}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
+          <div className="flex-1 min-h-0 overflow-y-auto rounded-lg border bg-card text-card-foreground shadow-sm">
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+              <li className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-3 px-4 py-2 border-b border-border text-xs font-medium text-muted-foreground sticky top-0 z-10 todo-header">
+                <div className="w-5"></div>
+                <div>Task</div>
+                <div className="w-16 text-right">Created</div>
+                <div className="w-16 text-center">Priority</div>
+                <div className="w-7"></div>
               </li>
-            ))}
-          </ul>
+              {filteredTodos.map((todo, i) => (
+                <li
+                  key={todo.id}
+                  className={`group grid grid-cols-[auto_1fr_auto_auto_auto] gap-3 px-4 py-3 items-center ${todo.completed ? 'opacity-60' : ''} ${todo.recording_id ? 'cursor-pointer hover:bg-muted/50' : ''} transition-colors ${i > 0 ? 'border-t border-border' : ''}`}
+                  onClick={() => {
+                    if (todo.recording_id) navigate(`/recording/${todo.recording_id}`);
+                  }}
+                >
+                  <Checkbox
+                    checked={todo.completed}
+                    onCheckedChange={() => handleToggle(todo)}
+                    onClick={e => e.stopPropagation()}
+                    className="shrink-0"
+                    aria-label={`Mark "${todo.task}" as ${todo.completed ? 'incomplete' : 'complete'}`}
+                  />
+                  <div className="min-w-0">
+                    <span className="text-sm font-medium leading-tight block truncate">{todo.task}</span>
+                    <span className="text-xs text-muted-foreground"> - {todo.owner}{todo.due ? ` (due: ${todo.due})` : ''}</span>
+                  </div>
+                  <div className="w-16 text-right text-xs text-muted-foreground tabular-nums shrink-0">
+                    {formatDate(todo.created_at)}
+                  </div>
+                  <div className="w-16 text-center shrink-0">
+                    <span className="text-xs font-medium" style={{
+                      backgroundColor: todo.priority === 'high' ? '#fee2e2' : todo.priority === 'medium' ? '#fef3c7' : '#dcfce7',
+                      color: todo.priority === 'high' ? '#991b1b' : todo.priority === 'medium' ? '#92400e' : '#166534',
+                      padding: '2px 6px',
+                      borderRadius: '4px',
+                    }}>{todo.priority}</span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={e => { e.stopPropagation(); handleDelete(todo.id); }}
+                    aria-label={`Delete todo: ${todo.task}`}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
         </>
       )}
     </div>

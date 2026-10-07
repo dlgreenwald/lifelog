@@ -150,7 +150,7 @@ describe('DecisionsList', () => {
       expect(screen.getByText('Launch v2 on Friday')).toBeInTheDocument();
     });
 
-    const deleteButtons = screen.getAllByText('Delete');
+    const deleteButtons = screen.getAllByRole('button', { name: 'Delete decision' });
     fireEvent.click(deleteButtons[0]);
 
     expect(mockApi.deleteDecision).toHaveBeenCalledWith(1);
@@ -164,7 +164,7 @@ describe('DecisionsList', () => {
       expect(screen.getByText(/No decisions/i)).toBeInTheDocument();
     });
 
-    const addBtn = screen.getByText('+ Add Decision');
+    const addBtn = screen.getByRole('button', { name: 'Add Decision' });
     fireEvent.click(addBtn);
 
     expect(screen.getByPlaceholderText('Decision *')).toBeInTheDocument();
@@ -183,7 +183,7 @@ describe('DecisionsList', () => {
     });
 
     // Open form
-    fireEvent.click(screen.getByText('+ Add Decision'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Decision' }));
 
     // Fill form
     fireEvent.change(screen.getByPlaceholderText('Decision *'), { target: { value: 'Use PostgreSQL' } });

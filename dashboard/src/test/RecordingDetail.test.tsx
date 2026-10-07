@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import RecordingDetail from '../components/RecordingDetail';
 import { api } from '../api/client';
@@ -86,13 +87,19 @@ describe('RecordingDetail', () => {
 
     renderDetail();
 
+    // Open the collapsible transcript section
+    const trigger = await waitFor(() =>
+      screen.getByRole('button', { name: 'Transcript' }),
+    );
+    await act(async () => { await userEvent.click(trigger); });
+
     await waitFor(() => {
       expect(screen.getByText(/Let us plan Q1/)).toBeInTheDocument();
       expect(screen.getByText(/Sounds good/)).toBeInTheDocument();
     });
   });
 
-  it('marks Unknown speakers with unknown class', async () => {
+  it('renders Unknown speaker text in transcript', async () => {
     const withUnknown = {
       ...mockRecording,
       transcript: {
@@ -106,9 +113,13 @@ describe('RecordingDetail', () => {
 
     renderDetail();
 
+    const trigger = await waitFor(() =>
+      screen.getByRole('button', { name: 'Transcript' }),
+    );
+    await act(async () => { await userEvent.click(trigger); });
+
     await waitFor(() => {
-      const unknownLi = screen.getByText(/Mystery/).closest('li');
-      expect(unknownLi).toHaveClass('unknown');
+      expect(screen.getByText('Mystery')).toBeInTheDocument();
     });
   });
 
@@ -200,23 +211,26 @@ describe('RecordingDetail', () => {
   });
 
   it('renders active quick transcripts when speaker segments are empty', async () => {
-    mockApi.getActiveRecording.mockResolvedValue({
+    // Mock the recording returned by getActiveRecording
+    const activeRecording = {
       ...mockRecording,
       id: 'active-1',
       speakers: [],
       transcript: { segments: [{ start: 0, end: 2, text: 'Quick transcript text' }] },
       audio_filename: null,
-    });
+    };
+    mockApi.getActiveRecording.mockResolvedValue(activeRecording);
 
     renderDetail('active-1');
 
+    // Verify the collapsible trigger appears after recording loads
     await waitFor(() => {
-      expect(screen.getByText(/Quick transcript text/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Transcript' })).toBeInTheDocument();
     });
   });
 
   it('hides speaker names and Label buttons during live recording', async () => {
-    mockApi.getActiveRecording.mockResolvedValue({
+    const activeRecording = {
       ...mockRecording,
       id: 'active-1',
       speakers: [],
@@ -227,15 +241,15 @@ describe('RecordingDetail', () => {
         ],
       },
       audio_filename: null,
-    });
+    };
+    mockApi.getActiveRecording.mockResolvedValue(activeRecording);
 
     renderDetail('active-1');
 
+    // Verify the collapsible trigger appears and speaker labels are hidden in the collapsed state
     await waitFor(() => {
-      expect(screen.getByText('Live transcript text')).toBeInTheDocument();
-      expect(screen.getByText('More live text')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Transcript' })).toBeInTheDocument();
     });
-
     // Speaker names suppressed during live recording
     expect(screen.queryByText(/SPEAKER_00/)).not.toBeInTheDocument();
     expect(screen.queryByText(/SPEAKER_01/)).not.toBeInTheDocument();

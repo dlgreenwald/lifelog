@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { ChevronDown } from 'lucide-react';
 import { api } from '../api/client';
 import { formatDateTime } from '../utils/format';
 import AudioPlayer from './AudioPlayer';
-import type { Recording, Todo, Decision, Speaker } from '../types';
+import TranscriptBubble from './TranscriptBubble';
+import SummaryCard from './SummaryCard';
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
+import type { Recording, Todo, Decision } from '../types';
 
 function revokeAudioUrl(url: string): void {
   if (typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(url);
@@ -68,78 +72,6 @@ export default function RecordingDetail() {
       const last = merged[merged.length - 1];
       if (last && r.start <= last.end) last.end = Math.max(last.end, end);
       else merged.push({ start: r.start, end });
-    }
-    const parts: React.ReactNode[] = [];
-    let pos = 0;
-    for (const { start, end } of merged) {
-      if (start > pos) parts.push(text.slice(pos, start));
-      parts.push(<mark key={pos} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{text.slice(start, end)}</mark>);
-      pos = end;
-    }
-    if (pos < text.length) parts.push(text.slice(pos));
-    return <>{parts}</>;
-  }
-
-  /**
-   * Highlight a transcript segment using _formatted text from Meilisearch.
-   * The formatted text contains [[hilite]]...[[/hilite]] tags around matched
-   * words — we render them directly without any position mapping.
-   *
-   * When _formatted is not available, falls back to _matchesPosition-based
-   * highlighting using the segment's character range.
-   */
-  function highlightSegment(
-    rawText: string,
-    range: { start: number; end: number },
-    segIdx: number,
-  ): React.ReactNode {
-    const formattedContent = formattedSegments[segIdx] ?? null;
-    if (formattedContent !== null) {
-      // _formatted is authoritative — it has exact highlight tags from Meilisearch.
-      // formattedContent has format: " content[[hilite]]word[[/hilite]] more"
-      // We render it by splitting on the tags.
-      const parts = formattedContent.split(/(\[\[hilite\]\]|\[\[\/hilite\]\])/);
-      if (parts.length === 1) return rawText; // no tags
-      return <>{parts.map((part, i) =>
-        part === '[[hilite]]' ? null
-        : part === '[[/hilite]]' ? null
-        : parts[i - 1] === '[[hilite]]'
-          ? <mark key={i} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{part}</mark>
-          : part
-      )}</>;
-    }
-
-    // Fallback: use _matchesPosition with range-based filtering
-    const text = rawText;
-    if (!highlightMatches?.['text']?.length) {
-      if (!highlightQuery.trim()) return text;
-      const terms = highlightQuery.trim().split(/\s+/).filter(Boolean);
-      if (!terms.length) return text;
-      const pattern = new RegExp(
-        `\\b(${terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'gi'
-      );
-      const parts = text.split(pattern);
-      if (parts.length === 1) return text;
-      return <>{parts.map((part, i) =>
-        i % 2 === 1 ? <mark key={i} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{part}</mark> : part
-      )}</>;
-    }
-    const localRanges: Array<{ start: number; end: number }> = [];
-    for (const r of highlightMatches['text']) {
-      const rEnd = r.start + r.length;
-      if (rEnd < range.start || r.start >= range.end) continue;
-      localRanges.push({
-        start: Math.max(0, r.start - range.start),
-        end: Math.min(text.length, rEnd - range.start),
-      });
-    }
-    if (!localRanges.length) return text;
-    const sorted = [...localRanges].sort((a, b) => a.start - b.start);
-    const merged: Array<{ start: number; end: number }> = [];
-    for (const r of sorted) {
-      const last = merged[merged.length - 1];
-      if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
-      else merged.push({ start: r.start, end: r.end });
     }
     const parts: React.ReactNode[] = [];
     let pos = 0;
@@ -357,6 +289,7 @@ export default function RecordingDetail() {
   };
 
   const [reprocessing, setReprocessing] = useState(false);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
   const handleReprocess = async () => {
     if (!id || isLive || reprocessing) return;
     if (!confirm('Reprocess this recording? It will be regenerated at the next hourly run.')) return;
@@ -384,53 +317,6 @@ export default function RecordingDetail() {
     text: seg.text ?? '',
   }));
 
-  /**
-   * Parse _formatted.text from Meilisearch (passed via URL param) into
-   * per-segment formatted content. _formatted.text contains
-   * [[hilite]]...[[/hilite]] tags around matched words. We split it
-   * by speaker labels and map each speaker's content to the corresponding
-   * rawSegments entry so highlightSegment can render tags directly.
-   */
-  const formattedSegments: Array<string | null> = (() => {
-    const raw = searchParams.get('fmt_text');
-    if (!raw) return [];
-    try {
-      const fullText = atob(raw);
-      // Split on speaker label boundaries
-      const parts = fullText.split(/(?=SPEAKER_\d+:)/);
-      // Extract (label, content) from each part
-      const formattedPairs: Array<{ label: string; content: string }> = [];
-      for (const part of parts) {
-        const colonIdx = part.indexOf(':');
-        if (colonIdx < 0) continue;
-        const label = part.slice(0, colonIdx).trim(); // e.g. "SPEAKER_02"
-        const content = part.slice(colonIdx + 1).trimStart();
-        formattedPairs.push({ label, content });
-      }
-      // Match each raw segment to the best-formatted pair by (label + content similarity).
-      // Simple approach: prefer same-label pair with longest common prefix with raw text.
-      return rawSegments.map((seg) => {
-        const segText = seg.text.trim();
-        const segLabel = seg.name;
-        // Find best matching formatted pair
-        let best: { label: string; content: string } | null = null;
-        let bestScore = -1;
-        for (const pair of formattedPairs) {
-          if (pair.label !== segLabel) continue;
-          // Score = longest common prefix length
-          let score = 0;
-          const pairText = pair.content.replace(/\[\[hilite\]\]/g, '').replace(/\[\[\/hilite\]\]/g, '');
-          const minLen = Math.min(segText.length, pairText.length);
-          while (score < minLen && segText[score] === pairText[score]) score++;
-          if (score > bestScore) { bestScore = score; best = pair; }
-        }
-        return best?.content ?? null;
-      });
-    } catch {
-      return [];
-    }
-  })();
-
   /** Pre-rendered highlighted summary text from Meilisearch _formatted. */
   const fmtSummary = (() => {
     const raw = searchParams.get('fmt_summary');
@@ -438,47 +324,12 @@ export default function RecordingDetail() {
     try { return atob(raw); } catch { return null; }
   })();
 
-
-
-  /**
-   * Render a string containing [[hilite]]...[[/hilite]] markers as JSX.
-   * Used for pre-rendered Meilisearch _formatted text where the highlight
-   * positions are already computed and embedded in the text.
-   */
-  function renderFormatted(text: string): React.ReactNode {
-    if (!text) return text;
-    const parts = text.split(/(\[\[hilite\]\]|\[\[\/hilite\]\])/);
-    if (parts.length === 1) return text;
-    // parts[i-1] === '[[hilite]]' means this is the highlighted content
-    return <>{parts.map((part, i) =>
-      part === '[[hilite]]' ? null
-      : part === '[[/hilite]]' ? null
-      : parts[i - 1] === '[[hilite]]'
-        ? <mark key={i} className="bg-yellow-200 dark:bg-yellow-700 rounded px-0.5">{part}</mark>
-        : part
-    )}</>;
-  }
-
-
-  const segmentCharRanges: Array<{ start: number; end: number }> = (() => {
-    const ranges: Array<{ start: number; end: number }> = [];
-    let pos = 0;
-    for (const seg of rawSegments) {
-      const text = seg.text.trim();
-      const prefix = text ? `${seg.name}: ` : '';
-      const segText = prefix + text;
-      ranges.push({ start: pos, end: pos + segText.length });
-      pos += segText.length + 1; // +1 for space separator
-    }
-    return ranges;
+  /** Pre-rendered highlighted transcript text from Meilisearch _formatted. */
+  const fmtText = (() => {
+    const raw = searchParams.get('fmt_text');
+    if (!raw) return null;
+    try { return atob(raw); } catch { return null; }
   })();
-
-  const uniqueSpeakers = rawSegments.reduce<Speaker[]>((acc, seg, i) => {
-    if (!acc.some(a => a.name === seg.name)) {
-      acc.push({ id: i, name: seg.name, start: 0, end: 0, text: seg.text });
-    }
-    return acc;
-  }, []);
 
   if (!recording) return <div>Loading...</div>;
 
@@ -515,54 +366,39 @@ export default function RecordingDetail() {
       )}
 
       {(recording.long_summary ?? recording.summary) && (
-        <div className="summary">
-          <h3>Summary</h3>
-          <p>{fmtSummary ? (() => {
-            try {
-              const parsed = JSON.parse(fmtSummary) as [Record<string, unknown>, string];
-              return renderFormatted(parsed[1]);
-            } catch {
-              return recording.long_summary ?? recording.summary;
-            }
-          })() : (recording.long_summary ?? recording.summary)}</p>
-        </div>
+        <SummaryCard
+          markdown={
+            fmtSummary
+              ? fmtSummary
+              : (recording.long_summary ?? recording.summary ?? "")
+          }
+        />
       )}
 
       {rawSegments.length > 0 && (
-        <>
-          <div className="speakers">
-            <h3>Transcript</h3>
-            <ul>
-              {rawSegments.map((seg, i) => {
-                const text = seg.text.trim();
-                const range = segmentCharRanges[i] ?? { start: 0, end: 0 };
-                return (
-                  <li key={i} className={!isLive && seg.name === 'Unknown' ? 'unknown' : ''}>
-                    {!isLive && <span className="speaker-name">{seg.name}: </span>}
-                    {highlightSegment(text, range, i)}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-          {!isLive && uniqueSpeakers.filter(s => s.name === 'Unknown' || s.name.startsWith('SPEAKER_')).length > 0 && (
-            <div className="speaker-labels">
-              <h4>Label speakers:</h4>
-              <ul>
-                {uniqueSpeakers
-                  .filter(s => s.name === 'Unknown' || s.name.startsWith('SPEAKER_'))
-                  .map((speaker, i) => (
-                    <li key={i}>
-                      <span>{speaker.name}</span>
-                      {speaker.speaker_id != null && (
-                        <button onClick={() => labelSpeaker(speaker)}>Label</button>
-                      )}
-                    </li>
-                  ))}
-              </ul>
-            </div>
-          )}
-        </>
+        <div className="speakers">
+          <Collapsible open={transcriptOpen} onOpenChange={setTranscriptOpen}>
+            <CollapsibleTrigger asChild>
+              <button
+                className="flex items-center justify-between w-full text-left bg-transparent border-none p-0 cursor-pointer"
+                type="button"
+              >
+                <h3>Transcript</h3>
+                <ChevronDown
+                  size={16}
+                  className={`transition-transform duration-200 ${transcriptOpen ? "" : "-rotate-90"}`}
+                />
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <TranscriptBubble
+                segments={recording?.transcript?.segments ?? []}
+                hideSpeakerLabels={isLive}
+                highlightedText={fmtText}
+              />
+            </CollapsibleContent>
+          </Collapsible>
+        </div>
       )}
 
       {audioUrls.length > 0 && (
@@ -722,15 +558,4 @@ export default function RecordingDetail() {
       </div>
     </div>
   );
-
-  async function labelSpeaker(speaker: { id: number; name: string; speaker_id?: number }) {
-    if (!speaker.speaker_id) return;
-    const name = prompt(`Enter a new name for ${speaker.name}:`);
-    if (!name?.trim()) return;
-    await api.renameSpeaker(speaker.speaker_id, name.trim());
-    // Reload recording to reflect updated labels
-    const recordingId = recording!.id as number;
-    const updated = await api.getRecording(String(recordingId));
-    setRecording(updated);
-  }
 }

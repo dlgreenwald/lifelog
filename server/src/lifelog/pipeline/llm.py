@@ -317,8 +317,30 @@ concise prose.
 The long_summary should be roughly one page (≈400 words) of prose per hour of \
 transcribed audio. If the content exceeds a single page, prepend a brief \
 bullet-point outline before the prose. When the partition is short (under a \
-few minutes), the long_summary may be identical to the summary.  Write the long \
-summary as a markdown string. 
+few minutes), the long_summary may be identical to the summary.
+
+Write the long summary as valid markdown. Strict formatting rules:
+- Separate ALL block-level elements with exactly one blank line. Never run \
+  list items, paragraphs, or headings together without a blank line between.
+- Each list item goes on its own line, starting with "- ".
+- Do NOT use bold inline markers like "**Decisions Made:**" as paragraph \
+  emphasis — use real markdown headings (## Decisions Made) or a proper list.
+- Use blank lines before and after code blocks, blockquotes, and headings.
+
+Example:
+## Summary
+
+Brief prose paragraph here.
+
+## Key Decisions
+
+- First decision made
+- Second decision made
+
+## Action Items
+
+- Follow-up task one
+- Follow-up task two 
 
 === TODO EXTRACTION ===
 
