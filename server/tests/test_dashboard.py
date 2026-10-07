@@ -1,6 +1,6 @@
 """Mock integration tests for dashboard routes."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -59,10 +59,20 @@ async def test_get_recording_detail():
 
     app = _app_with_mocks()
 
-    with patch(
-        "lifelog.routes.dashboard.get_recording",
-        new_callable=AsyncMock,
-        return_value=fake_recording,
+    # Mock pool for the speaker_segments fetch in get_recording_detail.
+    fake_conn = AsyncMock()
+    fake_conn.fetchrow.return_value = {"speaker_segments": None}
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=fake_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch(
+            "lifelog.routes.dashboard.get_recording",
+            new_callable=AsyncMock,
+            return_value=fake_recording,
+        ),
+        patch("lifelog.database.pool", mock_pool),
     ):
         client = TestClient(app)
         response = client.get("/recording/1")

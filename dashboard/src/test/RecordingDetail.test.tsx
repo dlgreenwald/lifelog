@@ -20,6 +20,7 @@ vi.mock('../api/client', () => ({
     deleteRecording: vi.fn().mockResolvedValue({ ok: true }),
     reprocessRecording: vi.fn().mockResolvedValue({ ok: true }),
     updateRecordingCategory: vi.fn().mockResolvedValue({ ok: true }),
+    getAllSpeakers: vi.fn().mockResolvedValue({ speakers: [] }),
   },
 }));
 

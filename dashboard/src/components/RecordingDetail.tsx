@@ -20,6 +20,7 @@ export default function RecordingDetail() {
   const [audioUrls, setAudioUrls] = useState<string[]>([]);
   const [recordingTodos, setRecordingTodos] = useState<Todo[]>([]);
   const [recordingDecisions, setRecordingDecisions] = useState<Decision[]>([]);
+  const [selfSpeakerIds, setSelfSpeakerIds] = useState<number[]>([]);
   const [showTodoForm, setShowTodoForm] = useState(false);
   const [todoFormTask, setTodoFormTask] = useState('');
   const [todoFormOwner, setTodoFormOwner] = useState('Me');
@@ -163,6 +164,27 @@ export default function RecordingDetail() {
 
   useEffect(() => { loadRecording(); }, [loadRecording]);
 
+  // Load self speaker names for transcript alignment
+  useEffect(() => {
+    if (!id) return;
+    api.getAllSpeakers().then((data: unknown) => {
+      if (data && typeof data === "object" && "speakers" in data) {
+        const speakers = (data as { speakers: unknown[] }).speakers;
+        const selfIds: number[] = [];
+        for (const s of speakers) {
+          if (
+            typeof s === "object" && s !== null &&
+            "is_self" in s && s.is_self === true &&
+            "id" in s && typeof (s as { id: unknown }).id === "number"
+          ) {
+            selfIds.push((s as { id: number }).id);
+          }
+        }
+        setSelfSpeakerIds(selfIds);
+      }
+    });
+  }, [id]);
+
   // Auto-refresh for live recordings
   useEffect(() => {
     if (!isLive) return;
@@ -289,6 +311,7 @@ export default function RecordingDetail() {
   };
 
   const [reprocessing, setReprocessing] = useState(false);
+  const [reidentifying, setReidentifying] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const handleReprocess = async () => {
     if (!id || isLive || reprocessing) return;
@@ -299,6 +322,15 @@ export default function RecordingDetail() {
       navigate('/', { replace: true });
     } catch {
       setReprocessing(false);
+    }
+  };
+  const handleReidentify = async () => {
+    if (!id || isLive || reidentifying) return;
+    setReidentifying(true);
+    try {
+      await api.reidentifyRecording(id);
+    } finally {
+      setReidentifying(false);
     }
   };
 
@@ -350,6 +382,13 @@ export default function RecordingDetail() {
           >
             {reprocessing || recording.pending_reprocessing ? 'Reprocessing…' : 'Reprocess'}
           </button>
+          <button
+            className="reprocess-button"
+            onClick={handleReidentify}
+            disabled={reidentifying || isLive}
+          >
+            {reidentifying ? 'Reidentifying…' : 'Reidentify Speakers'}
+          </button>
           <div className="category-buttons">
             <span className="category-label">Category:</span>
             {['work', 'personal', 'not_meaningful'].map(cat => (
@@ -395,6 +434,7 @@ export default function RecordingDetail() {
                 segments={recording?.transcript?.segments ?? []}
                 hideSpeakerLabels={isLive}
                 highlightedText={fmtText}
+                selfSpeakerIds={selfSpeakerIds}
               />
             </CollapsibleContent>
           </Collapsible>

@@ -37,6 +37,15 @@ export default function SpeakerLabel() {
     await refresh();
   };
 
+  const handleToggleSelf = async (speaker: SpeakerSummary) => {
+    if (speaker.is_self) {
+      await api.unmarkAsSelf(speaker.id);
+    } else {
+      await api.markAsSelf(speaker.id);
+    }
+    await refresh();
+  };
+
   const toggleChecked = (id: number) => {
     setChecked(prev =>
       prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
@@ -52,7 +61,7 @@ export default function SpeakerLabel() {
   };
 
   return (
-    <div className="flex flex-col h-full px-4">
+    <div className="flex flex-col h-full overflow-y-auto px-4">
       <h2 className="text-xl font-semibold tracking-tight mb-4">Speakers</h2>
 
       {speakers.length === 0 && (
@@ -86,6 +95,14 @@ export default function SpeakerLabel() {
                 data-testid={`speaker-audio-${speaker.id}`}
               />
             )}
+            <Button
+              size="sm"
+              variant={speaker.is_self ? "default" : "outline"}
+              onClick={() => handleToggleSelf(speaker)}
+              data-testid={`self-button-${speaker.id}`}
+            >
+              {speaker.is_self ? "This is me ✓" : "This is me"}
+            </Button>
             {renamingId === speaker.id ? (
               <>
                 <Input

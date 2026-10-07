@@ -104,6 +104,8 @@ export const api = {
     fetchApi(`/dashboard/recording/${id}`, { method: 'DELETE' }),
   reprocessRecording: (id: string) =>
     fetchApi(`/dashboard/recording/${id}/reprocess`, { method: 'POST' }),
+  reidentifyRecording: (id: string) =>
+    fetchApi(`/dashboard/recording/${id}/reidentify-speakers`, { method: 'POST' }),
   updateRecordingCategory: (id: string, category: string) =>
     fetchApi(`/dashboard/recording/${id}/category`, {
       method: 'POST',
@@ -126,6 +128,10 @@ export const api = {
     }),
   deleteSpeaker: (id: number) =>
     fetchApi(`/speakers/${id}`, { method: 'DELETE' }),
+  markAsSelf: (id: number) =>
+    fetchApi(`/speakers/${id}/mark-as-self`, { method: 'POST' }),
+  unmarkAsSelf: (id: number) =>
+    fetchApi(`/speakers/${id}/mark-as-self`, { method: 'DELETE' }),
   getSettings: () => fetchApi('/dashboard/settings'),
   saveSettings: (data: { language: string; llm_context: string }) =>
     fetchApi('/dashboard/settings', {

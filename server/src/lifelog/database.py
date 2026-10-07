@@ -550,11 +550,11 @@ async def get_speakers(user_id: int) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT s.id, s.name, COUNT(vp.id) AS voiceprint_count
+            SELECT s.id, s.name, s.is_self, COUNT(vp.id) AS voiceprint_count
             FROM speakers s
             LEFT JOIN voiceprints vp ON vp.speaker_id = s.id
             WHERE s.user_id = $1
-            GROUP BY s.id, s.name
+            GROUP BY s.id, s.name, s.is_self
             ORDER BY s.name
         """,
             user_id,
@@ -574,8 +574,7 @@ async def rename_speaker(user_id: int, speaker_id: int, new_name: str) -> bool:
             return False
         old_name = row["name"]
         await conn.execute(
-            "UPDATE speakers SET name = $3 WHERE id = $2",
-            user_id,
+            "UPDATE speakers SET name = $2 WHERE id = $1",
             speaker_id,
             new_name,
         )
@@ -2322,3 +2321,15 @@ async def save_user_settings(user_id: int, language: str, llm_context: str) -> N
             language,
             llm_context,
         )
+
+
+async def mark_speaker_self(user_id: int, speaker_id: int, is_self: bool) -> bool:
+    """Set or unset the is_self flag on a speaker. Returns True if updated."""
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE speakers SET is_self = $3 WHERE id = $2 AND user_id = $1",
+            user_id,
+            speaker_id,
+            is_self,
+        )
+        return result == "UPDATE 1"

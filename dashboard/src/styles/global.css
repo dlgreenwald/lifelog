@@ -501,6 +501,8 @@ header nav a.search-trigger:hover {
   background: var(--muted);
   padding: 16px;
   border-radius: 8px;
+  overflow-y: auto;
+  max-height: 60vh;
 }
 
 .speakers ul {
@@ -1412,11 +1414,19 @@ main {
 }
 
 /* Bubble content — the cva variants use *:data-[slot=bubble-content] (parent/descendant)
-   which never matches since the attribute is ON the element itself.
-   This direct rule fixes that. */
-[data-slot="bubble-content"] {
+   selectors which don't work because base-ui renders BubbleContent as a sibling
+   not a descendant. Use parent's data-variant attribute to target BubbleContent directly.
+   Self bubbles get a distinctly darker grey so they stand out. */
+[data-slot="bubble"][data-variant="default"] [data-slot="bubble-content"],
+[data-slot="bubble"][data-variant="default"] [data-slot="bubble-content"] * {
   background-color: var(--primary);
   color: var(--primary-foreground);
+}
+
+[data-slot="bubble"][data-variant="muted"] [data-slot="bubble-content"],
+[data-slot="bubble"][data-variant="muted"] [data-slot="bubble-content"] * {
+  background-color: #d1d5db;
+  color: #1f2937;
 }
 
 /* Markdown summary body styles */
