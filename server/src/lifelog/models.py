@@ -96,6 +96,25 @@ class UploadResponse(BaseModel):
     recording_id: int
 
 
+class UploadOfflineRequest(BaseModel):
+    """Request model for POST /upload/offline (parsed from form fields)."""
+
+    session_id: int | None = None
+    recorded_at: int  # Unix epoch from firmware's RTC
+    duration_s: float | None = None
+
+
+class OfflineUploadResponse(BaseModel):
+    status: str
+    session_id: int
+    recording_id: int
+
+
+class BurstEndResponse(BaseModel):
+    status: str
+    session_id: int
+
+
 class UserSettings(BaseModel):
     language: str = "auto"
     llm_context: str = ""

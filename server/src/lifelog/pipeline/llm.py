@@ -317,7 +317,8 @@ concise prose.
 The long_summary should be roughly one page (≈400 words) of prose per hour of \
 transcribed audio. If the content exceeds a single page, prepend a brief \
 bullet-point outline before the prose. When the partition is short (under a \
-few minutes), the long_summary may be identical to the summary.
+few minutes), the long_summary may be identical to the summary.  Write the long \
+summary as a markdown string. 
 
 === TODO EXTRACTION ===
 

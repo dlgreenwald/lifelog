@@ -36,7 +36,8 @@ enum AuthState : uint8_t {
     AUTH_DISPLAYING_CODE = 2,
     AUTH_POLLING = 3,
     AUTHENTICATED = 4,
-    AUTH_ERROR = 5
+    AUTH_ERROR = 5,
+    AUTH_PERMANENT_ERROR = 6  ///< Irreversible: invalid/ revoked refresh token — no automatic recovery
 };
 
 // ── Configuration ──────────────────────────────────────────────────
@@ -125,6 +126,9 @@ public:
     void _testSetHttpResponse(int status, const char* jsonBody);
     void pollOnce();
 #endif
+    // Internal methods called by production code paths
+    void pollToken();
+    void exchangeRefreshToken();
 
 private:
     // Internal HTTP (for auth server requests and one-shot methods)
@@ -135,8 +139,6 @@ private:
 
     // Device code flow internals
     void requestDeviceCode();
-    void pollToken();
-    void exchangeRefreshToken();
     void saveTokens();
     void loadTokens();
     void saveDeviceCodeInfo();
@@ -170,6 +172,8 @@ private:
     uint32_t _flowStartTime = 0;
     uint32_t _deviceCodeExpiry = 0;  // Epoch millis when device code expires
     uint32_t _refreshRetryMs = 0;  // >0: retry countdown — set on transient refresh failure
+    uint8_t  _recoveryAttempt = 0;   // Fibonacci backoff attempt counter for AUTH_ERROR recovery
+    uint32_t _recoveryDelayMs = 0;  // Current recovery backoff delay in ms
     bool _hasTokens = false;
 
     void* _pollingTaskHandle = nullptr;

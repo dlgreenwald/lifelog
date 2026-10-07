@@ -139,6 +139,56 @@ async def save_recording(
         return row["id"]
 
 
+async def save_offline_recording(
+    user_id: int,
+    audio_filename: str,
+    session_id: int,
+    recorded_at: datetime,
+) -> int:
+    """Insert a recording with an explicit backdated timestamp for offline sessions.
+
+    Also inserts a session_utterances entry so the existing transcription pipeline
+    (which reads from session_utterances) can process offline recordings.
+    """
+    async with pool.acquire() as conn:
+        # Get next partition_index for this session (auto-increment per session)
+        part_row = await conn.fetchrow(
+            """
+            SELECT COALESCE(MAX(partition_index), -1) + 1 AS next_index
+            FROM recordings WHERE session_id = $1
+            """,
+            session_id,
+        )
+        next_index = part_row["next_index"]
+        # Insert recording
+        row = await conn.fetchrow(
+            """
+            INSERT INTO recordings (user_id, timestamp, session_id, category, audio_filename, partition_index)
+            VALUES ($1, $2, $3, NULL, $4, $5)
+            RETURNING id
+            """,
+            user_id,
+            recorded_at.replace(tzinfo=None),
+            session_id,
+            audio_filename,
+            next_index,
+        )
+        recording_id = row["id"]
+        # Insert session_utterances entry so transcription pipeline can find this audio.
+        # Uses recording_id as utterance_id; created_at = backdated recorded_at.
+        await conn.execute(
+            """
+            INSERT INTO session_utterances (session_id, utterance_id, audio_filename, transcript, named_segments, created_at)
+            VALUES ($1, $2, $3, '{}', '{}', $4)
+            """,
+            session_id,
+            recording_id,
+            audio_filename,
+            recorded_at.replace(tzinfo=None),
+        )
+        return recording_id
+
+
 async def get_recordings_by_date(
     user_id: int, date: str, category: str | None = None
 ) -> list[dict]:
@@ -1048,6 +1098,120 @@ async def end_session(session_id: int):
         )
 
 
+# ── Offline session operations ──────────────────────────────────────
+
+
+async def create_offline_session(user_id: int, recorded_at: datetime) -> int:
+    """Insert a new active offline session; return its id."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO sessions (user_id, started_at, status, offline)
+            VALUES ($1, $2, 'active', true)
+            RETURNING id
+            """,
+            user_id,
+            recorded_at.replace(tzinfo=None),
+        )
+        return row["id"]
+
+
+async def get_active_offline_session(user_id: int) -> dict | None:
+    """Fetch most recent active offline session for a user, or None."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, user_id, started_at, ended_at, offline
+            FROM sessions
+            WHERE user_id = $1 AND status = 'active' AND offline = true
+            LIMIT 1
+            """,
+            user_id,
+        )
+        return dict(row) if row else None
+
+
+async def get_last_offline_recording_time(session_id: int) -> datetime | None:
+    """Get the timestamp of the most recent recording in an offline session."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT timestamp FROM recordings
+            WHERE session_id = $1
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            session_id,
+        )
+        return row["timestamp"] if row else None
+
+
+async def update_offline_session_range(session_id: int, recorded_at: datetime) -> None:
+    """Extend offline session started_at backward if recorded_at is earlier."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE sessions
+            SET started_at = LEAST(started_at, $2::timestamp)
+            WHERE id = $1 AND offline = true
+            """,
+            session_id,
+            recorded_at.replace(tzinfo=None),
+        )
+
+
+async def end_offline_session(session_id: int, ended_at: datetime) -> None:
+    """Mark an offline session as ended with a specific ended_at time."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE sessions
+            SET status = 'ended', ended_at = $2, offline = true
+            WHERE id = $1
+            """,
+            session_id,
+            ended_at.replace(tzinfo=None),
+        )
+
+
+async def get_ended_offline_sessions() -> list[dict]:
+    """Return ended offline sessions not yet processed, ordered by ended_at."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, user_id, started_at, ended_at
+            FROM sessions
+            WHERE status = 'ended' AND offline = true AND processed_at IS NULL
+            ORDER BY ended_at
+            """
+        )
+        return [dict(row) for row in rows]
+
+
+async def mark_offline_session_processed(session_id: int) -> None:
+    """Mark an offline session as processed so it is not re-selected."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE sessions SET status = 'processed', processed_at = NOW() WHERE id = $1",
+            session_id,
+        )
+
+
+async def get_offline_sessions_for_finalization() -> list[dict]:
+    """Offline sessions with transcription done but not yet finalized (session_processed_at IS NULL)."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, user_id, started_at, ended_at, retry_count
+            FROM sessions
+            WHERE status = 'processed' AND offline = true AND processed_at IS NOT NULL
+              AND session_processed_at IS NULL
+            ORDER BY processed_at
+            """
+        )
+        return [dict(row) for row in rows]
+
+
 async def check_and_end_inactive_session(session_id: int) -> bool:
     """End session if last utterance with text is older than session_gap_minutes. Returns True if ended."""
     last_time = await get_last_utterance_with_text_time(session_id)
@@ -1585,6 +1749,21 @@ async def update_session_utterance_transcript(
             """,
             session_id,
             utterance_id,
+            transcript,
+        )
+
+
+async def update_session_utterances_transcript_by_session(
+    session_id: int, transcript: dict
+) -> None:
+    """Update transcript for all utterances in a session (offline sessions)."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE session_utterances SET transcript = $2::jsonb
+            WHERE session_id = $1
+            """,
+            session_id,
             transcript,
         )
 

@@ -578,3 +578,117 @@ void test_oauth2_malformed_json_response() {
     // Should be in error state (no valid token fields parsed)
     TEST_ASSERT_EQUAL(AUTH_ERROR, oauth2Flow.getState());
 }
+
+void test_oauth2_invalid_grant_becomes_permanent_error() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+
+    mockPutString("oauth2", "access_token", "at_old");
+    mockPutString("oauth2", "refresh_token", "rt_old");
+    mockPutUint32("oauth2", "token_expiry", 0);
+    mockPutBool("oauth2", "has_tokens", true);
+    oauth2Flow.begin(&mockStorage);
+
+    // Server returns invalid_grant (permanent failure)
+    oauth2Flow._testSetHttpResponse(400, "{\"error\":\"invalid_grant\"}");
+    oauth2Flow.exchangeRefreshToken();
+    TEST_ASSERT_EQUAL(AUTH_PERMANENT_ERROR, oauth2Flow.getState());
+}
+
+void test_oauth2_token_revoked_becomes_permanent_error() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+
+    mockPutString("oauth2", "access_token", "at_old");
+    mockPutString("oauth2", "refresh_token", "rt_old");
+    mockPutUint32("oauth2", "token_expiry", 0);
+    mockPutBool("oauth2", "has_tokens", true);
+    oauth2Flow.begin(&mockStorage);
+
+    oauth2Flow._testSetHttpResponse(400, "{\"error\":\"token_revoked\"}");
+    oauth2Flow.exchangeRefreshToken();
+    TEST_ASSERT_EQUAL(AUTH_PERMANENT_ERROR, oauth2Flow.getState());
+}
+
+void test_oauth2_invalid_token_becomes_permanent_error() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+
+    mockPutString("oauth2", "access_token", "at_old");
+    mockPutString("oauth2", "refresh_token", "rt_old");
+    mockPutUint32("oauth2", "token_expiry", 0);
+    mockPutBool("oauth2", "has_tokens", true);
+    oauth2Flow.begin(&mockStorage);
+
+    oauth2Flow._testSetHttpResponse(400, "{\"error\":\"invalid_token\"}");
+    oauth2Flow.exchangeRefreshToken();
+    TEST_ASSERT_EQUAL(AUTH_PERMANENT_ERROR, oauth2Flow.getState());
+}
+
+void test_oauth2_token_expired_is_transient_error() {
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+
+    mockPutString("oauth2", "access_token", "at_old");
+    mockPutString("oauth2", "refresh_token", "rt_old");
+    mockPutUint32("oauth2", "token_expiry", 0);
+    mockPutBool("oauth2", "has_tokens", true);
+    oauth2Flow.begin(&mockStorage);
+
+    // token_expired is transient — state becomes AUTH_ERROR, not AUTH_PERMANENT_ERROR
+    oauth2Flow._testSetHttpResponse(400, "{\"error\":\"token_expired\"}");
+    oauth2Flow.exchangeRefreshToken();
+    TEST_ASSERT_EQUAL(AUTH_ERROR, oauth2Flow.getState());
+}
+
+void test_oauth2_auth_error_recovers_after_retry() {
+    // After token_expired (transient), _hasTokens stays true so a second
+    // exchangeRefreshToken() call can succeed.
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+
+    mockPutString("oauth2", "access_token", "at_old");
+    mockPutString("oauth2", "refresh_token", "rt_old");
+    mockPutUint32("oauth2", "token_expiry", 0);
+    mockPutBool("oauth2", "has_tokens", true);
+    oauth2Flow.begin(&mockStorage);
+
+    // First exchangeRefreshToken: token_expired (transient) -> AUTH_ERROR
+    oauth2Flow._testSetHttpResponse(400, "{\"error\":\"token_expired\"}");
+    oauth2Flow.exchangeRefreshToken();
+    TEST_ASSERT_EQUAL(AUTH_ERROR, oauth2Flow.getState());
+
+    // Second exchangeRefreshToken: retry succeeds -> AUTH_AUTH (_hasTokens stayed true)
+    oauth2Flow._testSetHttpResponse(200,
+        "{\"access_token\":\"at_new\",\"refresh_token\":\"rt_new\",\"expires_in\":7200}");
+    oauth2Flow.exchangeRefreshToken();
+    TEST_ASSERT_EQUAL(AUTHENTICATED, oauth2Flow.getState());
+}
+
+void test_oauth2_auth_error_permanent_error_blocks_recovery() {
+    // After invalid_grant (permanent), _hasTokens=false and _refreshToken cleared.
+    // Subsequent exchangeRefreshToken() calls hit the early-return guard.
+    oauth2ResetAll();
+    oauth2Flow.begin(&mockStorage);
+    oauth2Flow.configure(oauth2TestConfig());
+
+    mockPutString("oauth2", "access_token", "at_old");
+    mockPutString("oauth2", "refresh_token", "rt_old");
+    mockPutUint32("oauth2", "token_expiry", 0);
+    mockPutBool("oauth2", "has_tokens", true);
+    oauth2Flow.begin(&mockStorage);
+
+    // First exchangeRefreshToken: invalid_grant -> AUTH_PERMANENT_ERROR
+    oauth2Flow._testSetHttpResponse(400, "{\"error\":\"invalid_grant\"}");
+    oauth2Flow.exchangeRefreshToken();
+    TEST_ASSERT_EQUAL(AUTH_PERMANENT_ERROR, oauth2Flow.getState());
+
+    // Second exchangeRefreshToken: _hasTokens=false -> returns early, stays PERMANENT_ERROR
+    oauth2Flow.exchangeRefreshToken();
+    TEST_ASSERT_EQUAL(AUTH_PERMANENT_ERROR, oauth2Flow.getState());
+}

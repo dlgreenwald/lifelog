@@ -533,24 +533,98 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
                 return;
 #endif
             }
+            case AUTH_ERROR: {
+                // Transient auth failure — attempt recovery with Fibonacci backoff.
+                // The recovery delay table in minutes: 1,1,2,3,5,8,11,19,30,49, then 60.
+                // After the 10th entry (49 min) recovery attempts repeat at 60-min intervals.
+                static const uint32_t _recoveryDelaysMs[] = {
+                    1 * 60 * 1000,   // attempt 0:  1 min
+                    1 * 60 * 1000,   // attempt 1:  1 min
+                    2 * 60 * 1000,   // attempt 2:  2 min
+                    3 * 60 * 1000,   // attempt 3:  3 min
+                    5 * 60 * 1000,   // attempt 4:  5 min
+                    8 * 60 * 1000,   // attempt 5:  8 min
+                    11 * 60 * 1000,  // attempt 6:  11 min
+                    19 * 60 * 1000,  // attempt 7:  19 min
+                    30 * 60 * 1000,  // attempt 8:  30 min
+                    49 * 60 * 1000,  // attempt 9:  49 min
+                };
+                static constexpr size_t _recoveryNumDelayEntries =
+                    sizeof(_recoveryDelaysMs) / sizeof(_recoveryDelaysMs[0]);
+                static constexpr uint32_t _recoveryFinalDelayMs = 60 * 60 * 1000;  // 60 min steady-state
+
+                if (_recoveryDelayMs == 0) {
+                    // Arm delay on first entry this iteration
+                    uint32_t delay = (_recoveryAttempt < _recoveryNumDelayEntries)
+                                         ? _recoveryDelaysMs[_recoveryAttempt]
+                                         : _recoveryFinalDelayMs;
+                    _recoveryDelayMs = delay;
 #ifndef OAUTH2_TESTING
-                // Clear tokens and go idle — user must re-auth via dashboard
-                ESP_LOGI(TAG, "Clearing tokens, returning to idle");
-                _accessToken[0] = '\0';
-                _refreshToken[0] = '\0';
-                _tokenExpiry = 0;
-                _refreshTokenExpiry = 0;
-                _hasTokens = false;
-                if (_storage) {
-                    _storage->remove(NS, "access_token");
-                    _storage->remove(NS, "refresh_token");
-                    _storage->remove(NS, "token_expiry");
-                    _storage->remove(NS, "refresh_exp");
-                    _storage->putBool(NS, "has_tokens", false);
+                    ESP_LOGI(TAG, "AUTH_ERROR recovery: attempt %u, delay %lu ms", _recoveryAttempt, delay);
+#endif
+                } else {
+                    // Delay already armed — this is a re-entry after the caller advanced mock time.
+                    // Consume the delay and attempt refresh immediately (test mode only).
+#ifndef OAUTH2_TESTING
+                    xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+                    vTaskDelay(pdMS_TO_TICKS(_recoveryDelayMs));
+                    xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
+#endif
+                    _recoveryDelayMs = 0;  // consumed
+                    refreshToken();
+                    if (_hasTokens) {
+                        _recoveryAttempt = 0;
+                        _recoveryDelayMs = 0;
+#ifndef OAUTH2_TESTING
+                        ESP_LOGI(TAG, "AUTH_ERROR recovery succeeded");
+#endif
+                        break;
+                    }
+                    if (_state == AUTH_PERMANENT_ERROR) {
+                        _recoveryAttempt = 0;
+                        _recoveryDelayMs = 0;
+                        break;
+                    }
+                    _recoveryAttempt++;
+                    break;
                 }
-                setState(AUTH_IDLE);
+
+                // Sleep then retry (non-test mode); test mode: return immediately so the
+                // next pollOnce() call (after caller advances mock time) re-enters this
+                // case with _recoveryDelayMs > 0 and attempts the refresh.
+#ifndef OAUTH2_TESTING
+                xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+                vTaskDelay(pdMS_TO_TICKS(_recoveryDelayMs));
+                xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
+#endif
+                _recoveryDelayMs = 0;  // consumed
+                refreshToken();
+                if (_hasTokens) {
+                    _recoveryAttempt = 0;
+                    _recoveryDelayMs = 0;
+#ifndef OAUTH2_TESTING
+                    ESP_LOGI(TAG, "AUTH_ERROR recovery succeeded");
+#endif
+                    break;
+                }
+                if (_state == AUTH_PERMANENT_ERROR) {
+                    _recoveryAttempt = 0;
+                    _recoveryDelayMs = 0;
+                    break;
+                }
+                _recoveryAttempt++;
+                break;
+            }
+            case AUTH_PERMANENT_ERROR: {
+                // Irreversible auth failure — idle indefinitely, require manual re-auth.
+#ifndef OAUTH2_TESTING
+                ESP_LOGI(TAG, "AUTH_PERMANENT_ERROR: waiting for manual re-auth");
+                xSemaphoreGive(static_cast<SemaphoreHandle_t>(_mutex));
+                vTaskDelay(pdMS_TO_TICKS(60000));
+                xSemaphoreTake(static_cast<SemaphoreHandle_t>(_mutex), portMAX_DELAY);
 #endif
                 break;
+            }
             default: break;
         }
 #ifndef OAUTH2_TESTING
@@ -558,7 +632,7 @@ void OAuth2DeviceFlow::pollingTaskLoop() {
         vTaskDelay(pdMS_TO_TICKS(100));
 #else
         if (_state == AUTH_POLLING || _state == AUTHENTICATED ||
-            _state == AUTH_ERROR || _state == AUTH_IDLE) return;
+            _state == AUTH_ERROR || _state == AUTH_PERMANENT_ERROR || _state == AUTH_IDLE) return;
 #endif
     }
 }
@@ -660,6 +734,22 @@ void OAuth2DeviceFlow::pollToken() {
             if (_storage) _storage->putUint32(NS, "poll_int", _pollInterval);
             return;
         }
+        // Permanent failures: refresh token is invalid/revoked — no automatic recovery
+        if (strcmp(error, "invalid_grant") == 0 ||
+            strcmp(error, "token_revoked") == 0 ||
+            strcmp(error, "invalid_token") == 0) {
+            const char* errorDesc = resp.body["error_description"] | error;
+            snprintf(_lastError, sizeof(_lastError), "%s: %s", error, errorDesc);
+#ifndef OAUTH2_TESTING
+            ESP_LOGW(TAG, "Permanent poll error %s — clearing tokens: %s", error, errorDesc);
+#endif
+            _hasTokens = false;
+            _recoveryAttempt = 0;
+            _recoveryDelayMs = 0;
+            setState(AUTH_PERMANENT_ERROR);
+            return;
+        }
+        // Transient errors — recoverable via re-auth
         strlcpy(_lastError, resp.body["error_description"] | error, sizeof(_lastError));
         setState(AUTH_ERROR);
         return;
@@ -756,14 +846,27 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
         if (resp.statusCode >= 400 && (
             strcmp(error, "invalid_grant") == 0 ||
             strcmp(error, "token_revoked") == 0 ||
-            strcmp(error, "token_expired") == 0 ||
             strcmp(error, "invalid_token") == 0)) {
+            // Permanent failures — refresh token is invalid/revoked, no automatic recovery
             const char* errorDesc = resp.body["error_description"] | "";
             snprintf(_lastError, sizeof(_lastError), "%s: %s", error, errorDesc);
 #ifndef OAUTH2_TESTING
-            ESP_LOGW(TAG, "Fatal refresh error %s — clearing tokens: %s", error, errorDesc);
+            ESP_LOGW(TAG, "Permanent refresh error %s — clearing tokens: %s", error, errorDesc);
 #endif
             _hasTokens = false;
+            _recoveryAttempt = 0;
+            _recoveryDelayMs = 0;
+            setState(AUTH_PERMANENT_ERROR);
+            return;
+        }
+        if (resp.statusCode >= 400 && strcmp(error, "token_expired") == 0) {
+            // Transient: refresh token expired but may rotate — recoverable via retry.
+            // _hasTokens stays true so exchangeRefreshToken() can be called again.
+            const char* errorDesc = resp.body["error_description"] | "";
+            snprintf(_lastError, sizeof(_lastError), "%s: %s", error, errorDesc);
+#ifndef OAUTH2_TESTING
+            ESP_LOGW(TAG, "Token expired — will retry: %s", errorDesc);
+#endif
             setState(AUTH_ERROR);
             return;
         }
@@ -829,6 +932,7 @@ void OAuth2DeviceFlow::exchangeRefreshToken() {
         }
 #endif
         saveTokens();
+        setState(AUTHENTICATED);
         return;
     }
 }

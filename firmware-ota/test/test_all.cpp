@@ -500,7 +500,7 @@ int main() {
     RUN_TEST(test_agcProcessFrame_null_samples_returns_error);
     RUN_TEST(test_agcProcessFrame_null_state_returns_error);
 
-    // ── OAuth2 Device Flow (28 tests) ──
+    // ── OAuth2 Device Flow (34 tests) ──
     RUN_TEST(test_oauth2_initial_state_is_idle);
     RUN_TEST(test_oauth2_start_transitions_to_requesting_code);
     RUN_TEST(test_oauth2_device_code_request_success);
@@ -529,6 +529,12 @@ int main() {
     RUN_TEST(test_oauth2_put_no_auth_header_when_not_authenticated);
     RUN_TEST(test_oauth2_patch_returns_zero_when_not_authenticated);
     RUN_TEST(test_oauth2_malformed_json_response);
+    RUN_TEST(test_oauth2_invalid_grant_becomes_permanent_error);
+    RUN_TEST(test_oauth2_token_revoked_becomes_permanent_error);
+    RUN_TEST(test_oauth2_invalid_token_becomes_permanent_error);
+    RUN_TEST(test_oauth2_token_expired_is_transient_error);
+    RUN_TEST(test_oauth2_auth_error_recovers_after_retry);
+    RUN_TEST(test_oauth2_auth_error_permanent_error_blocks_recovery);
 
     // ── LED State Machine (9 tests) ──
     RUN_TEST(test_audio_activity_listen_turns_led_on);
