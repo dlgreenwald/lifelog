@@ -242,6 +242,35 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
     return () => clearInterval(interval);
   }, [loadActive]);
 
+  // Poll today's recordings and todos every 60s when today is in the selected range
+  const todayStr = format(new Date(), 'yyyy-MM-dd');
+  const refreshToday = useCallback(() => {
+    if (!selectedDates.includes(todayStr)) return;
+    api.getRecordings(todayStr, categoryFilter === 'all' ? undefined : categoryFilter).then(
+      (data: { recordings: Recording[] }) => {
+        setRecordingsByDate(prev => {
+          const map = new Map(prev);
+          map.set(todayStr, data.recordings ?? []);
+          return map;
+        });
+      }
+    );
+    api.getTodosForDate(todayStr).then((data: { todos: Todo[] }) => {
+      setTodosByDate(prev => {
+        const filtered = prev.filter(g => g.date !== todayStr);
+        if (data.todos.length > 0) {
+          filtered.push({ date: todayStr, todos: data.todos });
+        }
+        return filtered;
+      });
+    });
+  }, [selectedDates, todayStr, categoryFilter]);
+
+  useEffect(() => {
+    const interval = setInterval(refreshToday, 60_000);
+    return () => clearInterval(interval);
+  }, [refreshToday]);
+
   const bookedDates = useMemo(() =>
     new Set(calendarDays.filter(d => d.count > 0).map(d => d.date)),
     [calendarDays]

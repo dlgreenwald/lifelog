@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import RecordingDetail from '../components/RecordingDetail';
 import { api } from '../api/client';
@@ -20,6 +19,7 @@ vi.mock('../api/client', () => ({
     deleteRecording: vi.fn().mockResolvedValue({ ok: true }),
     reprocessRecording: vi.fn().mockResolvedValue({ ok: true }),
     updateRecordingCategory: vi.fn().mockResolvedValue({ ok: true }),
+    getAllSpeakers: vi.fn().mockResolvedValue({ speakers: [] }),
   },
 }));
 
@@ -87,12 +87,7 @@ describe('RecordingDetail', () => {
 
     renderDetail();
 
-    // Open the collapsible transcript section
-    const trigger = await waitFor(() =>
-      screen.getByRole('button', { name: 'Transcript' }),
-    );
-    await act(async () => { await userEvent.click(trigger); });
-
+    // Transcript is open by default; content immediately visible
     await waitFor(() => {
       expect(screen.getByText(/Let us plan Q1/)).toBeInTheDocument();
       expect(screen.getByText(/Sounds good/)).toBeInTheDocument();
@@ -113,11 +108,7 @@ describe('RecordingDetail', () => {
 
     renderDetail();
 
-    const trigger = await waitFor(() =>
-      screen.getByRole('button', { name: 'Transcript' }),
-    );
-    await act(async () => { await userEvent.click(trigger); });
-
+    // Transcript is open by default; Unknown segment immediately visible
     await waitFor(() => {
       expect(screen.getByText('Mystery')).toBeInTheDocument();
     });

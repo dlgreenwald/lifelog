@@ -8,7 +8,7 @@ import torch
 from fastapi import APIRouter, HTTPException
 
 from speaker_id.config import settings
-from speaker_id.embeddings import encoder
+from speaker_id.embeddings import AudioTooShortError, encoder
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,11 @@ async def resolve_speaker(data: dict):
             wav_bytes = opus_to_wav(audio_bytes)
         try:
             embeddings.append(encoder.extract_embedding(wav_bytes))
+        except AudioTooShortError as exc:
+            # Guard in extract_embedding: segment is below minimum duration.
+            # Log the actual ms so we can trace which segments are affected.
+            logger.warning("segment_skipped_too_short error=%s", exc)
+            continue
         except torch.OutOfMemoryError:
             # The CUDA caching allocator already retried internally before
             # raising; one more attempt after empty_cache can still fit when

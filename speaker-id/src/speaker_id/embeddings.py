@@ -14,6 +14,10 @@ IDLE_TIMEOUT = 300  # 5 minutes
 WATCHDOG_INTERVAL = 30  # Check every 30 seconds
 
 
+class AudioTooShortError(ValueError):
+    """Raised when an audio segment is too short for ECAPA-TDNN embedding."""
+
+
 class SpeakerEncoder:
     """ECAPA-TDNN speaker encoder (kept for backward compatibility with tests)."""
 
@@ -54,6 +58,14 @@ class SpeakerEncoder:
             num_samples = int(len(waveform) * 16000 / sample_rate)
             waveform = scipy.signal.resample(waveform, num_samples)
             sample_rate = 16000
+
+        duration = len(waveform) / sample_rate
+        MIN_EMBEDDING_SECONDS = 0.5
+        if duration < MIN_EMBEDDING_SECONDS:
+            raise AudioTooShortError(
+                f"Audio segment is {duration * 1000:.0f}ms, minimum is "
+                f"{MIN_EMBEDDING_SECONDS * 1000:.0f}ms"
+            )
 
         # Convert to torch tensor [batch, time]
         import torch

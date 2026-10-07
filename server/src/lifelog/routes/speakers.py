@@ -3,7 +3,12 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
 from lifelog.auth import validate_oidc_token
-from lifelog.database import delete_speaker, merge_speakers, rename_speaker
+from lifelog.database import (
+    delete_speaker,
+    mark_speaker_self,
+    merge_speakers,
+    rename_speaker,
+)
 from lifelog.models import SpeakerMerge, SpeakerRename
 
 logger = structlog.get_logger()
@@ -50,6 +55,26 @@ async def merge_speakers_route(
         target_id=body.target_id,
     )
     return {"ok": True, "speaker_id": body.target_id}
+
+
+@router.post("/{speaker_id}/mark-as-self")
+async def mark_self_route(speaker_id: int, user: dict = Depends(validate_oidc_token)):
+    """Set is_self=True on a speaker to mark it as the owning user for transcript alignment."""
+    updated = await mark_speaker_self(user["id"], speaker_id, True)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+    logger.info("speaker_marked_self", user_id=user["id"], speaker_id=speaker_id)
+    return {"ok": True, "speaker_id": speaker_id}
+
+
+@router.delete("/{speaker_id}/mark-as-self")
+async def unmark_self_route(speaker_id: int, user: dict = Depends(validate_oidc_token)):
+    """Set is_self=False on a speaker."""
+    updated = await mark_speaker_self(user["id"], speaker_id, False)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+    logger.info("speaker_unmarked_self", user_id=user["id"], speaker_id=speaker_id)
+    return {"ok": True, "speaker_id": speaker_id}
 
 
 @router.delete("/{speaker_id}")

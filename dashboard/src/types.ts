@@ -4,6 +4,8 @@ export interface TranscriptSegment {
   text?: string;
   speaker?: string;
   name?: string;
+  /** Speaker ID — set when the segment maps to an enrolled speaker. */
+  speaker_id?: number;
 }
 
 export interface Recording {
@@ -44,6 +46,7 @@ export interface SpeakerSummary {
   name: string;
   voiceprint_count: number;
   recording_id: number | null;
+  is_self: boolean;
 }
 
 export interface Todo {

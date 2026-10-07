@@ -49,6 +49,7 @@ from lifelog.database import (
 )
 from lifelog.models import CreateDecision, CreateTodo, UserSettings
 from lifelog.validation import validate_llm_context
+from lifelog.worker import _reidentify_recording
 
 logger = structlog.get_logger()
 
@@ -68,6 +69,95 @@ def _normalize_recording(rec: dict) -> dict:
         except (json.JSONDecodeError, ValueError):
             pass
     return rec
+
+
+def _resolve_transcript_speaker_labels(rec: dict, speaker_segments: list) -> None:
+    """Apply resolved speaker names to transcript.segments and their word-level labels in-place.
+
+    speaker_segments has ~95 diarization segments covering the whole recording.
+    transcript.segments has ~458 fine-grained ASR word-level segments.
+    A diarization segment's [start, end] range spans multiple transcript segments.
+
+    Strategy: for each transcript segment, check if any of its words' timestamps
+    fall inside a diarization segment's [start, end] range. If so, inherit that
+    diarization segment's resolved speaker name for both the segment-level and
+    word-level speaker fields.
+    """
+    import json
+
+    # Build diarization segment list with resolved name and time range.
+    diar_segments: list[tuple[float, float, str, int | None]] = []
+    for seg in speaker_segments:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            start = float(seg.get("start", 0))
+            end = float(seg.get("end", 0))
+        except (ValueError, TypeError):
+            continue
+        resolved_name = seg.get("speaker") or seg.get("name")
+        speaker_id = seg.get("speaker_id")
+        if resolved_name:
+            diar_segments.append((start, end, resolved_name, speaker_id))
+
+    if not diar_segments:
+        return
+
+    transcript = rec.get("transcript")
+    if isinstance(transcript, str):
+        try:
+            transcript = json.loads(transcript)
+        except (json.JSONDecodeError, ValueError):
+            transcript = None
+        else:
+            # Write the parsed dict back so the resolved labels persist in the
+            # returned object and are serialized correctly by FastAPI.
+            rec["transcript"] = transcript
+    if not isinstance(transcript, dict) or not isinstance(
+        transcript.get("segments"), list
+    ):
+        return
+
+    def resolve_speaker_label(
+        start: float, end: float
+    ) -> tuple[str | None, int | None]:
+        """Find which diarization segment covers [start, end], return (resolved_name, speaker_id)."""
+        for diar_start, diar_end, name, speaker_id in diar_segments:
+            if diar_start <= start <= diar_end or diar_start <= end <= diar_end:
+                return name, speaker_id
+        return None, None
+
+    for seg in transcript["segments"]:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            seg_start = float(seg.get("start", 0))
+            seg_end = float(seg.get("end", 0))
+        except (ValueError, TypeError):
+            continue
+
+        resolved, speaker_id = resolve_speaker_label(seg_start, seg_end)
+        if resolved:
+            seg["speaker"] = resolved
+            if speaker_id is not None:
+                seg["speaker_id"] = speaker_id
+            # Also resolve per-word speaker labels.
+            words = seg.get("words")
+            if isinstance(words, list):
+                for word_entry in words:
+                    if isinstance(word_entry, dict):
+                        try:
+                            w_start = float(word_entry.get("start", 0))
+                            w_end = float(word_entry.get("end", 0))
+                        except (ValueError, TypeError):
+                            continue
+                        word_resolved, word_speaker_id = resolve_speaker_label(
+                            w_start, w_end
+                        )
+                        if word_resolved:
+                            word_entry["speaker"] = word_resolved
+                            if word_speaker_id is not None:
+                                word_entry["speaker_id"] = word_speaker_id
 
 
 router = APIRouter()
@@ -139,6 +229,27 @@ async def get_recording_detail(
             "recording_not_found", recording_id=recording_id, user_id=user["id"]
         )
         raise HTTPException(status_code=404, detail="Recording not found")
+
+    # Fetch speaker_segments to resolve raw SPEAKER_XX labels in transcript.
+    import json
+
+    from lifelog.database import pool
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT speaker_segments FROM recordings WHERE id = $1", recording_id
+        )
+        speaker_segments: list = []
+        if row and row["speaker_segments"]:
+            raw = row["speaker_segments"]
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    raw = []
+            speaker_segments = raw if isinstance(raw, list) else []
+
+    _resolve_transcript_speaker_labels(recording, speaker_segments)
     return _normalize_recording(recording)
 
 
@@ -481,6 +592,27 @@ async def reprocess_recording_route(
 
     logger.info("recording_requeued", recording_id=recording_id, session_id=session_id)
     return {"ok": True, "session_id": session_id}
+
+
+@router.post("/recording/{recording_id}/reidentify-speakers")
+async def reidentify_speakers_route(
+    recording_id: int, user: dict = Depends(validate_oidc_token)
+):
+    """Re-run speaker identification for a recording's raw labels.
+
+    Unlike ``/reprocess``, this only re-runs the speaker resolve step —
+    it does not re-transcribe or reset the session. Suitable for recordings
+    that failed speaker resolution due to short audio segments (now fixed)
+    or other transient speaker-id errors.
+    """
+    recording = await get_recording(user["id"], recording_id)
+    if not recording:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    recording["encryption_secret"] = user["encryption_secret"]
+    recording["key_salt"] = user["key_salt"]
+    await _reidentify_recording(user, recording)
+    return {"ok": True}
 
 
 @router.post("/recording/{recording_id}/category")

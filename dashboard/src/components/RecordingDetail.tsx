@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown } from 'lucide-react';
 import { api } from '../api/client';
 import { formatDateTime } from '../utils/format';
+import { useIsMobile } from '@/hooks/use-mobile';
 import AudioPlayer from './AudioPlayer';
 import TranscriptBubble from './TranscriptBubble';
 import SummaryCard from './SummaryCard';
@@ -16,10 +17,12 @@ function revokeAudioUrl(url: string): void {
 export default function RecordingDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [recording, setRecording] = useState<Recording | null>(null);
   const [audioUrls, setAudioUrls] = useState<string[]>([]);
   const [recordingTodos, setRecordingTodos] = useState<Todo[]>([]);
   const [recordingDecisions, setRecordingDecisions] = useState<Decision[]>([]);
+  const [selfSpeakerIds, setSelfSpeakerIds] = useState<number[]>([]);
   const [showTodoForm, setShowTodoForm] = useState(false);
   const [todoFormTask, setTodoFormTask] = useState('');
   const [todoFormOwner, setTodoFormOwner] = useState('Me');
@@ -163,6 +166,27 @@ export default function RecordingDetail() {
 
   useEffect(() => { loadRecording(); }, [loadRecording]);
 
+  // Load self speaker names for transcript alignment
+  useEffect(() => {
+    if (!id) return;
+    api.getAllSpeakers().then((data: unknown) => {
+      if (data && typeof data === "object" && "speakers" in data) {
+        const speakers = (data as { speakers: unknown[] }).speakers;
+        const selfIds: number[] = [];
+        for (const s of speakers) {
+          if (
+            typeof s === "object" && s !== null &&
+            "is_self" in s && s.is_self === true &&
+            "id" in s && typeof (s as { id: unknown }).id === "number"
+          ) {
+            selfIds.push((s as { id: number }).id);
+          }
+        }
+        setSelfSpeakerIds(selfIds);
+      }
+    });
+  }, [id]);
+
   // Auto-refresh for live recordings
   useEffect(() => {
     if (!isLive) return;
@@ -289,7 +313,8 @@ export default function RecordingDetail() {
   };
 
   const [reprocessing, setReprocessing] = useState(false);
-  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [reidentifying, setReidentifying] = useState(false);
+  const [transcriptOpen, setTranscriptOpen] = useState(true);
   const handleReprocess = async () => {
     if (!id || isLive || reprocessing) return;
     if (!confirm('Reprocess this recording? It will be regenerated at the next hourly run.')) return;
@@ -299,6 +324,15 @@ export default function RecordingDetail() {
       navigate('/', { replace: true });
     } catch {
       setReprocessing(false);
+    }
+  };
+  const handleReidentify = async () => {
+    if (!id || isLive || reidentifying) return;
+    setReidentifying(true);
+    try {
+      await api.reidentifyRecording(id);
+    } finally {
+      setReidentifying(false);
     }
   };
 
@@ -350,6 +384,13 @@ export default function RecordingDetail() {
           >
             {reprocessing || recording.pending_reprocessing ? 'Reprocessing…' : 'Reprocess'}
           </button>
+          <button
+            className="reprocess-button"
+            onClick={handleReidentify}
+            disabled={reidentifying || isLive}
+          >
+            {reidentifying ? 'Reidentifying…' : 'Reidentify Speakers'}
+          </button>
           <div className="category-buttons">
             <span className="category-label">Category:</span>
             {['work', 'personal', 'not_meaningful'].map(cat => (
@@ -375,50 +416,53 @@ export default function RecordingDetail() {
         />
       )}
 
-      {rawSegments.length > 0 && (
-        <div className="speakers">
-          <Collapsible open={transcriptOpen} onOpenChange={setTranscriptOpen}>
-            <CollapsibleTrigger asChild>
-              <button
-                className="flex items-center justify-between w-full text-left bg-transparent border-none p-0 cursor-pointer"
-                type="button"
-              >
-                <h3>Transcript</h3>
-                <ChevronDown
-                  size={16}
-                  className={`transition-transform duration-200 ${transcriptOpen ? "" : "-rotate-90"}`}
-                />
-              </button>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <TranscriptBubble
-                segments={recording?.transcript?.segments ?? []}
-                hideSpeakerLabels={isLive}
-                highlightedText={fmtText}
+      {isMobile ? (
+        <>
+          {audioUrls.length > 0 && (
+            <div className="audio-player">
+              <h3>Audio</h3>
+              <AudioPlayer
+                sources={audioUrls}
+                segments={rawSegments.map((s, i) => ({
+                  id: i,
+                  name: s.name,
+                  text: s.text,
+                  start: 0,
+                  end: 0,
+                }))}
               />
-            </CollapsibleContent>
-          </Collapsible>
-        </div>
-      )}
+            </div>
+          )}
 
-      {audioUrls.length > 0 && (
-        <div className="audio-player">
-          <h3>Audio</h3>
-          <AudioPlayer
-            sources={audioUrls}
-            segments={rawSegments.map((s, i) => ({
-              id: i,
-              name: s.name,
-              text: s.text,
-              start: 0,
-              end: 0,
-            }))}
-          />
-        </div>
-      )}
+          {rawSegments.length > 0 && (
+            <div className="speakers">
+              <Collapsible open={transcriptOpen} onOpenChange={setTranscriptOpen}>
+                <CollapsibleTrigger asChild>
+                  <button
+                    className="flex items-center justify-between w-full text-left bg-transparent border-none p-0 cursor-pointer"
+                    type="button"
+                  >
+                    <h3>Transcript</h3>
+                    <ChevronDown
+                      size={16}
+                      className={`transition-transform duration-200 ${transcriptOpen ? "" : "-rotate-90"}`}
+                    />
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <TranscriptBubble
+                    segments={recording?.transcript?.segments ?? []}
+                    hideSpeakerLabels={isLive}
+                    highlightedText={fmtText}
+                    selfSpeakerIds={selfSpeakerIds}
+                  />
+                </CollapsibleContent>
+              </Collapsible>
+            </div>
+          )}
 
-      <div className="decisions">
-        <h3>Decisions</h3>
+          <div className="decisions">
+            <h3>Decisions</h3>
         {!isLive && (
           <button className="add-button" onClick={() => setShowDecisionForm(!showDecisionForm)}>
             {showDecisionForm ? 'Cancel' : '+ Add Decision'}
@@ -556,6 +600,197 @@ export default function RecordingDetail() {
           !showTodoForm && <p>No TODOs found</p>
         )}
       </div>
+        </>
+      ) : (
+        <div className="recording-layout">
+          <div className="recording-left-col">
+            <div className="decisions">
+              <h3>Decisions</h3>
+              {!isLive && (
+                <button className="add-button" onClick={() => setShowDecisionForm(!showDecisionForm)}>
+                  {showDecisionForm ? 'Cancel' : '+ Add Decision'}
+                </button>
+              )}
+              {showDecisionForm && (
+                <form className="create-form" onSubmit={handleCreateDecision}>
+                  <input
+                    type="text"
+                    placeholder="Decision *"
+                    value={decisionFormText}
+                    onChange={e => setDecisionFormText(e.target.value)}
+                    required
+                  />
+                  <input
+                    type="text"
+                    placeholder="Made by"
+                    value={decisionFormMadeBy}
+                    onChange={e => setDecisionFormMadeBy(e.target.value)}
+                  />
+                  <textarea
+                    placeholder="Context (optional)"
+                    value={decisionFormContext}
+                    onChange={e => setDecisionFormContext(e.target.value)}
+                    rows={2}
+                  />
+                  <textarea
+                    placeholder="Reason (optional)"
+                    value={decisionFormReason}
+                    onChange={e => setDecisionFormReason(e.target.value)}
+                    rows={2}
+                  />
+                  <button type="submit">Create</button>
+                </form>
+              )}
+              {recordingDecisions.length > 0 ? (
+                <ul>
+                  {recordingDecisions.map(decision => (
+                    <li key={decision.id} className={decision.archived ? 'decision-archived' : ''}>
+                      <strong>{highlightText(decision.decision, 'decision')}</strong>
+                      <span> - {decision.made_by}</span>
+                      {decision.archived && (
+                        <span className="decision-archive-badge">Archived</span>
+                      )}
+                      {decision.context && <p className="context">{decision.context}</p>}
+                      {decision.reason && <p className="decision-reason">{decision.reason}</p>}
+                      <div>
+                        <button onClick={async () => {
+                          await api.archiveDecision(decision.id, !decision.archived);
+                          setRecordingDecisions(prev =>
+                            prev.map(d => d.id === decision.id ? { ...d, archived: !decision.archived } : d)
+                          );
+                        }}>
+                          {decision.archived ? 'Unarchive' : 'Archive'}
+                        </button>
+                        <button className="todo-delete" onClick={async () => {
+                          await api.deleteDecision(decision.id);
+                          setRecordingDecisions(prev => prev.filter(d => d.id !== decision.id));
+                        }}>
+                          Delete
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                !showDecisionForm && <p>No decisions found</p>
+              )}
+            </div>
+
+            <div className="todos">
+              <h3>TODOs</h3>
+              {!isLive && (
+                <button className="add-button" onClick={() => setShowTodoForm(!showTodoForm)}>
+                  {showTodoForm ? 'Cancel' : '+ Add Todo'}
+                </button>
+              )}
+              {showTodoForm && (
+                <form className="create-form" onSubmit={handleCreateTodo}>
+                  <input
+                    type="text"
+                    placeholder="Task *"
+                    value={todoFormTask}
+                    onChange={e => setTodoFormTask(e.target.value)}
+                    required
+                  />
+                  <input
+                    type="text"
+                    placeholder="Owner"
+                    value={todoFormOwner}
+                    onChange={e => setTodoFormOwner(e.target.value)}
+                  />
+                  <input
+                    type="date"
+                    placeholder="Due date"
+                    value={todoFormDue}
+                    onChange={e => setTodoFormDue(e.target.value)}
+                  />
+                  <select value={todoFormPriority} onChange={e => setTodoFormPriority(e.target.value)}>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+                  <button type="submit">Create</button>
+                </form>
+              )}
+              {recordingTodos.length > 0 ? (
+                <ul>
+                  {recordingTodos.map(todo => (
+                    <li
+                      key={todo.id}
+                      className={`priority-${todo.priority} ${todo.completed ? 'completed' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="todo-checkbox"
+                        checked={todo.completed}
+                        onChange={() => handleTodoToggle(todo)}
+                      />
+                      <span className="todo-task">{highlightText(todo.task, 'todo')}</span>
+                      <span> - {todo.owner}</span>
+                      {todo.due && <span> (due: {todo.due})</span>}
+                      <span className="priority-badge">{todo.priority}</span>
+                      <button
+                        className="todo-delete"
+                        onClick={() => handleTodoDelete(todo.id)}
+                        aria-label={`Delete todo: ${todo.task}`}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                !showTodoForm && <p>No TODOs found</p>
+              )}
+            </div>
+          </div>
+
+          <div className="recording-right-col">
+            {audioUrls.length > 0 && (
+              <div className="audio-player">
+                <h3>Audio</h3>
+                <AudioPlayer
+                  sources={audioUrls}
+                  segments={rawSegments.map((s, i) => ({
+                    id: i,
+                    name: s.name,
+                    text: s.text,
+                    start: 0,
+                    end: 0,
+                  }))}
+                />
+              </div>
+            )}
+
+            {rawSegments.length > 0 && (
+              <div className="speakers">
+                <Collapsible open={transcriptOpen} onOpenChange={setTranscriptOpen}>
+                  <CollapsibleTrigger asChild>
+                    <button
+                      className="flex items-center justify-between w-full text-left bg-transparent border-none p-0 cursor-pointer"
+                      type="button"
+                    >
+                      <h3>Transcript</h3>
+                      <ChevronDown
+                        size={16}
+                        className={`transition-transform duration-200 ${transcriptOpen ? "" : "-rotate-90"}`}
+                      />
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <TranscriptBubble
+                      segments={recording?.transcript?.segments ?? []}
+                      hideSpeakerLabels={isLive}
+                      highlightedText={fmtText}
+                      selfSpeakerIds={selfSpeakerIds}
+                    />
+                  </CollapsibleContent>
+                </Collapsible>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

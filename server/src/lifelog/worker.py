@@ -5,6 +5,7 @@ import re
 import time
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import structlog
 
 import lifelog.database as db
@@ -928,6 +929,20 @@ def _shifted_segments(segments: list[dict], offset: float) -> list[dict]:
             item["start"] += offset
         if isinstance(item.get("end"), (int, float)):
             item["end"] += offset
+        # Word timestamps are chunk-relative (WhisperX operates on the chunk audio
+        # array) and are never shifted by the transcription worker.  Shift them here
+        # so the dashboard's word-level speaker resolution can match them against the
+        # absolute-timebase diarization segments.
+        if isinstance(item.get("words"), list):
+            shifted_words = []
+            for w in item["words"]:
+                new_w = dict(w)
+                if isinstance(new_w.get("start"), (int, float)):
+                    new_w["start"] += offset
+                if isinstance(new_w.get("end"), (int, float)):
+                    new_w["end"] += offset
+                shifted_words.append(new_w)
+            item["words"] = shifted_words
         shifted.append(item)
     return shifted
 
@@ -1077,6 +1092,7 @@ def _apply_topic_splits(
 
 
 RAW_LABEL_RE = re.compile(r"^SPEAKER_\d+$")
+MIN_RESOLVE_AUDIO_SECONDS = 0.5
 
 
 async def _reidentify_recording(user: dict, recording: dict) -> None:
@@ -1084,6 +1100,16 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
     from lifelog.pipeline.speaker_client import resolve_speaker, serialize_embedding
 
     raw_segments = recording.get("speaker_segments") or []
+    # get_recording() strips speaker_segments before returning; fetch directly if missing.
+    if not raw_segments:
+        async with db.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT speaker_segments FROM recordings WHERE id = $1",
+                recording["id"],
+            )
+            if row:
+                raw_segments = row["speaker_segments"] or []
+
     # asyncpg may return JSONB as a string (especially if double-encoded)
     segments: list = raw_segments
     if isinstance(raw_segments, str):
@@ -1122,14 +1148,34 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
         if not isinstance(item, dict):
             continue
         raw = item.get("speaker") or item.get("name") or "Unknown"
+        # Store the lookup key on the item so the updated loop can find it.
+        item["_raw_label"] = raw
         if raw == "Unknown" or RAW_LABEL_RE.match(raw):
             groups.setdefault(raw, []).append(item)
         items.append(item)
 
     labels: dict[str, dict] = {}
     for raw, group in groups.items():
-        audios: list[bytes] = []
+        # Filter to segments long enough for ECAPA-TDNN to produce a valid embedding.
+        long_enough = []
         for item in group:
+            try:
+                start = float(item.get("start", 0))
+                end = float(item.get("end", 0))
+                duration = end - start
+            except (ValueError, TypeError):
+                # Unparseable timestamps: keep the item, let the service decide.
+                long_enough.append(item)
+                continue
+            if duration >= MIN_RESOLVE_AUDIO_SECONDS:
+                long_enough.append(item)
+
+        if not long_enough:
+            logger.debug("group_skipped_all_segments_too_short", raw=raw)
+            continue
+
+        audios: list[bytes] = []
+        for item in long_enough:
             filename = item.get("audio_filename")
             if not filename:
                 continue
@@ -1164,12 +1210,26 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
                 )
                 existing_names.add(name)
                 labels[raw] = {"speaker_id": speaker["id"], "name": name}
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400:
+                logger.warning(
+                    "speaker_resolve_no_valid_audio",
+                    raw=raw,
+                    response_body=exc.response.text,
+                )
+            else:
+                logger.exception("speaker_resolve_error", raw=raw)
         except Exception:
             logger.exception("speaker_resolve_error", raw=raw)
 
     updated = []
     for item in items:
-        raw = item.get("speaker") or item.get("name") or "Unknown"
+        raw = (
+            item.get("_raw_label")
+            or item.get("speaker")
+            or item.get("name")
+            or "Unknown"
+        )
         resolved = labels.get(raw)
         item["raw_speaker"] = raw
         if resolved:
@@ -1445,12 +1505,22 @@ async def _finalize_completed_sessions() -> None:
                 llm_result = summarize_partition(named_part, llm_context=llm_context)
                 category = llm_result.get("category") or "not_meaningful"
 
+                # Filter transcript segments to only include those within this partition's
+                # time range, so each partition recording gets only the relevant transcript.
+                part_start = partition[0]["start"]
+                part_end = partition[-1]["end"]
+                part_transcript = [
+                    seg
+                    for seg in transcript_segments
+                    if float(seg["start"]) < part_end and float(seg["end"]) > part_start
+                ]
+
                 if part_idx == 0:
                     # Session-level recording (partition_index=0 via session_id match)
                     recording_id = await db.save_session_recording(
                         session["user_id"],
                         session["id"],
-                        {"segments": transcript_segments},
+                        {"segments": part_transcript},
                         named_part,
                         llm_result,
                         audio_files[0] if audio_files else "",
@@ -1481,13 +1551,23 @@ async def _finalize_completed_sessions() -> None:
                 else:
                     # Gap/LLM-split partition recording
                     partition_offset = partition[0]["start"]
-                    rebased = [
+                    # Rebase both the diarization (speaker_segments) and the filtered
+                    # transcript segments so they start from 0 in this partition's frame.
+                    rebased_diar = [
                         {
                             **seg,
                             "start": seg["start"] - partition_offset,
                             "end": seg["end"] - partition_offset,
                         }
                         for seg in persisted_part
+                    ]
+                    rebased_transcript = [
+                        {
+                            **seg,
+                            "start": float(seg["start"]) - partition_offset,
+                            "end": float(seg["end"]) - partition_offset,
+                        }
+                        for seg in part_transcript
                     ]
                     audio_range_start = _offset_to_datetime(
                         partition_offset, session_start
@@ -1499,11 +1579,11 @@ async def _finalize_completed_sessions() -> None:
                         session["user_id"],
                         session["id"],
                         part_idx,
-                        {"segments": rebased},
+                        {"segments": rebased_transcript},
                         named_part,
                         llm_result,
                         audio_files[0] if audio_files else "",
-                        rebased,
+                        rebased_diar,
                         audio_range_start,
                         audio_range_end,
                         category=category,
