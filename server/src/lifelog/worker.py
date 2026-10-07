@@ -1505,12 +1505,22 @@ async def _finalize_completed_sessions() -> None:
                 llm_result = summarize_partition(named_part, llm_context=llm_context)
                 category = llm_result.get("category") or "not_meaningful"
 
+                # Filter transcript segments to only include those within this partition's
+                # time range, so each partition recording gets only the relevant transcript.
+                part_start = partition[0]["start"]
+                part_end = partition[-1]["end"]
+                part_transcript = [
+                    seg
+                    for seg in transcript_segments
+                    if float(seg["start"]) < part_end and float(seg["end"]) > part_start
+                ]
+
                 if part_idx == 0:
                     # Session-level recording (partition_index=0 via session_id match)
                     recording_id = await db.save_session_recording(
                         session["user_id"],
                         session["id"],
-                        {"segments": transcript_segments},
+                        {"segments": part_transcript},
                         named_part,
                         llm_result,
                         audio_files[0] if audio_files else "",
@@ -1541,13 +1551,23 @@ async def _finalize_completed_sessions() -> None:
                 else:
                     # Gap/LLM-split partition recording
                     partition_offset = partition[0]["start"]
-                    rebased = [
+                    # Rebase both the diarization (speaker_segments) and the filtered
+                    # transcript segments so they start from 0 in this partition's frame.
+                    rebased_diar = [
                         {
                             **seg,
                             "start": seg["start"] - partition_offset,
                             "end": seg["end"] - partition_offset,
                         }
                         for seg in persisted_part
+                    ]
+                    rebased_transcript = [
+                        {
+                            **seg,
+                            "start": float(seg["start"]) - partition_offset,
+                            "end": float(seg["end"]) - partition_offset,
+                        }
+                        for seg in part_transcript
                     ]
                     audio_range_start = _offset_to_datetime(
                         partition_offset, session_start
@@ -1559,11 +1579,11 @@ async def _finalize_completed_sessions() -> None:
                         session["user_id"],
                         session["id"],
                         part_idx,
-                        {"segments": rebased},
+                        {"segments": rebased_transcript},
                         named_part,
                         llm_result,
                         audio_files[0] if audio_files else "",
-                        rebased,
+                        rebased_diar,
                         audio_range_start,
                         audio_range_end,
                         category=category,
