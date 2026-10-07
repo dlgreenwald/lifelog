@@ -79,7 +79,7 @@ export default function DecisionsList() {
           style={{ backgroundColor: 'hsl(221.2,83.2%,53.3%)', color: 'hsl(0,0%,98%)', border: 'none' }}
         >
           <Plus className="h-4 w-4 mr-1" />
-          {showForm ? 'Cancel' : '+ Add Decision'}
+          {showForm ? 'Cancel' : 'Add Decision'}
         </Button>
       </div>
 
@@ -138,7 +138,8 @@ export default function DecisionsList() {
       {decisions.length === 0 ? (
         <p className="text-sm text-muted-foreground py-12 text-center">No decisions yet — click "Add Decision" above to create one.</p>
       ) : (
-        <ul className="rounded-lg border bg-card text-card-foreground shadow-sm" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        <div className="flex-1 min-h-0 overflow-y-auto rounded-lg border bg-card text-card-foreground shadow-sm">
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
           {decisions.map((decision, i) => (
             <li
               key={decision.id}
@@ -176,17 +177,19 @@ export default function DecisionsList() {
                   </Button>
                   <Button
                     variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-foreground hover:text-destructive"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground"
                     onClick={() => handleDelete(decision.id)}
+                    aria-label="Delete decision"
                   >
-                    <Trash2 className="h-3 w-3 mr-1" />Delete
+                    <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
             </li>
           ))}
-        </ul>
+          </ul>
+        </div>
       )}
     </div>
   );

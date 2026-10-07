@@ -245,7 +245,7 @@ describe('TodoList', () => {
       expect(screen.getByText('No TODOs found')).toBeInTheDocument();
     });
 
-    const addBtn = screen.getByText('+ Add Todo');
+    const addBtn = screen.getByRole('button', { name: 'Add Todo' });
     await userEvent.click(addBtn);
 
     expect(screen.getByPlaceholderText('Task *')).toBeInTheDocument();
@@ -264,7 +264,7 @@ describe('TodoList', () => {
     });
 
     // Open form
-    await userEvent.click(screen.getByText('+ Add Todo'));
+    await userEvent.click(screen.getByRole('button', { name: 'Add Todo' }));
 
     // Fill form
     await userEvent.type(screen.getByPlaceholderText('Task *'), 'New task');
