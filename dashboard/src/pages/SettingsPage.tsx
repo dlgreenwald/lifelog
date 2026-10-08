@@ -9,6 +9,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<UserSettings>({
     language: 'auto',
     llm_context: '',
+    timezone: 'America/New_York',
   });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);

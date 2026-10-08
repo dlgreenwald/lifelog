@@ -16,7 +16,7 @@ def _app_with_mocks(oidc_user=None, db_fn=None, db_mock=None):
     app.include_router(router)
 
     async def fake_oidc(token=None):
-        return oidc_user or {"id": 1, "name": "Test"}
+        return oidc_user or {"id": 1, "name": "Test", "tz": "America/New_York"}
 
     app.dependency_overrides[validate_oidc_token] = fake_oidc
     return app

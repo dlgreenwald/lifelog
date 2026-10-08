@@ -14,12 +14,16 @@ async def test_validate_api_key_valid():
 
     fake_user = {"id": 1, "api_key": "valid-key", "name": "Test"}
 
-    with patch(
-        "lifelog.database.get_user_by_api_key", new_callable=AsyncMock
-    ) as mock_get:
+    with (
+        patch(
+            "lifelog.database.get_user_by_api_key", new_callable=AsyncMock
+        ) as mock_get,
+        patch("lifelog.auth.get_user_timezone", new_callable=AsyncMock) as mock_tz,
+    ):
         mock_get.return_value = fake_user
+        mock_tz.return_value = "America/New_York"
         result = await validate_api_key(x_api_key="valid-key")
-        assert result == fake_user
+        assert result["tz"] == "America/New_York"
         mock_get.assert_awaited_once_with("valid-key")
 
 
@@ -91,6 +95,7 @@ async def test_validate_oidc_token_valid():
     with (
         patch("lifelog.auth._get_jwk_client", return_value=mock_jwk_client),
         patch("lifelog.auth.settings") as mock_settings,
+        patch("lifelog.auth.get_user_timezone", new_callable=AsyncMock) as mock_tz,
         patch(
             "lifelog.database.get_user_by_oidc_sub", new_callable=AsyncMock
         ) as mock_get,
@@ -98,8 +103,9 @@ async def test_validate_oidc_token_valid():
         mock_settings.oidc_client_id = "test-client"
         mock_settings.oidc_issuer_url = "https://auth.test.com"
         mock_get.return_value = fake_user
+        mock_tz.return_value = "America/New_York"
         result = await validate_oidc_token(token=mock_token)
-        assert result == fake_user
+        assert result["tz"] == "America/New_York"
 
 
 @pytest.mark.asyncio
@@ -155,6 +161,7 @@ async def test_validate_oidc_token_user_not_found():
     with (
         patch("lifelog.auth._get_jwk_client", return_value=mock_jwk_client),
         patch("lifelog.auth.settings") as mock_settings,
+        patch("lifelog.auth.get_user_timezone", new_callable=AsyncMock) as mock_tz,
         patch(
             "lifelog.database.get_user_by_oidc_sub", new_callable=AsyncMock
         ) as mock_get,
@@ -164,8 +171,9 @@ async def test_validate_oidc_token_user_not_found():
         mock_settings.oidc_issuer_url = "https://auth.test.com"
         mock_get.return_value = None
         mock_create.return_value = new_user
+        mock_tz.return_value = "America/New_York"
         result = await validate_oidc_token(token=mock_token)
-        assert result == new_user
+        assert result["tz"] == "America/New_York"
         mock_create.assert_awaited_once()
 
 

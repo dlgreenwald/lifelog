@@ -5,6 +5,7 @@ import { api } from '../api/client';
 import type { Todo } from '../types';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { todayKey } from '../utils/format';
 
 const ONE_DAY_MS = 86400000;
 type SortField = 'created_at' | 'priority';
@@ -18,7 +19,7 @@ export default function TodoList() {
   const [showForm, setShowForm] = useState(false);
   const [formTask, setFormTask] = useState('');
   const [formOwner, setFormOwner] = useState('Me');
-  const [formDue, setFormDue] = useState(() => new Date().toISOString().slice(0, 10));
+  const [formDue, setFormDue] = useState(() => todayKey());
   const [formPriority, setFormPriority] = useState('medium');
 
   useEffect(() => {
@@ -79,7 +80,7 @@ export default function TodoList() {
     ]);
     setFormTask('');
     setFormOwner('Me');
-    setFormDue(new Date().toISOString().slice(0, 10));
+    setFormDue(todayKey());
     setFormPriority('medium');
     setShowForm(false);
   };

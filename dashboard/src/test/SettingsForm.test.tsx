@@ -15,6 +15,7 @@ function setup(props: {
   const settings: UserSettings = {
     language: props.settings?.language ?? 'auto',
     llm_context: props.settings?.llm_context ?? '',
+    timezone: props.settings?.timezone ?? 'America/New_York',
   };
   const view = render(
     <SettingsForm

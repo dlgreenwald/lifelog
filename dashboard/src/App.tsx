@@ -18,6 +18,8 @@ import { useEffect } from 'react';
 import { useIsMobile } from './hooks/use-mobile';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faSearch } from '@fortawesome/free-solid-svg-icons';
+import { setTimezone } from './utils/format';
+import { api } from './api/client';
 
 function AppRoutes() {
   const { user, getAccessToken, userManager } = useAuth();
@@ -26,6 +28,12 @@ function AppRoutes() {
   useEffect(() => {
     setAuthProvider(getAccessToken, userManager);
   }, [getAccessToken, userManager]);
+  useEffect(() => {
+    if (!user) return;
+    api.getSettings().then((settings) => {
+      setTimezone(settings.timezone);
+    });
+  }, [user]);
 
   return (
     <div className="app">
