@@ -49,11 +49,11 @@ jobs:
           if [[ "$base" == *"-rc"* ]]; then
             version=${base%%-rc*}
             rcnum=${base##*-rc}
-            echo "version=$version"
-            echo "rc_tag=rc-$rcnum"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "rc_tag=rc-$rcnum" >> "$GITHUB_OUTPUT"
           else
-            echo "version=$base"
-            echo "rc_tag="
+            echo "version=$base" >> "$GITHUB_OUTPUT"
+            echo "rc_tag=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Docker Buildx
