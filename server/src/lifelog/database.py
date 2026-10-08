@@ -190,9 +190,9 @@ async def save_offline_recording(
 
 
 async def get_recordings_by_date(
-    user_id: int, date: str, category: str | None = None
+    user_id: int, date: str, tz: str = "America/New_York", category: str | None = None
 ) -> list[dict]:
-    """Get all recordings for a user on a specific date (YYYY-MM-DD, Eastern Time).
+    """Get all recordings for a user on a specific date (YYYY-MM-DD, in the given timezone).
 
     If category is provided, filter to that category.
     If category is None, show work and personal (exclude not_meaningful).
@@ -209,12 +209,13 @@ async def get_recordings_by_date(
                        audio_range_start, audio_range_end
                 FROM recordings
                 WHERE user_id = $1
-                  AND DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2
-                  AND category = $3
+                  AND DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE $3) = $2
+                  AND category = $4
                 ORDER BY timestamp DESC
             """,
                 user_id,
                 date_obj,
+                tz,
                 category,
             )
         else:
@@ -225,12 +226,13 @@ async def get_recordings_by_date(
                        audio_range_start, audio_range_end
                 FROM recordings
                 WHERE user_id = $1
-                  AND DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2
+                  AND DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE $3) = $2
                   AND (category IS NULL OR category IN ('work', 'personal'))
                 ORDER BY timestamp DESC
             """,
                 user_id,
                 date_obj,
+                tz,
             )
         return [dict(row) for row in rows]
 
@@ -732,8 +734,10 @@ async def get_todos(user_id: int) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-async def get_todos_for_date(user_id: int, date: str) -> list[dict]:
-    """Get todos from recordings on a specific date (YYYY-MM-DD, Eastern Time)."""
+async def get_todos_for_date(
+    user_id: int, date: str, tz: str = "America/New_York"
+) -> list[dict]:
+    """Get todos from recordings on a specific date (YYYY-MM-DD, in the given timezone)."""
     from datetime import date as _date
 
     parts = date.split("-")
@@ -748,11 +752,12 @@ async def get_todos_for_date(user_id: int, date: str) -> list[dict]:
             LEFT JOIN recordings r ON r.id = t.recording_id
             WHERE t.user_id = $1
               AND (t.recording_id IS NULL OR
-                   DATE(r.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2)
+                   DATE(r.timestamp AT TIME ZONE 'UTC' AT TIME ZONE $3) = $2)
             ORDER BY t.created_at ASC
             """,
             user_id,
             query_date,
+            tz,
         )
         return [dict(row) for row in rows]
 
@@ -2297,30 +2302,46 @@ async def get_user_settings(user_id: int) -> dict:
     """Get user settings. Returns defaults if no row exists."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT language, llm_context FROM user_settings WHERE user_id = $1",
+            "SELECT language, llm_context, timezone FROM user_settings WHERE user_id = $1",
             user_id,
         )
         if row:
             return dict(row)
-        return {"language": "auto", "llm_context": ""}
+        return {"language": "auto", "llm_context": "", "timezone": "America/New_York"}
 
 
-async def save_user_settings(user_id: int, language: str, llm_context: str) -> None:
+async def save_user_settings(
+    user_id: int, language: str, llm_context: str, timezone: str
+) -> None:
     """Upsert user settings row."""
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO user_settings (user_id, language, llm_context, updated_at)
-            VALUES ($1, $2, $3, NOW())
+            INSERT INTO user_settings (user_id, language, llm_context, timezone, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
             ON CONFLICT (user_id) DO UPDATE
                 SET language = EXCLUDED.language,
                     llm_context = EXCLUDED.llm_context,
+                    timezone = EXCLUDED.timezone,
                     updated_at = EXCLUDED.updated_at
             """,
             user_id,
             language,
             llm_context,
+            timezone,
         )
+
+
+async def get_user_timezone(user_id: int) -> str:
+    """Return the user's configured timezone, or the default if no settings row exists."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT timezone FROM user_settings WHERE user_id = $1",
+            user_id,
+        )
+        if row:
+            return row["timezone"]
+        return "America/New_York"
 
 
 async def mark_speaker_self(user_id: int, speaker_id: int, is_self: bool) -> bool:

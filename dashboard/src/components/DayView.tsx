@@ -1,9 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FC } from 'react';
-import { format } from 'date-fns';
 import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
 import type { Recording } from '../types';
-import { toUTCDate } from '../utils/format';
+import { getTimeParts, formatTimeInTz, getTimezone } from '../utils/format';
 
 interface DayViewProps {
   date: string;
@@ -18,30 +17,33 @@ interface DayViewProps {
 function getRecordingTimeRange(rec: Recording): { startMin: number; endMin: number } {
   // Use audio_range_start for position when available (actual audio time, not upload time).
   // Fall back to timestamp if audio_range_start is not set.
-  // All timestamps are UTC naive from PostgreSQL — parse as UTC with toUTCDate.
+  // All timestamps are UTC naive from PostgreSQL — parse as UTC then convert to user timezone.
   let startMin = 0;
   if (rec.audio_range_start) {
-    const s = toUTCDate(rec.audio_range_start);
-    startMin = Math.max(0, s.getHours() * 60 + s.getMinutes());
+    const { h, m } = getTimeParts(rec.audio_range_start);
+    startMin = h * 60 + m;
   } else {
-    const recDate = toUTCDate(rec.timestamp);
-    startMin = Math.max(0, recDate.getHours() * 60 + recDate.getMinutes());
+    const { h, m } = getTimeParts(rec.timestamp);
+    startMin = h * 60 + m;
   }
 
   // For live recordings, use current time as the end so the block grows in real-time.
   if (rec.is_live) {
-    const now = new Date();
-    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const nowStr = new Date().toLocaleTimeString('en-US', {
+      hour12: false, hour: '2-digit', minute: '2-digit', timeZone: getTimezone(),
+    });
+    const [nh, nm] = nowStr.split(':').map(Number);
+    const nowMin = nh * 60 + nm;
     const endMin = Math.min(nowMin, 24 * 60 - 1);
     return { startMin, endMin };
   }
 
   let durationMinutes = 30;
   if (rec.audio_range_start && rec.audio_range_end) {
-    const s = toUTCDate(rec.audio_range_start);
-    const e = toUTCDate(rec.audio_range_end);
-    const sMin = s.getHours() * 60 + s.getMinutes();
-    const eMin = e.getHours() * 60 + e.getMinutes();
+    const { h: sh, m: sm } = getTimeParts(rec.audio_range_start);
+    const { h: eh, m: em } = getTimeParts(rec.audio_range_end);
+    const sMin = sh * 60 + sm;
+    const eMin = eh * 60 + em;
     if (eMin > sMin) {
       durationMinutes = eMin - sMin;
     }
@@ -280,7 +282,7 @@ const DayView: FC<DayViewProps> = ({ date, recordings, onRecordingClick, hourLab
               ) : (
                 <div className="recording-block-content">
                   <span className="recording-block-time">
-                    {format(toUTCDate(rec.timestamp), 'HH:mm')} {rec.title}
+                    {formatTimeInTz(rec.timestamp)} {rec.title}
                   </span>
                   {rec.summary && (
                     <span className="recording-block-summary">

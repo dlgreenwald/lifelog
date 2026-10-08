@@ -3,6 +3,31 @@ import { Button } from '@/components/ui/button';
 import { ModeToggle } from '@/components/mode-toggle';
 import type { UserSettings } from '../types';
 
+// Curated list of common IANA timezones covering all major regions.
+// Using a static list ensures compatibility with ES2020 targets.
+const TIMEZONES: string[] = [
+  'Pacific/Honolulu',
+  'America/Anchorage',
+  'America/Los_Angeles',
+  'America/Denver',
+  'America/Chicago',
+  'America/New_York',
+  'America/Sao_Paulo',
+  'Atlantic/Reykjavik',
+  'Europe/London',
+  'Europe/Paris',
+  'Europe/Berlin',
+  'Europe/Moscow',
+  'Asia/Dubai',
+  'Asia/Kolkata',
+  'Asia/Bangkok',
+  'Asia/Singapore',
+  'Asia/Shanghai',
+  'Asia/Tokyo',
+  'Australia/Sydney',
+  'Pacific/Auckland',
+];
+
 const LANGUAGES: Record<string, string> = {
   auto: 'Auto-detect',
   en: 'English',
@@ -182,6 +207,28 @@ export default function SettingsForm({
               {settings.llm_context.length} / 2000
             </span>
           </div>
+        </div>
+
+        {/* Timezone */}
+        <div className="space-y-2">
+          <label htmlFor="timezone-select" className="block">
+            <h3 className="text-sm font-medium">Timezone</h3>
+            <p className="text-xs text-muted-foreground">
+              The timezone the dashboard uses for date display.
+            </p>
+          </label>
+          <select
+            id="timezone-select"
+            value={settings.timezone}
+            onChange={(e) => onChange({ ...settings, timezone: e.target.value })}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            {TIMEZONES.map((tz) => (
+              <option key={tz} value={tz}>
+                {tz}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Feedback */}

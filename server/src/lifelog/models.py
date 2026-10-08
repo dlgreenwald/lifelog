@@ -118,8 +118,10 @@ class BurstEndResponse(BaseModel):
 class UserSettings(BaseModel):
     language: str = "auto"
     llm_context: str = ""
+    timezone: str = "America/New_York"
 
 
 class UserSettingsResponse(BaseModel):
     language: str
     llm_context: str
+    timezone: str

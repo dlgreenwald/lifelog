@@ -108,7 +108,7 @@ function validateClientSide(text: string): string | null {
 }
 
 export default function Settings() {
-  const [settings, setSettings] = useState<UserSettings>({ language: 'auto', llm_context: '' });
+  const [settings, setSettings] = useState<UserSettings>({ language: 'auto', llm_context: '', timezone: 'America/New_York' });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [clientError, setClientError] = useState<string | null>(null);
@@ -116,7 +116,7 @@ export default function Settings() {
 
   useEffect(() => {
     api.getSettings().then((data) => {
-      setSettings({ language: data.language ?? 'auto', llm_context: data.llm_context ?? '' });
+      setSettings({ language: data.language ?? 'auto', llm_context: data.llm_context ?? '', timezone: data.timezone ?? 'America/New_York' });
       setLoading(false);
     }).catch(() => {
       setLoading(false);

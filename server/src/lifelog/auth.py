@@ -10,6 +10,7 @@ from fastapi import Depends, Header, HTTPException
 from fastapi.security import HTTPBearer
 
 from lifelog.config import settings
+from lifelog.database import get_user_timezone
 
 logger = logging.getLogger("lifelog.auth")
 
@@ -58,14 +59,21 @@ def _token_payload(token: str) -> dict:
         return {}
 
 
+async def _attach_tz(user: dict) -> dict:
+    """Attach the user's configured timezone to the user dict (mutates and returns it)."""
+    user = dict(user)  # shallow copy so callers aren't affected
+    user["tz"] = await get_user_timezone(user["id"])
+    return user
+
+
 async def validate_api_key(x_api_key: str = Header(...)) -> dict:
-    """Validate API key and return user info."""
+    """Validate API key and return user info with timezone attached."""
     from lifelog.database import get_user_by_api_key
 
     user = await get_user_by_api_key(x_api_key)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    return user
+    return await _attach_tz(user)
 
 
 async def validate_bearer_token(token: str) -> dict:
@@ -88,7 +96,7 @@ async def validate_bearer_token(token: str) -> dict:
                     oidc_sub=f"simulator:{client_id}",
                     name=f"Simulator ({client_id})",
                 )
-            return user
+            return await _attach_tz(user)
         raise HTTPException(status_code=401, detail="Invalid simulator client")
 
     payload = _token_payload(token)
@@ -111,7 +119,7 @@ async def validate_bearer_token(token: str) -> dict:
                 oidc_sub=payload["sub"],
                 name=payload.get("preferred_username", payload.get("sub", "User")),
             )
-        return user
+        return await _attach_tz(user)
     except pyjwt.ExpiredSignatureError:
         logger.warning(
             "Token expired: sub=%s exp=%s",
@@ -156,7 +164,7 @@ async def validate_oidc_token(
                     oidc_sub=f"simulator:{client_id}",
                     name=f"Simulator ({client_id})",
                 )
-            return user
+            return await _attach_tz(user)
         raise HTTPException(status_code=401, detail="Invalid simulator client")
 
     payload = _token_payload(token.credentials)
@@ -182,7 +190,7 @@ async def validate_oidc_token(
                 oidc_sub=payload["sub"],
                 name=payload.get("preferred_username", payload.get("sub", "User")),
             )
-        return user
+        return await _attach_tz(user)
     except pyjwt.ExpiredSignatureError:
         logger.warning(
             "Token expired: sub=%s exp=%s",

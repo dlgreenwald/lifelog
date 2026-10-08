@@ -30,7 +30,11 @@ async def test_get_settings_default():
     with patch(
         "lifelog.routes.dashboard.get_user_settings", new_callable=AsyncMock
     ) as mock_get:
-        mock_get.return_value = {"language": "auto", "llm_context": ""}
+        mock_get.return_value = {
+            "language": "auto",
+            "llm_context": "",
+            "timezone": "America/New_York",
+        }
         client = TestClient(app)
         response = client.get("/settings")
 
@@ -45,11 +49,15 @@ async def test_save_and_get_settings():
     """POST then GET round-trips correctly."""
     app = _app_with_mocks()
 
-    async def mock_save(user_id, language, llm_context):
+    async def mock_save(user_id, language, llm_context, timezone):
         pass
 
     async def mock_get(user_id):
-        return {"language": "en", "llm_context": "I work as a developer."}
+        return {
+            "language": "en",
+            "llm_context": "I work as a developer.",
+            "timezone": "America/New_York",
+        }
 
     with (
         patch(

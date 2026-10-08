@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown } from 'lucide-react';
 import { api } from '../api/client';
-import { formatDateTime } from '../utils/format';
+import { formatDateTime, todayKey } from '../utils/format';
 import { useIsMobile } from '@/hooks/use-mobile';
 import AudioPlayer from './AudioPlayer';
 import TranscriptBubble from './TranscriptBubble';
@@ -26,7 +26,7 @@ export default function RecordingDetail() {
   const [showTodoForm, setShowTodoForm] = useState(false);
   const [todoFormTask, setTodoFormTask] = useState('');
   const [todoFormOwner, setTodoFormOwner] = useState('Me');
-  const [todoFormDue, setTodoFormDue] = useState(() => new Date().toISOString().slice(0, 10));
+  const [todoFormDue, setTodoFormDue] = useState(() => todayKey());
   const [todoFormPriority, setTodoFormPriority] = useState('medium');
 
   const [showDecisionForm, setShowDecisionForm] = useState(false);
@@ -264,7 +264,7 @@ export default function RecordingDetail() {
     ]);
     setTodoFormTask('');
     setTodoFormOwner('Me');
-    setTodoFormDue(new Date().toISOString().slice(0, 10));
+    setTodoFormDue(todayKey());
     setTodoFormPriority('medium');
     setShowTodoForm(false);
   };

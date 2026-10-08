@@ -104,6 +104,7 @@ export interface UnknownSpeaker {
 export interface UserSettings {
     language: string;
     llm_context: string;
+    timezone: string;
 }
 
 export interface SearchHit {

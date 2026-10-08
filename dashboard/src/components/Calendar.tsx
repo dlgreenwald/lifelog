@@ -1,6 +1,7 @@
 import "react-day-picker/style.css";
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { format, parseISO, startOfISOWeek, endOfISOWeek, addDays, addWeeks } from 'date-fns';
+import { startOfISOWeek, endOfISOWeek, addDays, addWeeks, parseISO } from 'date-fns';
+import { dateKey, todayKey, toUTCDate, formatDateLabel } from '../utils/format';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Calendar as ShadcnCalendar } from '@/components/ui/calendar';
 import { Button } from '@/components/ui/button';
@@ -67,8 +68,8 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
     setSelectedState(range);
     if (range?.from && range?.to) {
       const params = new URLSearchParams();
-      params.set('from', format(range.from, 'yyyy-MM-dd'));
-      params.set('to', format(range.to, 'yyyy-MM-dd'));
+      params.set('from', dateKey(range.from));
+      params.set('to', dateKey(range.to));
       setSearchParams(params, { replace: true });
     }
   }, [setSearchParams]);
@@ -118,13 +119,13 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
 
       // Remove the previous active recording from its date so finished recordings don't linger
       if (prev) {
-        const prevDate = prev.timestamp.split('T')[0];
+        const prevDate = dateKey(toUTCDate(prev.timestamp));
         const existing = map.get(prevDate) ?? [];
         map.set(prevDate, existing.filter(r => r.id !== prev.id));
       }
 
       if (activeRecording) {
-        const date = activeRecording.timestamp.split('T')[0];
+        const date = dateKey(toUTCDate(activeRecording.timestamp));
         const existing = map.get(date) ?? [];
         // Remove any recording with the same ID first (handles same-URL refresh)
         map.set(date, [...existing.filter(r => r.id !== activeRecording.id), activeRecording]);
@@ -166,7 +167,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
     const dates: string[] = [];
     let d = selected.from;
     while (d <= selected.to) {
-      dates.push(format(d, 'yyyy-MM-dd'));
+      dates.push(dateKey(d));
       d = addDays(d, 1);
     }
     return dates;
@@ -189,7 +190,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
     const daysInMonth = new Date(year, month, 0).getDate();
     const dates = Array.from({ length: daysInMonth }, (_, i) => {
       const d = new Date(year, month - 1, i + 1);
-      return format(d, 'yyyy-MM-dd');
+      return dateKey(d);
     });
     Promise.all(dates.map(date => api.getTodosForDate(date)))
       .then(results => {
@@ -243,7 +244,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
   }, [loadActive]);
 
   // Poll today's recordings and todos every 60s when today is in the selected range
-  const todayStr = format(new Date(), 'yyyy-MM-dd');
+  const todayStr = todayKey();
   const refreshToday = useCallback(() => {
     if (!selectedDates.includes(todayStr)) return;
     api.getRecordings(todayStr, categoryFilter === 'all' ? undefined : categoryFilter).then(
@@ -352,8 +353,8 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
         numberOfMonths={1}
         onMonthChange={setCurrentMonth}
         modifiers={{
-          booked: (date) => bookedDates.has(format(date, 'yyyy-MM-dd')),
-          todo: (date) => todoDates.has(format(date, 'yyyy-MM-dd')),
+          booked: (date) => bookedDates.has(dateKey(date)),
+          todo: (date) => todoDates.has(dateKey(date)),
         }}
         modifiersClassNames={{
           booked: 'has-recording-dot',
@@ -379,8 +380,8 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
         numberOfMonths={1}
         onMonthChange={setCurrentMonth}
         modifiers={{
-          booked: (date) => bookedDates.has(format(date, 'yyyy-MM-dd')),
-          todo: (date) => todoDates.has(format(date, 'yyyy-MM-dd')),
+          booked: (date) => bookedDates.has(dateKey(date)),
+          todo: (date) => todoDates.has(dateKey(date)),
         }}
         modifiersClassNames={{
           booked: 'has-recording-dot',
@@ -408,8 +409,8 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
         numberOfMonths={1}
         onMonthChange={setCurrentMonth}
         modifiers={{
-          booked: (date) => bookedDates.has(format(date, 'yyyy-MM-dd')),
-          todo: (date) => todoDates.has(format(date, 'yyyy-MM-dd')),
+          booked: (date) => bookedDates.has(dateKey(date)),
+          todo: (date) => todoDates.has(dateKey(date)),
         }}
         modifiersClassNames={{
           booked: 'has-recording-dot',
@@ -421,7 +422,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
         <div className="day-todos">
           {todosByDate.map(({ date, todos }) => (
             <div key={date} className="todo-date-group">
-              <h3>{format(parseISO(date), 'EEEE, MMM d')}</h3>
+              <h3>{formatDateLabel(date)}</h3>
               <div className="todo-table-container">
                 <Table>
                   <TableBody>
@@ -495,7 +496,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
                   return (
                     <div key={date} className="day-view-column">
                       <div className="day-view-header">
-                        {format(parseISO(date), 'EEE, MMM d')}
+                        {formatDateLabel(date)}
                       </div>
                       <DayView
                         date={date}
@@ -549,7 +550,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
                   return (
                     <div key={date} className="day-view-column">
                       <div className="day-view-header">
-                        {format(parseISO(date), 'EEE, MMM d')}
+                        {formatDateLabel(date)}
                       </div>
                       <DayView
                         date={date}

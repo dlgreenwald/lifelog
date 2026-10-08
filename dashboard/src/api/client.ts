@@ -133,7 +133,7 @@ export const api = {
   unmarkAsSelf: (id: number) =>
     fetchApi(`/speakers/${id}/mark-as-self`, { method: 'DELETE' }),
   getSettings: () => fetchApi('/dashboard/settings'),
-  saveSettings: (data: { language: string; llm_context: string }) =>
+  saveSettings: (data: { language: string; llm_context: string; timezone: string }) =>
     fetchApi('/dashboard/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

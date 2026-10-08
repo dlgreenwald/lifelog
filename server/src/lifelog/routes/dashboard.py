@@ -1,6 +1,7 @@
 import os
 import subprocess
 import tempfile
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -175,17 +176,18 @@ async def get_calendar(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') as date, COUNT(*) as count
+            SELECT DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE $4) as date, COUNT(*) as count
             FROM recordings
             WHERE user_id = $1
-              AND EXTRACT(YEAR FROM timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $2
-              AND EXTRACT(MONTH FROM timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = $3
+              AND EXTRACT(YEAR FROM timestamp AT TIME ZONE 'UTC' AT TIME ZONE $4) = $2
+              AND EXTRACT(MONTH FROM timestamp AT TIME ZONE 'UTC' AT TIME ZONE $4) = $3
             GROUP BY date
             ORDER BY date
         """,
             user["id"],
             year,
             month,
+            user["tz"],
         )
         return {"dates": [dict(row) for row in rows]}
 
@@ -206,7 +208,9 @@ async def get_day_recordings(
         date=_sanitize(date) if date else None,
         category=_sanitize(category) if category else None,
     )
-    recordings = await get_recordings_by_date(user["id"], date, category=category)
+    recordings = await get_recordings_by_date(
+        user["id"], date, user["tz"], category=category
+    )
     logger.debug(
         "recordings_found",
         count=len(recordings),
@@ -403,7 +407,7 @@ async def get_todos_for_date_route(
     date: str, user: dict = Depends(validate_oidc_token)
 ):
     """Get todos from recordings on a specific date (YYYY-MM-DD)."""
-    todos = await get_todos_for_date(user["id"], date)
+    todos = await get_todos_for_date(user["id"], date, user["tz"])
     return {"todos": todos}
 
 
@@ -665,11 +669,22 @@ async def get_settings(user: dict = Depends(validate_oidc_token)):
 
 @router.post("/settings")
 async def save_settings(body: UserSettings, user: dict = Depends(validate_oidc_token)):
-    """Save user settings. llm_context is validated for prompt injection."""
+    """Save user settings. llm_context is validated for prompt injection.
+    timezone must be a valid IANA timezone name."""
     settings_model = UserSettings.model_validate(body)
     try:
         llm_context = validate_llm_context(settings_model.llm_context)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    await save_user_settings(user["id"], settings_model.language, llm_context)
+    # Validate IANA timezone name
+    try:
+        ZoneInfo(settings_model.timezone)
+    except KeyError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid timezone: {settings_model.timezone!r}",
+        )
+    await save_user_settings(
+        user["id"], settings_model.language, llm_context, settings_model.timezone
+    )
     return {"ok": True}
