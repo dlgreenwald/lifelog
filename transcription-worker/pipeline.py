@@ -479,6 +479,10 @@ def _split_segments_by_speaker(
 
     Additionally, any segment whose time range overlaps with a different speaker's
     range (per the pyannote diarization) is flagged via the ``overlap_with`` field.
+
+    Audio extraction: each output group carries the exact word-level (start, end)
+    time ranges to extract, so within-segment speaker boundaries are respected
+    and only the target speaker's audio is included.
     """
     if not segments:
         return []
@@ -501,27 +505,26 @@ def _split_segments_by_speaker(
                         "start": word_start,
                         "end": word_end,
                         "text": word.get("word", ""),
-                        "_seg_indices": [seg_idx],
+                        "_audio_ranges": [(word_start, word_end)],
                     }
                 elif current_group["speaker"] != word_speaker:
                     # Speaker changed — close current group and start new one
-                    _finalize_group(current_group, segments, audio_np, sample_rate, overlap_with)
+                    _finalize_group(current_group, audio_np, sample_rate, overlap_with)
                     result.append(current_group)
                     current_group = {
                         "speaker": word_speaker,
                         "start": word_start,
                         "end": word_end,
                         "text": word.get("word", ""),
-                        "_seg_indices": [seg_idx],
+                        "_audio_ranges": [(word_start, word_end)],
                     }
                 else:
-                    # Same speaker — extend current group and track the segment
+                    # Same speaker — extend current group and track the time range
                     current_group["end"] = word_end
                     current_group["text"] = (
                         current_group["text"] + " " + word.get("word", "")
                     ).strip()
-                    if seg_idx not in current_group["_seg_indices"]:
-                        current_group["_seg_indices"].append(seg_idx)
+                    current_group["_audio_ranges"].append((word_start, word_end))
         else:
             # No word-level data — use the segment as-is
             seg_speaker = seg.get("speaker") or "Unknown"
@@ -531,7 +534,7 @@ def _split_segments_by_speaker(
             if current_group is None or current_group["speaker"] != seg_speaker:
                 # Close any open group
                 if current_group is not None:
-                    _finalize_group(current_group, segments, audio_np, sample_rate, overlap_with)
+                    _finalize_group(current_group, audio_np, sample_rate, overlap_with)
                     result.append(current_group)
 
                 current_group = {
@@ -539,7 +542,7 @@ def _split_segments_by_speaker(
                     "start": seg_start,
                     "end": seg_end,
                     "text": seg.get("text", ""),
-                    "_seg_indices": [seg_idx],
+                    "_audio_ranges": [(seg_start, seg_end)],
                 }
             else:
                 # Extend existing group
@@ -547,12 +550,11 @@ def _split_segments_by_speaker(
                 current_group["text"] = (
                     current_group["text"] + " " + seg.get("text", "")
                 ).strip()
-                if seg_idx not in current_group["_seg_indices"]:
-                    current_group["_seg_indices"].append(seg_idx)
+                current_group["_audio_ranges"].append((seg_start, seg_end))
 
     # Close the final group
     if current_group is not None:
-        _finalize_group(current_group, segments, audio_np, sample_rate, overlap_with)
+        _finalize_group(current_group, audio_np, sample_rate, overlap_with)
         result.append(current_group)
 
     return result
@@ -560,7 +562,6 @@ def _split_segments_by_speaker(
 
 def _finalize_group(
     group: dict,
-    segments: list[dict],
     audio_np: np.ndarray,
     sample_rate: int,
     overlap_with: dict[str, list[tuple[float, float]]],
@@ -580,14 +581,51 @@ def _finalize_group(
     if overlapped_speakers:
         group["overlap_with"] = overlapped_speakers
 
-    # Extract audio from ALL segments that contain this speaker's words
-    group["audio"] = _extract_segment_opus(
-        audio_np,
-        sample_rate,
-        segments,
-        group["_seg_indices"],
+    # Extract audio using exact word-level time ranges — respects within-segment
+    # speaker boundaries so we never include another speaker's audio from the
+    # same segment's time span.
+    group["audio"] = _extract_audio_from_ranges(
+        audio_np, sample_rate, group["_audio_ranges"]
     )
-    del group["_seg_indices"]
+    del group["_audio_ranges"]
+
+
+def _extract_audio_from_ranges(
+    audio_np: np.ndarray,
+    sample_rate: int,
+    ranges: list[tuple[float, float]],
+) -> str:
+    """Extract and concatenate audio for a list of (start, end) time ranges in seconds."""
+    import base64
+    import io
+
+    audio_np = waveform_to_numpy(audio_np)
+    if sample_rate <= 0 or not ranges:
+        return ""
+
+    slices: list[np.ndarray] = []
+    for start_sec, end_sec in ranges:
+        try:
+            start = max(0, int(float(start_sec) * sample_rate))
+            end = min(len(audio_np), int(float(end_sec) * sample_rate))
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        slices.append(audio_np[start:end])
+
+    if not slices:
+        return ""
+
+    concatenated = np.concatenate(slices)
+
+    with io.BytesIO() as buf:
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(concatenated.tobytes())
+        return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def transcribe_audio(
