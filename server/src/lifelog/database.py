@@ -691,14 +691,14 @@ async def delete_speaker(user_id: int, speaker_id: int) -> bool:
                   speakers = (SELECT COALESCE(jsonb_agg(
                       CASE WHEN elem->>'name' = $2 THEN jsonb_set(
                            elem, '{name}',
-                           COALESCE(elem->>'raw_speaker', 'Unknown')::jsonb) - 'speaker_id'
+                           COALESCE(elem->>'raw_speaker', elem->>'name')::jsonb) - 'speaker_id'
                            ELSE elem END), '[]'::jsonb)
                     FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speakers) = 'array'
                          THEN speakers ELSE '[]'::jsonb END) elem),
                   speaker_segments = (SELECT COALESCE(jsonb_agg(
                       CASE WHEN elem->>'speaker' = $2 THEN jsonb_set(
                            elem, '{speaker}',
-                           COALESCE(elem->>'raw_speaker', 'Unknown')::jsonb) - 'speaker_id'
+                           COALESCE(elem->>'raw_speaker', 'null')::jsonb) - 'speaker_id'
                            ELSE elem END), '[]'::jsonb)
                     FROM jsonb_array_elements(CASE WHEN jsonb_typeof(speaker_segments::jsonb) = 'array'
                          THEN speaker_segments::jsonb ELSE '[]'::jsonb END) elem)

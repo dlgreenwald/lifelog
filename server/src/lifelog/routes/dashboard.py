@@ -25,6 +25,7 @@ from lifelog.database import (
     delete_decision,
     delete_recording,
     delete_todo,
+    end_session,
     get_active_session_recording,
     get_all_recordings_with_speakers,
     get_daily_summary,
@@ -34,6 +35,7 @@ from lifelog.database import (
     get_decisions_for_recording,
     get_recording,
     get_recordings_by_date,
+    get_session_user_id,
     get_speakers,
     get_todo_owner,
     get_todo_recording_id,
@@ -648,6 +650,18 @@ async def get_active_recording_route(user: dict = Depends(validate_oidc_token)):
     """Get the current active session as a recording (live view)."""
     recording = await get_active_session_recording(user["id"])
     return recording
+
+
+@router.post("/sessions/{session_id}/end")
+async def end_session_route(session_id: int, user: dict = Depends(validate_oidc_token)):
+    """Manually end an active session. The next device utterance will start a new session."""
+    owner_id = await get_session_user_id(session_id)
+    if owner_id is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if owner_id != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your session")
+    await end_session(session_id)
+    return {"ok": True}
 
 
 @router.get("/daily-summary/{date}")

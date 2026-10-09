@@ -998,15 +998,16 @@ def _persist_partition_segments(
                 continue
         else:
             audio_filename = ""
-        persisted.append(
-            {
-                "speaker": segment.get("speaker", "Unknown"),
-                "start": segment.get("start", 0),
-                "end": segment.get("end", 0),
-                "text": segment.get("text", ""),
-                "audio_filename": audio_filename,
-            }
-        )
+        seg: dict[str, object] = {
+            "speaker": segment.get("speaker", "Unknown"),
+            "start": segment.get("start", 0),
+            "end": segment.get("end", 0),
+            "text": segment.get("text", ""),
+            "audio_filename": audio_filename,
+        }
+        if "chunk_idx" in segment:
+            seg["chunk_idx"] = segment["chunk_idx"]
+        persisted.append(seg)
     return persisted
 
 
@@ -1092,11 +1093,23 @@ def _apply_topic_splits(
 
 
 RAW_LABEL_RE = re.compile(r"^SPEAKER_\d+$")
-MIN_RESOLVE_AUDIO_SECONDS = 0.5
+# Minimum audio duration for a segment to be eligible for centroid enrollment.
+# Segments shorter than this are skipped. Additionally, any segment flagged
+# with ``overlap_with`` (indicating time overlap with a different speaker)
+# is always excluded, regardless of duration.
+MIN_ENROLLMENT_AUDIO_SECONDS = 30.0
 
 
 async def _reidentify_recording(user: dict, recording: dict) -> None:
-    """Resolve raw speaker labels to speaker entities and persist the result."""
+    """Resolve raw speaker labels to speaker entities and persist the result.
+
+    Two-pass per-(chunk_idx, raw_label) resolution:
+    - Pass 1: try to resolve or enroll all groups. Enrollment requires >= 30s of
+      eligible audio (non-overlap, above minimum duration).
+    - Pass 2: retry groups that had no eligible audio in pass 1 using ALL their
+      audio (including short segments). This lets newly-enrolled speakers from
+      pass 1 resolve short-segment labels that belong to the same real person.
+    """
     from lifelog.pipeline.speaker_client import resolve_speaker, serialize_embedding
 
     raw_segments = recording.get("speaker_segments") or []
@@ -1127,11 +1140,13 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
         logger.info("recording_no_speaker_segments", recording_id=recording.get("id"))
         return
 
-    existing_names = {vp["name"] for vp in await db.get_all_voiceprints(user["id"])}
+    existing_names: set[str] = set()
 
-    # Group segments needing resolution by raw label, preserving items in order.
+    # Group segments by (chunk_idx, raw_label). Each group is independently
+    # enrolled or resolved — pyannote may over-split within a chunk, so
+    # SPEAKER_01 and SPEAKER_02 in the same chunk are separate groups.
     items: list[dict] = []
-    groups: dict[str, list[dict]] = {}
+    groups: dict[tuple[int, str], list[dict]] = {}
     for segment in segments:
         if isinstance(segment, str):
             import json
@@ -1147,35 +1162,17 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
         )
         if not isinstance(item, dict):
             continue
+        chunk_idx = int(item.get("chunk_idx", -1))
         raw = item.get("speaker") or item.get("name") or "Unknown"
-        # Store the lookup key on the item so the updated loop can find it.
+        item["_chunk_idx"] = chunk_idx
         item["_raw_label"] = raw
         if raw == "Unknown" or RAW_LABEL_RE.match(raw):
-            groups.setdefault(raw, []).append(item)
+            groups.setdefault((chunk_idx, raw), []).append(item)
         items.append(item)
 
-    labels: dict[str, dict] = {}
-    for raw, group in groups.items():
-        # Filter to segments long enough for ECAPA-TDNN to produce a valid embedding.
-        long_enough = []
-        for item in group:
-            try:
-                start = float(item.get("start", 0))
-                end = float(item.get("end", 0))
-                duration = end - start
-            except (ValueError, TypeError):
-                # Unparseable timestamps: keep the item, let the service decide.
-                long_enough.append(item)
-                continue
-            if duration >= MIN_RESOLVE_AUDIO_SECONDS:
-                long_enough.append(item)
-
-        if not long_enough:
-            logger.debug("group_skipped_all_segments_too_short", raw=raw)
-            continue
-
-        audios: list[bytes] = []
-        for item in long_enough:
+    def _decrypt_group(audio_items: list[dict], user: dict) -> list[bytes]:
+        audios = []
+        for item in audio_items:
             filename = item.get("audio_filename")
             if not filename:
                 continue
@@ -1188,7 +1185,112 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
                     )
                 )
             except Exception:
-                logger.warning("skipping_corrupt_audio", raw=raw, exc_info=True)
+                logger.warning(
+                    "skipping_corrupt_audio",
+                    chunk_idx=item.get("_chunk_idx"),
+                    raw=item.get("_raw_label"),
+                    exc_info=True,
+                )
+        return audios
+
+    async def _resolve_group(
+        key: tuple[int, str],
+        audio_items: list[dict],
+        user: dict,
+        existing_names: set[str],
+        labels: dict,
+    ) -> bool:
+        """Resolve or enroll one group. Returns True if group was resolved/enrolled."""
+        audios = _decrypt_group(audio_items, user)
+        if not audios:
+            return False
+        try:
+            result = await resolve_speaker(user, audios)
+            match = result.get("match")
+            if match:
+                await db.add_voiceprint(
+                    match["speaker_id"], serialize_embedding(result["centroid"])
+                )
+                labels[key] = {
+                    "speaker_id": match["speaker_id"],
+                    "name": match["name"],
+                }
+                logger.info(
+                    "speaker_resolved",
+                    chunk_idx=key[0],
+                    raw=key[1],
+                    audio_count=len(audios),
+                    matched_speaker_id=match["speaker_id"],
+                    matched_name=match["name"],
+                    similarity=match.get("similarity"),
+                )
+                return True
+            else:
+                # No match — enroll if we have enough eligible audio
+                enrollment_eligible = [
+                    item
+                    for item in audio_items
+                    if not item.get("overlap_with")
+                    and (
+                        float(item.get("end", 0)) - float(item.get("start", 0))
+                        >= MIN_ENROLLMENT_AUDIO_SECONDS
+                    )
+                ]
+                if not enrollment_eligible:
+                    # Too short to enroll — skip for now (pass 2 may retry)
+                    return False
+                enroll_audios = _decrypt_group(enrollment_eligible, user)
+                if not enroll_audios:
+                    return False
+                # Re-run resolve with just enrollment-eligible audio to get centroid
+                result2 = await resolve_speaker(user, enroll_audios)
+                name = generate_speaker_name(existing_names)
+                speaker = await db.create_speaker(user["id"], name)
+                logger.info(
+                    "speaker_created",
+                    chunk_idx=key[0],
+                    raw=key[1],
+                    audio_count=len(enroll_audios),
+                    new_speaker_id=speaker["id"],
+                    new_speaker_name=name,
+                )
+                await db.add_voiceprint(
+                    speaker["id"], serialize_embedding(result2["centroid"])
+                )
+                existing_names.add(name)
+                labels[key] = {"speaker_id": speaker["id"], "name": name}
+                return True
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400:
+                logger.warning(
+                    "speaker_resolve_no_valid_audio",
+                    chunk_idx=key[0],
+                    raw=key[1],
+                    response_body=exc.response.text,
+                )
+            else:
+                logger.exception("speaker_resolve_error", chunk_idx=key[0], raw=key[1])
+        except Exception:
+            logger.exception("speaker_resolve_error", chunk_idx=key[0], raw=key[1])
+        return False
+
+    labels: dict[tuple[int, str], dict] = {}
+
+    # ── Pass 1: resolve or enroll all groups that have eligible audio ─────
+    skipped: list[tuple[int, str]] = []
+    for key, group in groups.items():
+        resolved = await _resolve_group(key, group, user, existing_names, labels)
+        if not resolved:
+            skipped.append(key)
+
+    # ── Pass 2: retry skipped groups with ALL audio (including short segments) ─
+    for key in skipped:
+        group = groups[key]
+        # Get all non-overlap audio for this group (no duration filter)
+        all_audio_items = [item for item in group if not item.get("overlap_with")]
+        if not all_audio_items:
+            continue
+        audios = _decrypt_group(all_audio_items, user)
         if not audios:
             continue
         try:
@@ -1198,39 +1300,30 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
                 await db.add_voiceprint(
                     match["speaker_id"], serialize_embedding(result["centroid"])
                 )
-                labels[raw] = {
+                labels[key] = {
                     "speaker_id": match["speaker_id"],
                     "name": match["name"],
                 }
-            else:
-                name = generate_speaker_name(existing_names)
-                speaker = await db.create_speaker(user["id"], name)
-                await db.add_voiceprint(
-                    speaker["id"], serialize_embedding(result["centroid"])
+                logger.info(
+                    "speaker_resolved_pass2",
+                    chunk_idx=key[0],
+                    raw=key[1],
+                    audio_count=len(audios),
+                    matched_speaker_id=match["speaker_id"],
+                    matched_name=match["name"],
+                    similarity=match.get("similarity"),
                 )
-                existing_names.add(name)
-                labels[raw] = {"speaker_id": speaker["id"], "name": name}
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 400:
-                logger.warning(
-                    "speaker_resolve_no_valid_audio",
-                    raw=raw,
-                    response_body=exc.response.text,
-                )
-            else:
-                logger.exception("speaker_resolve_error", raw=raw)
         except Exception:
-            logger.exception("speaker_resolve_error", raw=raw)
+            logger.exception(
+                "speaker_resolve_pass2_error", chunk_idx=key[0], raw=key[1]
+            )
 
+    # ── Persist resolved labels onto segments ─────────────────────────────────
     updated = []
     for item in items:
-        raw = (
-            item.get("_raw_label")
-            or item.get("speaker")
-            or item.get("name")
-            or "Unknown"
-        )
-        resolved = labels.get(raw)
+        chunk_idx = item.get("_chunk_idx", -1)
+        raw = item.get("_raw_label") or "Unknown"
+        resolved = labels.get((chunk_idx, raw))
         item["raw_speaker"] = raw
         if resolved:
             item["speaker"] = resolved["name"]
@@ -1240,6 +1333,7 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
         {
             "id": index,
             "name": item["speaker"],
+            "raw_speaker": raw,
             "start": item.get("start", 0),
             "end": item.get("end", 0),
             "text": item.get("text", ""),
@@ -1368,12 +1462,14 @@ async def _finalize_completed_sessions() -> None:
             speaker_segments = []
             speaker_map = {}
             seen_windows: set[tuple] = set()
-            # Sort by window_start (UTC audio timestamp) to merge in true chronological
-            # order, regardless of device upload order or chunk_index assignment.
-            for job in sorted(
+            import json as json_mod
+
+            sorted_jobs = sorted(
                 full_jobs,
                 key=lambda item: (item.get("window_start") or _NAIVE_MIN, item["id"]),
-            ):
+            )
+
+            for job in sorted_jobs:
                 # Skip duplicate windows (same start/end from reprocess rescheduling)
                 window = (job["window_start"], job["window_end"])
                 if window in seen_windows:
@@ -1381,10 +1477,9 @@ async def _finalize_completed_sessions() -> None:
                 seen_windows.add(window)
                 result = job.get("result") or {}
                 if isinstance(result, str):
-                    import json
-
-                    result = json.loads(result)
+                    result = json_mod.loads(result)
                 offset = (job["window_start"] - first).total_seconds()
+                chunk_idx = job.get("chunk_index", 0)
                 transcript_segments.extend(
                     _shifted_segments(result.get("segments", []), offset)
                 )
@@ -1393,6 +1488,7 @@ async def _finalize_completed_sessions() -> None:
                     item.pop("audio_filename", None)
                     item["start"] = float(item.get("start", 0)) + offset
                     item["end"] = float(item.get("end", 0)) + offset
+                    item["chunk_idx"] = chunk_idx
                     speaker_segments.append(item)
                 speaker_map.update(result.get("speaker_map", {}))
             speaker_segments.sort(key=lambda item: item.get("start", 0))
