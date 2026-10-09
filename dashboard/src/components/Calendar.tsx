@@ -402,6 +402,28 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
   // Full sidebar content (calendar + todos - for desktop)
   const sidebarContent = (
     <div className="calendar-sidebar">
+      {activeRecording && (
+        <div className="active-recording-panel">
+          <Button
+            variant="destructive"
+            size="sm"
+            className="w-full"
+            onClick={async () => {
+              if (!activeRecording) return;
+              const sessionId = activeRecording.session_id;
+              if (!sessionId) return;
+              try {
+                await api.endSession(sessionId);
+                loadActive();
+              } catch (err) {
+                console.error('Failed to end session:', err);
+              }
+            }}
+          >
+            End Recording
+          </Button>
+        </div>
+      )}
       <ShadcnCalendar
         mode="range"
         selected={selected}

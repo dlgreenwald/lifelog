@@ -71,7 +71,7 @@ def test_full_result_shape_and_audio():
         "segments": [{"speaker": "SPEAKER_00", "start": 0, "end": 0.01, "text": "hi"}],
         "language": "en",
     }
-    diarize = MagicMock(return_value=MagicMock())
+    diarize = MagicMock(return_value=(MagicMock(), {}))
     fake_whisperx = MagicMock()
     fake_whisperx.assign_word_speakers.return_value = {
         "segments": asr.transcribe.return_value["segments"]
@@ -87,6 +87,7 @@ def test_full_result_shape_and_audio():
         "full_transcript",
         "speaker_map",
         "speaker_segments",
+        "speaker_embeddings",
     }
     assert result["speaker_segments"][0]["speaker"] == "SPEAKER_00"
     assert "audio" in result["speaker_segments"][0]

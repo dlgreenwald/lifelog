@@ -109,7 +109,12 @@ async def test_reidentify_label_without_audio_left_raw():
     recording = {
         "id": 10,
         "speaker_segments": [
-            {"speaker": "SPEAKER_00", "start": 0, "end": 45.0, "text": "hello this is a longer segment"}
+            {
+                "speaker": "SPEAKER_00",
+                "start": 0,
+                "end": 45.0,
+                "text": "hello this is a longer segment",
+            }
         ],
     }
 
@@ -132,7 +137,7 @@ async def test_reidentify_label_without_audio_left_raw():
 
 @pytest.mark.asyncio
 async def test_reidentify_overlap_segment_skipped_for_enrollment():
-    """Segments flagged with ``overlap_with`` are excluded from centroid enrollment."""
+    """Segments flagged with ``overlap_with`` are resolved (for matching) but not used for enrollment."""
     from lifelog.worker import _reidentify_recording
 
     recording = {
@@ -148,7 +153,10 @@ async def test_reidentify_overlap_segment_skipped_for_enrollment():
             }
         ],
     }
-    result = {"centroid": [0.1, 0.2], "match": {"speaker_id": 7, "name": "Alice Ashford", "similarity": 0.9}}
+    result = {
+        "centroid": [0.1, 0.2],
+        "match": {"speaker_id": 7, "name": "Alice Ashford", "similarity": 0.9},
+    }
 
     with (
         patch("lifelog.worker.db") as mock_db,
@@ -158,16 +166,20 @@ async def test_reidentify_overlap_segment_skipped_for_enrollment():
         ) as mock_resolve,
     ):
         mock_db.get_all_voiceprints = AsyncMock(return_value=[])
+        mock_db.add_voiceprint = AsyncMock(return_value=1)
         mock_db.update_recording_speaker_data = AsyncMock()
         mock_resolve.return_value = result
         await _reidentify_recording(USER, recording)
 
-    # Overlapping segment should be skipped for enrollment
-    mock_resolve.assert_not_awaited()
-    # But the segment should still be updated in the DB (just unresolved)
-    speakers, updated = mock_db.update_recording_speaker_data.call_args.args[1:3]
+    # Overlapping segment IS resolved (for matching) even though it's excluded from enrollment
+    mock_resolve.assert_called_once()
+    # Matched → voiceprint accumulated, no new speaker enrolled
+    mock_db.add_voiceprint.assert_called_once()
+    # Segment gets the matched speaker's name
+    _speakers, updated = mock_db.update_recording_speaker_data.call_args.args[1:3]
     assert updated[0]["raw_speaker"] == "SPEAKER_00"
-    assert updated[0]["speaker"] == "SPEAKER_00"
+    assert updated[0]["speaker"] == "Alice Ashford"
+    assert updated[0]["speaker_id"] == 7
 
 
 def test_shifted_segments_shifts_word_timestamps():

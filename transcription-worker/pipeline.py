@@ -530,7 +530,14 @@ def transcribe_audio(
         )
         aligned_segments = _as_segment_dicts(aligned.get("segments", aligned))
 
-    diarize_df = models["diarize"](audio_np)
+    diarize_result = models["diarize"](audio_np, return_embeddings=True)
+    # Handle both tuple (diarization_df, embeddings_dict) and bare DataFrame returns.
+    # Some pyannote.audio versions return a bare DataFrame when embeddings are unavailable.
+    if isinstance(diarize_result, tuple):
+        diarize_df, speaker_embeddings = diarize_result
+    else:
+        diarize_df = diarize_result
+        speaker_embeddings = {}
 
     # Detect which diarization segments overlap with a DIFFERENT speaker.
     # These time ranges are used to flag speaker_segments that occurred during
@@ -541,7 +548,9 @@ def transcribe_audio(
     import whisperx
 
     diarized = whisperx.assign_word_speakers(
-        diarize_df, {"segments": aligned_segments}
+        diarize_df,
+        {"segments": aligned_segments},
+        speaker_embeddings=speaker_embeddings,
     )
     segments = _as_segment_dicts(diarized.get("segments", aligned_segments))
     groups = group_into_speaker_segments(segments)
@@ -572,4 +581,5 @@ def transcribe_audio(
         "full_transcript": {"segments": segments, "language": detected_language},
         "speaker_map": speaker_map,
         "speaker_segments": speaker_segments,
+        "speaker_embeddings": speaker_embeddings or {},
     }
