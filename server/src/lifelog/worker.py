@@ -1092,7 +1092,11 @@ def _apply_topic_splits(
 
 
 RAW_LABEL_RE = re.compile(r"^SPEAKER_\d+$")
-MIN_RESOLVE_AUDIO_SECONDS = 0.5
+# Minimum audio duration for a segment to be eligible for centroid enrollment.
+# Segments shorter than this are skipped. Additionally, any segment flagged
+# with ``overlap_with`` (indicating time overlap with a different speaker)
+# is always excluded, regardless of duration.
+MIN_ENROLLMENT_AUDIO_SECONDS = 30.0
 
 
 async def _reidentify_recording(user: dict, recording: dict) -> None:
@@ -1156,26 +1160,31 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
 
     labels: dict[str, dict] = {}
     for raw, group in groups.items():
-        # Filter to segments long enough for ECAPA-TDNN to produce a valid embedding.
-        long_enough = []
+        # Filter to segments eligible for centroid enrollment:
+        # - Must be >= MIN_ENROLLMENT_AUDIO_SECONDS (30s)
+        # - Must NOT have ``overlap_with`` set (not involved in cross-speaker overlap)
+        enrollment_eligible = []
         for item in group:
+            # Skip segments flagged as overlapping with a different speaker
+            if item.get("overlap_with"):
+                continue
             try:
                 start = float(item.get("start", 0))
                 end = float(item.get("end", 0))
                 duration = end - start
             except (ValueError, TypeError):
                 # Unparseable timestamps: keep the item, let the service decide.
-                long_enough.append(item)
+                enrollment_eligible.append(item)
                 continue
-            if duration >= MIN_RESOLVE_AUDIO_SECONDS:
-                long_enough.append(item)
+            if duration >= MIN_ENROLLMENT_AUDIO_SECONDS:
+                enrollment_eligible.append(item)
 
-        if not long_enough:
+        if not enrollment_eligible:
             logger.debug("group_skipped_all_segments_too_short", raw=raw)
             continue
 
         audios: list[bytes] = []
-        for item in long_enough:
+        for item in enrollment_eligible:
             filename = item.get("audio_filename")
             if not filename:
                 continue

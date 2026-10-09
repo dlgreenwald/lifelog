@@ -1,0 +1,7 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "T3902") (type "KiCad") (uri "/home/dlgreenwald/Development/vibe/omp/lifelog/hardware/libs/T3902.pretty") (options "") (descr ""))
+	(lib (name "CH224K") (type "KiCad") (uri "/home/dlgreenwald/Development/vibe/omp/lifelog/hardware/libs/CH224K.pretty") (options "") (descr ""))
+	(lib (name "MAX17048") (type "KiCad") (uri "/home/dlgreenwald/Development/vibe/omp/lifelog/hardware/libs/MAX17048.pretty") (options "") (descr ""))
+	(lib (name "TPS63020") (type "KiCad") (uri "/home/dlgreenwald/Development/vibe/omp/lifelog/hardware/libs/TPS63020.pretty") (options "") (descr ""))
+)
