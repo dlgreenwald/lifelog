@@ -1165,7 +1165,9 @@ async def _reidentify_recording(user: dict, recording: dict) -> None:
         # - Must NOT have ``overlap_with`` set (not involved in cross-speaker overlap)
         enrollment_eligible = []
         for item in group:
-            # Skip segments flagged as overlapping with a different speaker
+            # Skip segments flagged as occurring during a cross-speaker overlap period.
+            # The transcription worker sets overlap_with: True on any segment whose
+            # time range intersects with a different speaker's diarization range.
             if item.get("overlap_with"):
                 continue
             try:

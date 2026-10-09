@@ -464,168 +464,38 @@ def _get_align_model(models: dict, language_code: str) -> tuple:
     return models["align_model"], models["metadata"]
 
 
-def _split_segments_by_speaker(
-    segments: list[dict],
-    audio_np: np.ndarray,
-    sample_rate: int,
-    overlap_with: dict[str, list[tuple[float, float]]],
-) -> list[dict]:
-    """Split segments at word-level speaker boundaries and handle overlaps.
+def _build_overlap_set(diarize_df) -> set[tuple[float, float]]:
+    """Return set of (start, end) tuples from diarize_df that cross-speaker overlap.
 
-    whisperx's assign_word_speakers assigns each word a speaker, but when
-    consecutive words have different speakers, they may be merged into a single
-    segment with the majority-vote speaker. This function splits such segments
-    at speaker boundaries so each output segment has exactly one speaker.
-
-    Additionally, any segment whose time range overlaps with a different speaker's
-    range (per the pyannote diarization) is flagged via the ``overlap_with`` field.
-
-    Audio extraction: each output group carries the exact word-level (start, end)
-    time ranges to extract, so within-segment speaker boundaries are respected
-    and only the target speaker's audio is included.
+    A segment's time range is added to the set if any part of it overlaps with
+    a segment belonging to a different speaker. This is used to flag speaker_segments
+    that were recorded during a cross-speaker overlap period.
     """
-    if not segments:
-        return []
+    if diarize_df is None or len(diarize_df) == 0:
+        return set()
 
-    result: list[dict] = []
-    current_group: dict | None = None
+    rows = diarize_df.to_dict("records")
+    overlapping: set[tuple[float, float]] = set()
 
-    for seg_idx, seg in enumerate(segments):
-        words = seg.get("words")
-        if words and len(words) > 0:
-            # Segment has word-level data — split at speaker boundaries
-            for w_idx, word in enumerate(words):
-                word_speaker = word.get("speaker") or "Unknown"
-                word_start = float(word.get("start", 0.0))
-                word_end = float(word.get("end", word_start))
+    for i, row_i in enumerate(rows):
+        spk_i = str(row_i["speaker"])
+        start_i = float(row_i["start"])
+        end_i = float(row_i["end"])
+        for j, row_j in enumerate(rows):
+            if i == j:
+                continue
+            spk_j = str(row_j["speaker"])
+            if spk_i == spk_j:
+                continue
+            start_j = float(row_j["start"])
+            end_j = float(row_j["end"])
+            # Check for time overlap
+            if start_i < end_j and start_j < end_i:
+                # Mark the overlapping portion of row_i
+                overlapping.add((start_i, end_i))
+                break  # row_i is overlapping; move to next row_i
 
-                if current_group is None:
-                    current_group = {
-                        "speaker": word_speaker,
-                        "start": word_start,
-                        "end": word_end,
-                        "text": word.get("word", ""),
-                        "_audio_ranges": [(word_start, word_end)],
-                    }
-                elif current_group["speaker"] != word_speaker:
-                    # Speaker changed — close current group and start new one
-                    _finalize_group(current_group, audio_np, sample_rate, overlap_with)
-                    result.append(current_group)
-                    current_group = {
-                        "speaker": word_speaker,
-                        "start": word_start,
-                        "end": word_end,
-                        "text": word.get("word", ""),
-                        "_audio_ranges": [(word_start, word_end)],
-                    }
-                else:
-                    # Same speaker — extend current group and track the time range
-                    current_group["end"] = word_end
-                    current_group["text"] = (
-                        current_group["text"] + " " + word.get("word", "")
-                    ).strip()
-                    current_group["_audio_ranges"].append((word_start, word_end))
-        else:
-            # No word-level data — use the segment as-is
-            seg_speaker = seg.get("speaker") or "Unknown"
-            seg_start = float(seg.get("start", 0.0))
-            seg_end = float(seg.get("end", seg_start))
-
-            if current_group is None or current_group["speaker"] != seg_speaker:
-                # Close any open group
-                if current_group is not None:
-                    _finalize_group(current_group, audio_np, sample_rate, overlap_with)
-                    result.append(current_group)
-
-                current_group = {
-                    "speaker": seg_speaker,
-                    "start": seg_start,
-                    "end": seg_end,
-                    "text": seg.get("text", ""),
-                    "_audio_ranges": [(seg_start, seg_end)],
-                }
-            else:
-                # Extend existing group
-                current_group["end"] = seg_end
-                current_group["text"] = (
-                    current_group["text"] + " " + seg.get("text", "")
-                ).strip()
-                current_group["_audio_ranges"].append((seg_start, seg_end))
-
-    # Close the final group
-    if current_group is not None:
-        _finalize_group(current_group, audio_np, sample_rate, overlap_with)
-        result.append(current_group)
-
-    return result
-
-
-def _finalize_group(
-    group: dict,
-    audio_np: np.ndarray,
-    sample_rate: int,
-    overlap_with: dict[str, list[tuple[float, float]]],
-) -> None:
-    """Add overlap flag and extract audio into a group, then remove helper keys."""
-    grp_spk = group["speaker"]
-    grp_start = group["start"]
-    grp_end = group["end"]
-
-    # Check for cross-speaker time overlap
-    overlapped_speakers = [
-        other
-        for other, ranges in overlap_with.items()
-        if other != grp_spk
-        and any(r[0] < grp_end and r[1] > grp_start for r in ranges)
-    ]
-    if overlapped_speakers:
-        group["overlap_with"] = overlapped_speakers
-
-    # Extract audio using exact word-level time ranges — respects within-segment
-    # speaker boundaries so we never include another speaker's audio from the
-    # same segment's time span.
-    group["audio"] = _extract_audio_from_ranges(
-        audio_np, sample_rate, group["_audio_ranges"]
-    )
-    del group["_audio_ranges"]
-
-
-def _extract_audio_from_ranges(
-    audio_np: np.ndarray,
-    sample_rate: int,
-    ranges: list[tuple[float, float]],
-) -> str:
-    """Extract and concatenate audio for a list of (start, end) time ranges in seconds."""
-    import base64
-    import io
-
-    audio_np = waveform_to_numpy(audio_np)
-    if sample_rate <= 0 or not ranges:
-        return ""
-
-    slices: list[np.ndarray] = []
-    for start_sec, end_sec in ranges:
-        try:
-            start = max(0, int(float(start_sec) * sample_rate))
-            end = min(len(audio_np), int(float(end_sec) * sample_rate))
-        except (TypeError, ValueError):
-            continue
-        if end <= start:
-            continue
-        slices.append(audio_np[start:end])
-
-    if not slices:
-        return ""
-
-    concatenated = np.concatenate(slices)
-
-    with io.BytesIO() as buf:
-        with wave.open(buf, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(concatenated.tobytes())
-        return base64.b64encode(buf.getvalue()).decode("ascii")
+    return overlapping
 
 
 def transcribe_audio(
@@ -660,51 +530,39 @@ def transcribe_audio(
         )
         aligned_segments = _as_segment_dicts(aligned.get("segments", aligned))
 
-    # Get the raw pyannote diarization DataFrame and detect overlaps before
-    # assign_word_speakers flattens them
     diarize_df = models["diarize"](audio_np)
-    import whisperx
 
-    # Build overlap map: speaker -> [(overlap_start, overlap_end), ...]
-    # These are ranges where this speaker overlaps with a DIFFERENT speaker
-    overlap_with: dict[str, list[tuple[float, float]]] = {}
-    if diarize_df is not None and len(diarize_df) > 0:
-        # Check each diarization segment against all others for cross-speaker overlap
-        rows = diarize_df.to_dict("records")
-        for i, row_i in enumerate(rows):
-            spk_i = str(row_i["speaker"])
-            start_i = float(row_i["start"])
-            end_i = float(row_i["end"])
-            for j, row_j in enumerate(rows):
-                if i == j:
-                    continue
-                spk_j = str(row_j["speaker"])
-                if spk_i == spk_j:
-                    continue
-                start_j = float(row_j["start"])
-                end_j = float(row_j["end"])
-                # Check for time overlap
-                if start_i < end_j and start_j < end_i:
-                    overlap_start = max(start_i, start_j)
-                    overlap_end = min(end_i, end_j)
-                    overlap_with.setdefault(spk_i, []).append(
-                        (overlap_start, overlap_end)
-                    )
-                    overlap_with.setdefault(spk_j, []).append(
-                        (overlap_start, overlap_end)
-                    )
+    # Detect which diarization segments overlap with a DIFFERENT speaker.
+    # These time ranges are used to flag speaker_segments that occurred during
+    # a cross-speaker overlap period — those segments will be excluded from
+    # centroid enrollment on the server side.
+    overlapping_ranges = _build_overlap_set(diarize_df)
+
+    import whisperx
 
     diarized = whisperx.assign_word_speakers(
         diarize_df, {"segments": aligned_segments}
     )
     segments = _as_segment_dicts(diarized.get("segments", aligned_segments))
-
-    # Split segments at word-level speaker boundaries so each output segment
-    # has exactly one speaker. This handles the case where assign_word_speakers
-    # merges words from different speakers into one segment.
-    speaker_segments = _split_segments_by_speaker(
-        segments, audio_np, sample_rate, overlap_with
-    )
+    groups = group_into_speaker_segments(segments)
+    speaker_segments = []
+    for group in groups:
+        segment = {
+            key: value for key, value in group.items() if key != "segment_indices"
+        }
+        segment["audio"] = _extract_segment_opus(
+            audio_np, sample_rate, segments, group["segment_indices"]
+        )
+        # Flag segments whose time range overlaps with a cross-speaker region.
+        # These will be skipped during centroid enrollment on the server.
+        seg_start = segment.get("start", 0)
+        seg_end = segment.get("end", 0)
+        if any(
+            ov_start < seg_end and ov_end > seg_start
+            for ov_start, ov_end in overlapping_ranges
+        ):
+            segment["overlap_with"] = True
+        speaker_segments.append(segment)
 
     speaker_map = asr_result.get("speaker_map", {})
     if not isinstance(speaker_map, dict):
