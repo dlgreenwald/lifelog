@@ -468,7 +468,7 @@ def _split_segments_by_speaker(
     segments: list[dict],
     audio_np: np.ndarray,
     sample_rate: int,
-    overlap_with: dict[str, list[str]],
+    overlap_with: dict[str, list[tuple[float, float]]],
 ) -> list[dict]:
     """Split segments at word-level speaker boundaries and handle overlaps.
 
@@ -501,49 +501,27 @@ def _split_segments_by_speaker(
                         "start": word_start,
                         "end": word_end,
                         "text": word.get("word", ""),
-                        "_first_seg_idx": seg_idx,
-                        "_last_word_idx": w_idx,
+                        "_seg_indices": [seg_idx],
                     }
                 elif current_group["speaker"] != word_speaker:
                     # Speaker changed — close current group and start new one
-                    # Check if current group overlaps with other speakers
-                    grp_start = current_group["start"]
-                    grp_end = current_group["end"]
-                    grp_spk = current_group["speaker"]
-                    overlapped_speakers = [
-                        other
-                        for other, ranges in overlap_with.items()
-                        if other != grp_spk
-                        and any(r[0] < grp_end and r[1] > grp_start for r in ranges)
-                    ]
-                    if overlapped_speakers:
-                        current_group["overlap_with"] = overlapped_speakers
-
-                    # Extract audio for this group using the first and last segment indices
-                    current_group["audio"] = _extract_segment_opus(
-                        audio_np,
-                        sample_rate,
-                        segments,
-                        [current_group["_first_seg_idx"]],
-                    )
-                    del current_group["_first_seg_idx"]
-                    del current_group["_last_word_idx"]
+                    _finalize_group(current_group, segments, audio_np, sample_rate, overlap_with)
                     result.append(current_group)
-
                     current_group = {
                         "speaker": word_speaker,
                         "start": word_start,
                         "end": word_end,
                         "text": word.get("word", ""),
-                        "_first_seg_idx": seg_idx,
+                        "_seg_indices": [seg_idx],
                     }
                 else:
-                    # Same speaker — extend current group
+                    # Same speaker — extend current group and track the segment
                     current_group["end"] = word_end
                     current_group["text"] = (
                         current_group["text"] + " " + word.get("word", "")
                     ).strip()
-                    current_group["_last_word_idx"] = w_idx
+                    if seg_idx not in current_group["_seg_indices"]:
+                        current_group["_seg_indices"].append(seg_idx)
         else:
             # No word-level data — use the segment as-is
             seg_speaker = seg.get("speaker") or "Unknown"
@@ -553,25 +531,7 @@ def _split_segments_by_speaker(
             if current_group is None or current_group["speaker"] != seg_speaker:
                 # Close any open group
                 if current_group is not None:
-                    grp_spk = current_group["speaker"]
-                    grp_start = current_group["start"]
-                    grp_end = current_group["end"]
-                    overlapped_speakers = [
-                        other
-                        for other, ranges in overlap_with.items()
-                        if other != grp_spk
-                        and any(r[0] < grp_end and r[1] > grp_start for r in ranges)
-                    ]
-                    if overlapped_speakers:
-                        current_group["overlap_with"] = overlapped_speakers
-                    current_group["audio"] = _extract_segment_opus(
-                        audio_np,
-                        sample_rate,
-                        segments,
-                        [current_group["_first_seg_idx"]],
-                    )
-                    del current_group["_first_seg_idx"]
-                    del current_group["_last_word_idx"]
+                    _finalize_group(current_group, segments, audio_np, sample_rate, overlap_with)
                     result.append(current_group)
 
                 current_group = {
@@ -579,7 +539,7 @@ def _split_segments_by_speaker(
                     "start": seg_start,
                     "end": seg_end,
                     "text": seg.get("text", ""),
-                    "_first_seg_idx": seg_idx,
+                    "_seg_indices": [seg_idx],
                 }
             else:
                 # Extend existing group
@@ -587,32 +547,47 @@ def _split_segments_by_speaker(
                 current_group["text"] = (
                     current_group["text"] + " " + seg.get("text", "")
                 ).strip()
+                if seg_idx not in current_group["_seg_indices"]:
+                    current_group["_seg_indices"].append(seg_idx)
 
     # Close the final group
     if current_group is not None:
-        grp_spk = current_group["speaker"]
-        grp_start = current_group["start"]
-        grp_end = current_group["end"]
-        overlapped_speakers = [
-            other
-            for other, ranges in overlap_with.items()
-            if other != grp_spk
-            and any(r[0] < grp_end and r[1] > grp_start for r in ranges)
-        ]
-        if overlapped_speakers:
-            current_group["overlap_with"] = overlapped_speakers
-        current_group["audio"] = _extract_segment_opus(
-            audio_np,
-            sample_rate,
-            segments,
-            [current_group["_first_seg_idx"]],
-        )
-        del current_group["_first_seg_idx"]
-        if "_last_word_idx" in current_group:
-            del current_group["_last_word_idx"]
+        _finalize_group(current_group, segments, audio_np, sample_rate, overlap_with)
         result.append(current_group)
 
     return result
+
+
+def _finalize_group(
+    group: dict,
+    segments: list[dict],
+    audio_np: np.ndarray,
+    sample_rate: int,
+    overlap_with: dict[str, list[tuple[float, float]]],
+) -> None:
+    """Add overlap flag and extract audio into a group, then remove helper keys."""
+    grp_spk = group["speaker"]
+    grp_start = group["start"]
+    grp_end = group["end"]
+
+    # Check for cross-speaker time overlap
+    overlapped_speakers = [
+        other
+        for other, ranges in overlap_with.items()
+        if other != grp_spk
+        and any(r[0] < grp_end and r[1] > grp_start for r in ranges)
+    ]
+    if overlapped_speakers:
+        group["overlap_with"] = overlapped_speakers
+
+    # Extract audio from ALL segments that contain this speaker's words
+    group["audio"] = _extract_segment_opus(
+        audio_np,
+        sample_rate,
+        segments,
+        group["_seg_indices"],
+    )
+    del group["_seg_indices"]
 
 
 def transcribe_audio(
