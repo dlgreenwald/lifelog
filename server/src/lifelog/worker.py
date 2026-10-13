@@ -37,7 +37,7 @@ from lifelog.speaker_names import generate_speaker_name
 logger = structlog.get_logger()
 # Naive datetime minimum — all postgres TIMESTAMP columns are naive (no tzinfo).
 # Used as sort fallback; comparisons between naive datetimes are well-defined.
-_NAIVE_MIN = datetime(1900, 1, 1)  # noqa: DTZ001
+_NAIVE_MIN = datetime(1900, 1, 1)
 POLL_INTERVAL = 60.0
 CLEANUP_INTERVAL = 3600.0
 MAX_RETRY_COUNT = 3
