@@ -4,57 +4,42 @@ Exposes the LifeLog voice journal as [Model Context Protocol (MCP)](https://mode
 
 ## Prerequisites
 
-> **Hard requirements.** The MCP server cannot be deployed without these.
-
-- **Authentik 2026.8.0+** — On-Behalf-Of (OBO) token exchange is not available in older versions.
-- **LibreChat `MCP_SERVERS.CONFIGURE_OBO` role** — Users need this role to configure OBO in the LibreChat Agent Builder. Without it, OBO cannot be set up.
+- **Authentik 2026.8.0+** — On-Behalf-Of (OBO) token exchange requires this version or newer.
+- **LibreChat `MCP_SERVERS.CONFIGURE_OBO` role** — Users need this role to configure OBO in the LibreChat Agent Builder.
 - **Main LifeLog server running** — The MCP server calls the existing FastAPI orchestrator; it is not standalone.
+- **Shared OIDC issuer** — The MCP server and LifeLog dashboard must use the same OIDC provider (Authentik). This can be the same Authentik instance, or a federated pair of instances (see [Authentik Setup](#authentik-setup) below).
 
-## Authentik Setup
+---
 
-LibreChat's OBO section automatically exchanges the authenticated user's OpenID token for a delegated token and forwards it as a `Authorization: Bearer <token>` header on every MCP request. The MCP server validates the delegated token against Authentik's JWKS endpoint.
+## Quick Setup: Shared Authentik Instance
+
+Use this path when LibreChat, the LifeLog dashboard, and the MCP server all share the **same Authentik instance**. This is the simplest configuration and covers most self-hosted deployments.
 
 ### Step 1 — Create an OAuth2 Provider for the MCP Server
 
 1. In Authentik Admin, navigate to **Applications → Providers**.
-2. Click **Create**.
-3. Choose **OAuth2 Provider** (not OpenID Connect Provider — OBO requires OAuth2 token exchange).
-4. Name it `lifelog-mcp`.
-5. Under **Grant Types**, select only:
+2. Click **Create** → choose **OAuth2 Provider** (not OpenID Connect — OBO requires OAuth2 token exchange).
+3. Name it `lifelog-mcp`.
+4. Under **Grant Types**, select only:
    - `token-exchange` (required for OBO)
-6. Under **Token Exchange Policy**, select **Always allow** (or scope to a policy group as needed).
-7. Scroll to **Machine-to-Machine authentication settings**. Under **Federated OAuth2/OpenID Providers**, add the LibreChat OAuth2/OIDC provider. This allows Authentik to verify LibreChat's user tokens as subject tokens in the exchange.
-8. Save the provider. Note its **Client ID** and **Client Secret**.
+5. Under **Token Exchange Policy**, select **Always allow** (or restrict to a policy group as needed).
+6. Save. Note the **Client ID** and **Client Secret**.
 
 ### Step 2 — Add the `tools.read` Scope
 
 1. Open the `lifelog-mcp` provider.
-2. Navigate to **Scopes**.
-3. Click **Create**.
-4. Name: `tools.read`, Scope description: `Read-only access to LifeLog MCP tools`.
-5. Save.
+2. Navigate to **Scopes** → **Create**.
+3. Name: `tools.read`, Scope description: `Read-only access to LifeLog MCP tools`.
+4. Save.
 
 ### Step 3 — Create the Application
 
-1. Navigate to **Applications → Applications**.
-2. Click **Create**.
-3. Name: `LifeLog MCP`.
-4. Bind it to the `lifelog-mcp` provider.
-5. Under **Launch URL**, optionally set `http://localhost:5173` (not required for MCP).
-6. Save.
+1. Navigate to **Applications → Applications** → **Create**.
+2. Name: `LifeLog MCP`, slug: `lifelog-mcp`.
+3. Bind it to the `lifelog-mcp` provider.
+4. Save.
 
-### Step 4 — Note the Token Exchange Endpoint
-
-The token exchange endpoint is:
-```
-https://<your-authentik-domain>/application/o/token-exchange/
-```
-
-LibreChat's `librechat.yaml` `obo` section will point here automatically. The `client_id` from Step 1 and the `tools.read` scope name from Step 2 are used in the LibreChat config below.
-
----
-
-## LibreChat Configuration
+### Step 4 — LibreChat Configuration
 
 Add the following to your `librechat.yaml`:
 
@@ -64,7 +49,8 @@ mcpServers:
     type: streamable-http
     url: http://lifelog-mcp:9001/mcp
     obo:
-      clientID: "<lifelog-mcp-provider-client-id>"
+      clientID: "<lifelog-mcp-client-id>"
+      clientSecret: "<lifelog-mcp-client-secret>"
       scopes: 'tools.read'
     serverInstructions: >
       The LifeLog MCP server provides access to your voice recordings,
@@ -72,23 +58,76 @@ mcpServers:
       Ask me about what you discussed, decided, or planned.
 ```
 
+> **Note:** Unlike the federated setup, the `clientSecret` is required here because LibreChat must authenticate directly to the shared Authentik instance during token exchange. This is the same Authentik that authenticated the user in the first place.
+
 Restart LibreChat after updating `librechat.yaml`.
+
+---
+
+## Advanced Setup: Federated Authentik Instances
+
+Use this path when LibreChat and the MCP server use **different Authentik instances** (e.g., LibreChat is managed by your organization on `auth.company.com` while the MCP server/LifeLog run on a separate instance at `auth.internal.com`). Token exchange across instances requires federation configuration.
+
+### Step 1 — Configure Federation on the MCP Server's Authentik
+
+1. In Authentik Admin (the MCP server's Authentik at `auth.internal.com`), navigate to **Applications → Providers**.
+2. Open the existing `lifelog-mcp` OAuth2 Provider (created in the shared setup above, or create a new one).
+3. Scroll to **Machine-to-Machine authentication settings**. Under **Federated OAuth2/OpenID Providers**, add the **LibreChat OAuth2/OIDC provider** from `auth.company.com`. This tells Authentik how to validate tokens issued by the other Authentik instance.
+4. Save.
+
+### Step 2 — LibreChat Configuration
+
+Configure LibreChat to point to its own Authentik (`auth.company.com`) for authentication, and configure the OBO section with the MCP server's Authentik (`auth.internal.com`) as the token exchange endpoint:
+
+```yaml
+mcpServers:
+  lifelog:
+    type: streamable-http
+    url: http://lifelog-mcp:9001/mcp
+    obo:
+      clientID: "<lifelog-mcp-client-id>"
+      # No clientSecret needed when using federated OBO — LibreChat's Authentik
+      # issues the delegated token directly after token exchange with the
+      # MCP server's Authentik.
+      scopes: 'tools.read'
+    serverInstructions: >
+      The LifeLog MCP server provides access to your voice recordings,
+      transcripts, action items, decisions, and speaker information.
+      Ask me about what you discussed, decided, or planned.
+```
+
+> The token exchange endpoint for the federated setup is
+> `https://auth.internal.com/application/o/token-exchange/`, which Authentik
+> resolves automatically from the `clientID`'s provider metadata.
 
 ---
 
 ## Testing
 
-### 1. Verify OBO Token Exchange with Authentik
+### 1. Verify Token Exchange
+
+**Shared instance** — exchange directly with your Authentik:
 
 ```bash
-# Exchange a LibreChat user token for an MCP delegated token
-curl -X POST https://<auth-prefix>.your-authentik-domain/application/o/token-exchange/ \
+curl -X POST https://<your-authentik-domain>/application/o/token-exchange/ \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
   -d "subject_token=<librechat-user-id-token>" \
   -d "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
   -d "client_id=<lifelog-mcp-client-id>" \
   -d "client_secret=<lifelog-mcp-client-secret>" \
+  -d "scope=tools.read"
+```
+
+**Federated instance** — exchange with the MCP server's Authentik using a token from LibreChat's Authentik:
+
+```bash
+curl -X POST https://<mcp-authentik-domain>/application/o/token-exchange/ \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+  -d "subject_token=<librechat-user-token-from-auth-company-com>" \
+  -d "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
+  -d "client_id=<lifelog-mcp-client-id>" \
   -d "scope=tools.read"
 ```
 
@@ -103,7 +142,7 @@ curl -X POST http://localhost:9001/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-Expected: JSON-RPC response with `tools` array containing all 6 tools:
+Expected: JSON-RPC response with `tools` array:
 `search_recordings`, `get_recordings_by_date`, `get_recording_detail`,
 `get_todos`, `get_decisions`, `get_speakers`.
 
@@ -140,9 +179,11 @@ curl -X POST http://localhost:9001/mcp \
 | Variable | Default | Description |
 |---|---|---|
 | `LIFELOG_API_BASE_URL` | `http://server:8443` | Base URL of the main LifeLog FastAPI server |
-| `LIFELOG_OIDC_ISSUER` | *(empty)* | OIDC provider issuer URL (e.g. `https://auth.example.com`) |
+| `LIFELOG_OIDC_ISSUER` | *(none)* | OIDC provider issuer URL for JWKS token validation. Set to your Authentik base URL, e.g. `https://auth.example.com` |
 | `LIFELOG_MCP_PORT` | `9001` | Port the MCP server listens on |
 | `LIFELOG_MCP_HOST` | `0.0.0.0` | Host the MCP server binds to |
+
+In `docker-compose`, `LIFELOG_OIDC_ISSUER` is set from `${OIDC_ISSUER_URL}` (the same variable used by the main server and dashboard), so all three services share one Authentik configuration automatically.
 
 ---
 
@@ -156,17 +197,3 @@ curl -X POST http://localhost:9001/mcp \
 | `get_todos` | Action items from recordings, optionally filtered by date or status |
 | `get_decisions` | Decisions captured from recordings, optionally filtered by date |
 | `get_speakers` | All enrolled speakers with voiceprint and recording counts |
-
-## Docker
-
-```yaml
-lifelog-mcp:
-  build: ./lifelog-mcp
-  ports:
-    - "9001:9001"
-  environment:
-    LIFELOG_API_BASE_URL: http://server:8443
-    LIFELOG_OIDC_ISSUER: ${OIDC_ISSUER}
-  depends_on:
-    - server
-```
