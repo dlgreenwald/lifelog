@@ -34,11 +34,16 @@ class JWKSTokenVerifier(TokenVerifier):
         """Validate a raw Bearer JWT and return an AccessToken with its claims."""
         try:
             payload = await _validate_token(token)
-            # Return AccessToken with the raw token so tool handlers can forward it
+            scopes = payload.get("scope", "").split()
+            logger.debug(
+                "token_validated",
+                subject=payload.get("sub"),
+                scopes=scopes,
+            )
             return AccessToken(
                 token=token,
                 client_id=payload.get("client_id", "lifelog-mcp"),
-                scopes=payload.get("scope", "").split(),
+                scopes=scopes,
                 subject=payload.get("sub"),
                 claims=payload,
             )
@@ -211,7 +216,8 @@ def create_server() -> MCPServer:
         Use this as the primary tool for answering questions like 'what did I discuss with Alex last week'
         or 'show me all meetings about budget'. Returns matching recordings with highlighted snippets.
         """
-        return await _search_recordings(
+        logger.info("tool_called", tool="search_recordings", query=query, limit=limit)
+        result = await _search_recordings(
             query=query,
             start_date=start_date,
             end_date=end_date,
@@ -219,6 +225,8 @@ def create_server() -> MCPServer:
             kind=kind,
             limit=limit,
         )
+        logger.info("tool_completed", tool="search_recordings", result_length=len(result))
+        return result
 
     @server.tool(name="get_recordings_by_date")
     async def get_recordings_by_date(date: str) -> str:
@@ -226,14 +234,20 @@ def create_server() -> MCPServer:
 
         Use this to browse recordings from a known date.
         """
-        return await _get_recordings_by_date(date=date)
+        logger.info("tool_called", tool="get_recordings_by_date", date=date)
+        result = await _get_recordings_by_date(date=date)
+        logger.info("tool_completed", tool="get_recordings_by_date", result_length=len(result))
+        return result
 
     @server.tool(name="get_recording_detail")
     async def get_recording_detail(recording_id: int) -> str:
         """Get the full details of a specific recording including transcript segments,
         speaker labels, summary, action items, decisions, and metadata.
         """
-        return await _get_recording_detail(recording_id=recording_id)
+        logger.info("tool_called", tool="get_recording_detail", recording_id=recording_id)
+        result = await _get_recording_detail(recording_id=recording_id)
+        logger.info("tool_completed", tool="get_recording_detail", result_length=len(result))
+        return result
 
     @server.tool(name="get_todos")
     async def get_todos(
@@ -246,7 +260,10 @@ def create_server() -> MCPServer:
         Use this to answer questions like 'what action items did I capture yesterday'
         or 'show me all pending todos'.
         """
-        return await _get_todos(date=date, status=status, limit=limit)
+        logger.info("tool_called", tool="get_todos", date=date, status=status, limit=limit)
+        result = await _get_todos(date=date, status=status, limit=limit)
+        logger.info("tool_completed", tool="get_todos", result_length=len(result))
+        return result
 
     @server.tool(name="get_decisions")
     async def get_decisions(
@@ -257,7 +274,10 @@ def create_server() -> MCPServer:
 
         Use this to answer questions like 'what decisions did I make last week'.
         """
-        return await _get_decisions(date=date, limit=limit)
+        logger.info("tool_called", tool="get_decisions", date=date, limit=limit)
+        result = await _get_decisions(date=date, limit=limit)
+        logger.info("tool_completed", tool="get_decisions", result_length=len(result))
+        return result
 
     @server.tool(name="get_speakers")
     async def get_speakers(recording_id: int | None = None) -> str:
@@ -265,7 +285,10 @@ def create_server() -> MCPServer:
 
         Use this to see who has been identified in your recordings.
         """
-        return await _get_speakers(recording_id=recording_id)
+        logger.info("tool_called", tool="get_speakers", recording_id=recording_id)
+        result = await _get_speakers(recording_id=recording_id)
+        logger.info("tool_completed", tool="get_speakers", result_length=len(result))
+        return result
 
     return server
 
@@ -274,10 +297,21 @@ def run():
     """Run the MCP server with streamable-http transport."""
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        format="%(message)s",
         stream=sys.stdout,
     )
-    structlog.configure(wrapper_factory=structlog.make_filtering_bound_logger(logging.INFO))
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.dev.ConsoleRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+        cache_logger_on_first_use=False,
+    )
 
     server = create_server()
 
