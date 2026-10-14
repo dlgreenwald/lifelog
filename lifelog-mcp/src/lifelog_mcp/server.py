@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import sys
 
-import structlog
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
@@ -19,7 +18,7 @@ from pydantic import AnyHttpUrl
 from lifelog_mcp import tools as lifelog_tools
 from lifelog_mcp.config import settings
 
-logger = structlog.get_logger("lifelog_mcp.server")
+logger = logging.getLogger("lifelog_mcp")
 
 
 # ----------------------------------------------------------------------------
@@ -37,10 +36,10 @@ class JWKSTokenVerifier(TokenVerifier):
             scopes = payload.get("scope", "").split()
             # Log at INFO so operators can see what tokens are being received
             logger.info(
-                "token_validated",
-                sub=payload.get("sub"),
-                iss=payload.get("iss"),
-                scopes=scopes,
+                "token_validated sub=%s iss=%s scopes=%s",
+                payload.get("sub"),
+                payload.get("iss"),
+                scopes,
             )
             return AccessToken(
                 token=token,
@@ -50,10 +49,10 @@ class JWKSTokenVerifier(TokenVerifier):
                 claims=payload,
             )
         except AuthError as exc:
-            logger.warning("auth_failed", reason=exc.message)
+            logger.warning("auth_failed reason=%s", exc.message)
             return None
-        except Exception as exc:
-            logger.exception("auth_error", error=str(exc))
+        except Exception:
+            logger.exception("auth_error")
             return None
 
 
@@ -90,10 +89,10 @@ async def _validate_token(token: str) -> dict:
     if not token:
         raise AuthError("Empty token")
     if not settings.lifelog_oidc_issuer:
-        logger.error("auth_config_error", error="LIFELOG_OIDC_ISSUER not set")
+        logger.error("LIFELOG_OIDC_ISSUER not configured")
         raise AuthError("LIFELOG_OIDC_ISSUER not configured")
 
-    logger.debug("validating_token", issuer=settings.lifelog_oidc_issuer)
+    logger.debug("validating_token issuer=%s", settings.lifelog_oidc_issuer)
 
     try:
         client = _get_jwk_client(settings.lifelog_oidc_issuer)
@@ -113,7 +112,7 @@ async def _validate_token(token: str) -> dict:
     except pyjwt.InvalidIssuerError:
         raise AuthError("Invalid token issuer")
     except Exception as exc:  # noqa: BLE001  # PyJWKClient raises varied network/decode errors
-        logger.warning("jwt_decode_error", error=str(exc), issuer=settings.lifelog_oidc_issuer)
+        logger.warning("jwt_decode_error error=%s issuer=%s", exc, settings.lifelog_oidc_issuer)
         raise AuthError(f"Token validation failed: {exc}")
 
 
@@ -222,7 +221,7 @@ def create_server() -> MCPServer:
         Use this as the primary tool for answering questions like 'what did I discuss with Alex last week'
         or 'show me all meetings about budget'. Returns matching recordings with highlighted snippets.
         """
-        logger.info("tool_called", tool="search_recordings", query=query, limit=limit)
+        logger.info("tool_called tool=search_recordings query=%s limit=%s", query, limit)
         result = await _search_recordings(
             query=query,
             start_date=start_date,
@@ -231,7 +230,7 @@ def create_server() -> MCPServer:
             kind=kind,
             limit=limit,
         )
-        logger.info("tool_completed", tool="search_recordings", result_length=len(result))
+        logger.info("tool_completed tool=search_recordings result_length=%s", len(result))
         return result
 
     @server.tool(name="get_recordings_by_date")
@@ -240,9 +239,9 @@ def create_server() -> MCPServer:
 
         Use this to browse recordings from a known date.
         """
-        logger.info("tool_called", tool="get_recordings_by_date", date=date)
+        logger.info("tool_called tool=get_recordings_by_date date=%s", date)
         result = await _get_recordings_by_date(date=date)
-        logger.info("tool_completed", tool="get_recordings_by_date", result_length=len(result))
+        logger.info("tool_completed tool=get_recordings_by_date result_length=%s", len(result))
         return result
 
     @server.tool(name="get_recording_detail")
@@ -250,9 +249,9 @@ def create_server() -> MCPServer:
         """Get the full details of a specific recording including transcript segments,
         speaker labels, summary, action items, decisions, and metadata.
         """
-        logger.info("tool_called", tool="get_recording_detail", recording_id=recording_id)
+        logger.info("tool_called tool=get_recording_detail recording_id=%s", recording_id)
         result = await _get_recording_detail(recording_id=recording_id)
-        logger.info("tool_completed", tool="get_recording_detail", result_length=len(result))
+        logger.info("tool_completed tool=get_recording_detail result_length=%s", len(result))
         return result
 
     @server.tool(name="get_todos")
@@ -266,9 +265,9 @@ def create_server() -> MCPServer:
         Use this to answer questions like 'what action items did I capture yesterday'
         or 'show me all pending todos'.
         """
-        logger.info("tool_called", tool="get_todos", date=date, status=status, limit=limit)
+        logger.info("tool_called tool=get_todos date=%s status=%s limit=%s", date, status, limit)
         result = await _get_todos(date=date, status=status, limit=limit)
-        logger.info("tool_completed", tool="get_todos", result_length=len(result))
+        logger.info("tool_completed tool=get_todos result_length=%s", len(result))
         return result
 
     @server.tool(name="get_decisions")
@@ -280,9 +279,9 @@ def create_server() -> MCPServer:
 
         Use this to answer questions like 'what decisions did I make last week'.
         """
-        logger.info("tool_called", tool="get_decisions", date=date, limit=limit)
+        logger.info("tool_called tool=get_decisions date=%s limit=%s", date, limit)
         result = await _get_decisions(date=date, limit=limit)
-        logger.info("tool_completed", tool="get_decisions", result_length=len(result))
+        logger.info("tool_completed tool=get_decisions result_length=%s", len(result))
         return result
 
     @server.tool(name="get_speakers")
@@ -291,9 +290,9 @@ def create_server() -> MCPServer:
 
         Use this to see who has been identified in your recordings.
         """
-        logger.info("tool_called", tool="get_speakers", recording_id=recording_id)
+        logger.info("tool_called tool=get_speakers recording_id=%s", recording_id)
         result = await _get_speakers(recording_id=recording_id)
-        logger.info("tool_completed", tool="get_speakers", result_length=len(result))
+        logger.info("tool_completed tool=get_speakers result_length=%s", len(result))
         return result
 
     return server
@@ -301,33 +300,24 @@ def create_server() -> MCPServer:
 
 def run():
     """Run the MCP server with streamable-http transport."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(message)s",
-        stream=sys.stdout,
-    )
-    structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-        context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=False,
-    )
+    # Configure standard logging to flow through uvicorn's pipeline to Docker logs
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger.addHandler(handler)
+    # Suppress uvicorn's noisy access log (we only care about auth errors)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
     server = create_server()
 
     logger.info(
-        "mcp_server_starting",
-        host=settings.lifelog_mcp_host,
-        port=settings.lifelog_mcp_port,
-        api_base=settings.lifelog_api_base_url,
-        oidc_issuer=settings.lifelog_oidc_issuer,
-        required_scopes=["lifelog:tools.read"],
+        "mcp_server_starting host=%s port=%s api_base=%s oidc_issuer=%s required_scopes=%s",
+        settings.lifelog_mcp_host,
+        settings.lifelog_mcp_port,
+        settings.lifelog_api_base_url,
+        settings.lifelog_oidc_issuer,
+        ["lifelog:tools.read"],
     )
 
     server.run(
