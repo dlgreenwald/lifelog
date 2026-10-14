@@ -327,25 +327,41 @@ def run():
 
 
 def _configure_logging() -> None:
-    """Configure Python logging so lifelog_mcp module logs reach stdout.
+    """Configure Python logging so lifelog_mcp and uvicorn logs reach stdout.
 
-    We only touch the 'lifelog_mcp' logger — add a stdout handler to it.
-    We do NOT call basicConfig() or configure the root logger, because:
-    1. MCPServer.__init__() already called configure_logging() which may
-       have set up the root logger; we don't want to override it.
-    2. The uvicorn child loggers (uvicorn.error, uvicorn.access) have
-       propagate=False and manage their own handlers — leave them alone.
+    We set the level and handler on the 'lifelog_mcp' logger and on
+    uvicorn's access logger so operators can see every HTTP request,
+    token exchange detail, and tool call at DEBUG level.
     """
     import logging.config
 
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    level = getattr(logging, settings.lifelog_mcp_log_level.upper(), logging.DEBUG)
+    formatter = logging.Formatter(
+        "%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
+    # uvicorn.access logs every HTTP request at INFO — set to our level
+    uac = logging.getLogger("uvicorn.access")
+    uac.setLevel(level)
+    # Remove any existing handlers (they may suppress output) and add ours
+    for h in uac.handlers[:]:
+        uac.removeHandler(h)
+    uh = logging.StreamHandler(sys.stdout)
+    uh.setFormatter(formatter)
+    uh.setLevel(level)
+    uac.addHandler(uh)
+    uac.propagate = False
+
+    # lifelog_mcp logger
     our_logger = logging.getLogger("lifelog_mcp")
+    for h in our_logger.handlers[:]:
+        our_logger.removeHandler(h)
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    handler.setLevel(logging.INFO)
+    handler.setFormatter(formatter)
+    handler.setLevel(level)
     our_logger.addHandler(handler)
-    our_logger.setLevel(logging.INFO)
+    our_logger.setLevel(level)
     our_logger.propagate = False
 
 

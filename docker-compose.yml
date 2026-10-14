@@ -163,6 +163,8 @@ services:
       # when LibreChat runs on the host, or http://lifelog-mcp:9001/mcp
       # when LibreChat runs inside Docker.
       - LIFELOG_MCP_URL=${LIFELOG_MCP_URL:-http://localhost:9002/mcp}
+      # DEBUG shows every HTTP request, token exchange, and tool call.
+      - LIFELOG_MCP_LOG_LEVEL=${LIFELOG_MCP_LOG_LEVEL:-DEBUG}
     depends_on:
       - server
 

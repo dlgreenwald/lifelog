@@ -22,7 +22,10 @@ def _get_jwk_client(issuer: str) -> pyjwt.PyJWKClient:
     """Return a JWKS client for the given issuer, cached per-issuer."""
     if issuer not in _jwk_clients:
         jwks_url = f"{issuer.rstrip('/')}/.well-known/jwks.json"
+        logger.debug("jwks_client_create issuer=%s jwks_url=%s", issuer, jwks_url)
         _jwk_clients[issuer] = pyjwt.PyJWKClient(jwks_url)
+    else:
+        logger.debug("jwks_client_cache_hit issuer=%s", issuer)
     return _jwk_clients[issuer]
 
 
@@ -48,7 +51,9 @@ async def validate_bearer_token(token: str) -> dict:
 
     try:
         client = _get_jwk_client(settings.lifelog_oidc_issuer)
+        logger.debug("jwks_fetch_signing_key")
         signing_key = client.get_signing_key_from_jwt(token)
+        logger.debug("jwks_signing_key_fetched key_id=%s", signing_key.key_id)
         payload = pyjwt.decode(
             token,
             signing_key.key,

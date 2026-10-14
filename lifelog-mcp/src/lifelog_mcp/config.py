@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     when the client runs inside the same Docker network.
     """
 
+    lifelog_mcp_log_level: str = "DEBUG"
+    """Python log level for the lifelog_mcp and uvicorn loggers.
+
+    DEBUG shows all HTTP requests, token exchange details, tool calls, and
+    full auth events. INFO (default for production) shows only startup,
+    tool calls, and auth results.
+    """
+
     model_config = {"env_file": ".env", "env_prefix": "LIFELOG_"}
 
 
