@@ -195,8 +195,9 @@ curl -X POST http://localhost:9001/mcp \
 | `LIFELOG_OIDC_ISSUER` | *(none)* | OIDC provider issuer URL for JWKS token validation. Set to your Authentik base URL, e.g. `https://auth.example.com`. Must match the `OIDC_ISSUER_URL` used by the main LifeLog server and dashboard. |
 | `LIFELOG_MCP_PORT` | `9001` | Port the MCP server listens on |
 | `LIFELOG_MCP_HOST` | `0.0.0.0` | Host the MCP server binds to |
+| `LIFELOG_MCP_URL` | `http://localhost:9002/mcp` | Public URL clients use to reach this MCP server. **Must match the URL LibreChat uses** — e.g. `http://localhost:9002/mcp` when LibreChat runs on the host, or `http://lifelog-mcp:9001/mcp` when LibreChat runs inside Docker. Used as the OAuth 2.0 resource URL (RFC 9728); must be the URL clients actually call, not the internal Docker hostname. |
 
-In `docker-compose`, `LIFELOG_OIDC_ISSUER` is set from `${OIDC_ISSUER_URL}` (the same variable used by the main server and dashboard), so all three services share one Authentik configuration automatically.
+In `docker-compose`, `LIFELOG_OIDC_ISSUER` is set from `${OIDC_ISSUER_URL}` and `LIFELOG_MCP_URL` defaults to `http://localhost:9002/mcp` (override with `${LIFELOG_MCP_URL}` if LibreChat is inside Docker).
 
 ---
 
