@@ -183,7 +183,7 @@ def create_server() -> MCPServer:
     auth_settings = AuthSettings(
         issuer_url=AnyHttpUrl(settings.lifelog_oidc_issuer),
         resource_server_url=AnyHttpUrl(settings.lifelog_api_base_url),
-        required_scopes=["tools.read"],
+        required_scopes=["lifelog:tools.read"],
         validate_token_resource=False,  # We validate audience in our TokenVerifier
     )
 

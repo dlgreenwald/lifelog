@@ -25,12 +25,14 @@ Use this path when LibreChat, the LifeLog dashboard, and the MCP server all shar
 5. Under **Token Exchange Policy**, select **Always allow** (or restrict to a policy group as needed).
 6. Save. Note the **Client ID** and **Client Secret**.
 
-### Step 2 — Add the `tools.read` Scope
+### Step 2 — Add the `lifelog:tools.read` Scope
 
 1. Open the `lifelog-mcp` provider.
 2. Navigate to **Scopes** → **Create**.
-3. Name: `tools.read`, Scope description: `Read-only access to LifeLog MCP tools`.
+3. Name: `lifelog:tools.read`, Scope description: `Read-only access to LifeLog MCP tools`.
 4. Save.
+
+> **Note:** The scope must be named `lifelog:tools.read` (not a generic name like `tools.read`) to avoid scope collisions with other OAuth2 clients on the same Authentik instance. The MCP server enforces this scope via the MCP SDK's `RequireAuthMiddleware` — requests without `lifelog:tools.read` in the token's `scope` claim are rejected with HTTP 403.
 
 ### Step 3 — Create the Application
 
@@ -51,7 +53,7 @@ mcpServers:
     obo:
       clientID: "<lifelog-mcp-client-id>"
       clientSecret: "<lifelog-mcp-client-secret>"
-      scopes: 'tools.read'
+      scopes: 'lifelog:tools.read'
     serverInstructions: >
       The LifeLog MCP server provides access to your voice recordings,
       transcripts, action items, decisions, and speaker information.
@@ -89,7 +91,7 @@ mcpServers:
       # No clientSecret needed when using federated OBO — LibreChat's Authentik
       # issues the delegated token directly after token exchange with the
       # MCP server's Authentik.
-      scopes: 'tools.read'
+      scopes: 'lifelog:tools.read'
     serverInstructions: >
       The LifeLog MCP server provides access to your voice recordings,
       transcripts, action items, decisions, and speaker information.
@@ -116,7 +118,7 @@ curl -X POST https://<your-authentik-domain>/application/o/token-exchange/ \
   -d "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
   -d "client_id=<lifelog-mcp-client-id>" \
   -d "client_secret=<lifelog-mcp-client-secret>" \
-  -d "scope=tools.read"
+  -d "scope=lifelog:tools.read"
 ```
 
 **Federated instance** — exchange with the MCP server's Authentik using a token from LibreChat's Authentik:
@@ -128,7 +130,7 @@ curl -X POST https://<mcp-authentik-domain>/application/o/token-exchange/ \
   -d "subject_token=<librechat-user-token-from-auth-company-com>" \
   -d "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
   -d "client_id=<lifelog-mcp-client-id>" \
-  -d "scope=tools.read"
+  -d "scope=lifelog:tools.read"
 ```
 
 Expected: JSON with `access_token` (the delegated token for the MCP server).
@@ -179,7 +181,7 @@ curl -X POST http://localhost:9001/mcp \
 | Variable | Default | Description |
 |---|---|---|
 | `LIFELOG_API_BASE_URL` | `http://server:8443` | Base URL of the main LifeLog FastAPI server |
-| `LIFELOG_OIDC_ISSUER` | *(none)* | OIDC provider issuer URL for JWKS token validation. Set to your Authentik base URL, e.g. `https://auth.example.com` |
+| `LIFELOG_OIDC_ISSUER` | *(none)* | OIDC provider issuer URL for JWKS token validation. Set to your Authentik base URL, e.g. `https://auth.example.com`. Must match the `OIDC_ISSUER_URL` used by the main LifeLog server and dashboard. |
 | `LIFELOG_MCP_PORT` | `9001` | Port the MCP server listens on |
 | `LIFELOG_MCP_HOST` | `0.0.0.0` | Host the MCP server binds to |
 
