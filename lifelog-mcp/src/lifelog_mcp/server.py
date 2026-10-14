@@ -14,10 +14,29 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from pydantic import AnyHttpUrl
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from lifelog_mcp import tools as lifelog_tools
 from lifelog_mcp.auth import LoggingTokenVerifierWrapper
 from lifelog_mcp.config import settings
+
+
+class AuthLoggingMiddleware(BaseHTTPMiddleware):
+    """Log every HTTP request's Authorization header for operator diagnostics.
+
+    This runs BEFORE the MCP SDK's AuthenticationMiddleware so we can see
+    whether LibreChat is actually sending a Bearer token on each request.
+    """
+
+    async def dispatch(self, request, call_next):
+        auth_header = request.headers.get("authorization")
+        if auth_header:
+            prefix = auth_header[:20] + "..." if len(auth_header) > 20 else auth_header
+            logger.info("http_request auth_present=True prefix=%s", prefix)
+        else:
+            logger.warning("http_request auth_present=False")
+
+        return await call_next(request)
 
 logger = logging.getLogger("lifelog_mcp")
 
@@ -202,6 +221,7 @@ def create_server() -> MCPServer:
         instructions="Use these tools to search recordings, browse calendar days, view recording details, get action items, decisions, and speaker information.",
         auth=auth_settings,
         token_verifier=LoggingTokenVerifierWrapper(JWKSTokenVerifier()),
+        middleware=[AuthLoggingMiddleware],
     )
 
     # Register tools with the server
