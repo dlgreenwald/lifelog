@@ -14,9 +14,6 @@ from lifelog_mcp.config import settings
 
 logger = logging.getLogger("lifelog_mcp")
 
-# Re-export TokenVerifier protocol so LoggingTokenVerifierWrapper can reference it
-from mcp.server.auth.provider import AccessToken, TokenVerifier
-
 # JWKS clients keyed by issuer URL — one per OIDC provider
 _jwk_clients: dict[str, pyjwt.PyJWKClient] = {}
 
@@ -106,46 +103,3 @@ async def _resolve_user_id(token: str, payload: dict) -> int:
         if not user_id:
             raise AuthError("Main server returned user without id")
         return int(user_id)
-
-
-class LoggingTokenVerifierWrapper:
-    """Wraps a TokenVerifier and logs every verify_token call for operator diagnostics.
-
-    This is critical because the MCP SDK's BearerAuthBackend silently returns 401
-    when verify_token returns None — giving the operator no indication of WHY the auth
-    failed. This wrapper surfaces that information.
-    """
-
-    def __init__(self, inner: TokenVerifier):
-        self.inner = inner
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        """Call the wrapped verifier and log the result for operator visibility."""
-        # Log what we received (token is sensitive — log only its prefix)
-        token_prefix = token[:20] + "..." if token and len(token) > 20 else (token or "(empty)")
-        logger.info("auth_token_received prefix=%s", token_prefix)
-
-        if not token or not token.strip():
-            logger.warning("auth_rejected reason=no_token")
-            return None
-
-        try:
-            result = await self.inner.verify_token(token)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("auth_rejected reason=exception error=%s", exc)
-            return None
-
-        if result is None:
-            # Inner verifier returned None — the token was present but rejected.
-            # The BearerAuthBackend will turn this into a 401.
-            logger.warning("auth_rejected reason=invalid_token")
-            return None
-
-        logger.info(
-            "auth_accepted sub=%s client_id=%s scopes=%s expires=%s",
-            result.subject,
-            result.client_id,
-            result.scopes,
-            result.expires_at,
-        )
-        return result

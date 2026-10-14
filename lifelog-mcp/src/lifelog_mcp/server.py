@@ -14,29 +14,9 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from pydantic import AnyHttpUrl
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from lifelog_mcp import tools as lifelog_tools
-from lifelog_mcp.auth import LoggingTokenVerifierWrapper
 from lifelog_mcp.config import settings
-
-
-class AuthLoggingMiddleware(BaseHTTPMiddleware):
-    """Log every HTTP request's Authorization header for operator diagnostics.
-
-    This runs BEFORE the MCP SDK's AuthenticationMiddleware so we can see
-    whether LibreChat is actually sending a Bearer token on each request.
-    """
-
-    async def dispatch(self, request, call_next):
-        auth_header = request.headers.get("authorization")
-        if auth_header:
-            prefix = auth_header[:20] + "..." if len(auth_header) > 20 else auth_header
-            logger.info("http_request auth_present=True prefix=%s", prefix)
-        else:
-            logger.warning("http_request auth_present=False")
-
-        return await call_next(request)
 
 logger = logging.getLogger("lifelog_mcp")
 
@@ -50,14 +30,18 @@ class JWKSTokenVerifier(TokenVerifier):
     """TokenVerifier that validates JWTs against an OIDC JWKS endpoint."""
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        """Validate a raw Bearer JWT and return an AccessToken with its claims.
+        """Validate a raw Bearer JWT and return an AccessToken with its claims."""
+        token_prefix = token[:20] + "..." if token and len(token) > 20 else "(empty)"
+        logger.info("token_received prefix=%s", token_prefix)
 
-        All auth events (token received, accepted, rejected) are logged by
-        LoggingTokenVerifierWrapper — do not log here to avoid duplication.
-        """
         try:
             payload = await _validate_token(token)
             scopes = payload.get("scope", "").split()
+            logger.info(
+                "token_validated sub=%s scopes=%s",
+                payload.get("sub"),
+                scopes,
+            )
             return AccessToken(
                 token=token,
                 client_id=payload.get("client_id", "lifelog-mcp"),
@@ -65,11 +49,11 @@ class JWKSTokenVerifier(TokenVerifier):
                 subject=payload.get("sub"),
                 claims=payload,
             )
-        except AuthError:
-            # AuthError is logged by LoggingTokenVerifierWrapper
+        except AuthError as exc:
+            logger.warning("token_rejected reason=%s", exc.message)
             return None
-        except Exception:  # noqa: BLE001
-            # Unexpected errors also logged by wrapper
+        except Exception:
+            logger.exception("token_error")
             return None
 
 
@@ -220,7 +204,7 @@ def create_server() -> MCPServer:
         description="Read-only access to your LifeLog voice journal",
         instructions="Use these tools to search recordings, browse calendar days, view recording details, get action items, decisions, and speaker information.",
         auth=auth_settings,
-        token_verifier=LoggingTokenVerifierWrapper(JWKSTokenVerifier()),
+        token_verifier=JWKSTokenVerifier(),
     )
 
     # Register tools with the server
@@ -314,8 +298,6 @@ def create_server() -> MCPServer:
 
 def run():
     """Run the MCP server with streamable-http transport."""
-    import uvicorn
-
     server = create_server()
 
     # Configure our logger AFTER create_server() so the MCP SDK's
@@ -333,27 +315,14 @@ def run():
         settings.lifelog_oidc_issuer,
     )
 
-    # Build the raw Starlette app via the MCP SDK, then wrap it with our
-    # auth-logging middleware. We MUST do this here (not via MCPServer constructor
-    # middleware=) because the SDK's streamable_http_app() creates its own
-    # middleware list and does not include user-supplied middleware.
-    # _lowlevel_server is the mcp.server.lowlevel.Server instance created in
-    # MCPServer.__init__; it has streamable_http_app() which MCPServer.run() calls.
-    raw_app = server._lowlevel_server.streamable_http_app(
-        streamable_http_path="/mcp",
-        host=settings.lifelog_mcp_host,
-    )
-    wrapped_app = AuthLoggingMiddleware(raw_app)
-
-    # Run uvicorn directly so our wrapped app is used instead of the SDK
-    # re-creating its own app internally (which would bypass our middleware).
-    config = uvicorn.Config(
-        wrapped_app,
+    # Use the SDK's built-in server.run() which properly initializes uvicorn.
+    # The SDK handles auth middleware correctly through MCPServer.
+    server.run(
+        transport="streamable-http",
         host=settings.lifelog_mcp_host,
         port=settings.lifelog_mcp_port,
-        log_level="info",
+        streamable_http_path="/mcp",
     )
-    uvicorn.Server(config).run()
 
 
 def _configure_logging() -> None:
