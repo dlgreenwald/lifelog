@@ -25,12 +25,24 @@ Use this path when LibreChat, the LifeLog dashboard, and the MCP server all shar
 5. Under **Token Exchange Policy**, select **Always allow** (or restrict to a policy group as needed).
 6. Save. Note the **Client ID** and **Client Secret**.
 
-### Step 2 — Add the `lifelog:tools.read` Scope
+### Step 2 — Create the `lifelog:tools.read` Scope Mapping
 
-1. Open the `lifelog-mcp` provider.
-2. Navigate to **Scopes** → **Create**.
-3. Name: `lifelog:tools.read`, Scope description: `Read-only access to LifeLog MCP tools`.
-4. Save.
+Scopes in Authentik are defined as **scope mappings** (a type of property mapping), then attached to the provider.
+
+1. In Authentik Admin, navigate to **Customization** → **Property Mappings**.
+2. Click **New Property Mapping** → select **OAuth2/OIDC scope mapping** → click **Next**.
+3. Set **Name** to `lifelog:tools.read`.
+4. Set **Scope expression** to:
+
+   ```python
+   # Returns the scope name so the issued token contains lifelog:tools.read.
+   # The expression returns a dict of claims; return {} for a namespaced scope.
+   return {}
+   ```
+
+5. Click **Finish**.
+6. Open the `lifelog-mcp` OAuth2 Provider → navigate to its **Scopes** section.
+7. Add the `lifelog:tools.read` scope mapping and save.
 
 > **Note:** The scope must be named `lifelog:tools.read` (not a generic name like `tools.read`) to avoid scope collisions with other OAuth2 clients on the same Authentik instance. The MCP server enforces this scope via the MCP SDK's `RequireAuthMiddleware` — requests without `lifelog:tools.read` in the token's `scope` claim are rejected with HTTP 403.
 
@@ -98,9 +110,8 @@ mcpServers:
       Ask me about what you discussed, decided, or planned.
 ```
 
-> The token exchange endpoint for the federated setup is
-> `https://auth.internal.com/application/o/token-exchange/`, which Authentik
-> resolves automatically from the `clientID`'s provider metadata.
+> The token exchange endpoint follows Authentik's standard token endpoint format:
+> `https://auth.internal.com/application/o/<mcp-slug>/token/`
 
 ---
 
@@ -111,7 +122,7 @@ mcpServers:
 **Shared instance** — exchange directly with your Authentik:
 
 ```bash
-curl -X POST https://<your-authentik-domain>/application/o/token-exchange/ \
+curl -X POST https://<your-authentik-domain>/application/o/<mcp-slug>/token/ \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
   -d "subject_token=<librechat-user-id-token>" \
@@ -124,7 +135,7 @@ curl -X POST https://<your-authentik-domain>/application/o/token-exchange/ \
 **Federated instance** — exchange with the MCP server's Authentik using a token from LibreChat's Authentik:
 
 ```bash
-curl -X POST https://<mcp-authentik-domain>/application/o/token-exchange/ \
+curl -X POST https://<mcp-authentik-domain>/application/o/<mcp-slug>/token/ \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
   -d "subject_token=<librechat-user-token-from-auth-company-com>" \
