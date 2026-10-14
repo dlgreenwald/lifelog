@@ -193,7 +193,7 @@ def create_server() -> MCPServer:
     """Build and configure the LifeLog MCP server."""
     auth_settings = AuthSettings(
         issuer_url=AnyHttpUrl(settings.lifelog_oidc_issuer),
-        resource_server_url=AnyHttpUrl(settings.lifelog_api_base_url),
+        resource_server_url=AnyHttpUrl(settings.lifelog_mcp_url),
         required_scopes=["lifelog:tools.read"],
         validate_token_resource=False,  # We validate audience in our TokenVerifier
     )
@@ -307,10 +307,11 @@ def run():
     _configure_logging()
 
     logger.info(
-        "mcp_server_starting host=%s port=%s api_base=%s oidc_issuer=%s "
+        "mcp_server_starting host=%s port=%s mcp_url=%s api_base=%s oidc_issuer=%s "
         "required_scopes=['lifelog:tools.read']",
         settings.lifelog_mcp_host,
         settings.lifelog_mcp_port,
+        settings.lifelog_mcp_url,
         settings.lifelog_api_base_url,
         settings.lifelog_oidc_issuer,
     )

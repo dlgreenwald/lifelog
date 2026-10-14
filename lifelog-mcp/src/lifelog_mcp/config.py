@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     """Lifelog MCP server settings — all from environment variables."""
 
     lifelog_api_base_url: str = "http://server:8443"
-    """Base URL of the main LifeLog FastAPI server."""
+    """Base URL of the main LifeLog FastAPI server (internal Docker hostname)."""
 
     lifelog_oidc_issuer: str = "https://auth.example.com"
     """OIDC provider issuer URL used for JWKS token validation."""
@@ -15,6 +15,18 @@ class Settings(BaseSettings):
 
     lifelog_mcp_host: str = "0.0.0.0"
     """Host the MCP server binds to."""
+
+    lifelog_mcp_url: str = "http://localhost:9002/mcp"
+    """Public URL clients use to reach this MCP server.
+
+    This is used as the ``resource_server_url`` in AuthSettings, which
+    determines the OAuth 2.0 protected resource metadata endpoint
+    (RFC 9728 ``/.well-known/oauth-protected-resource/<path>``) and the
+    ``aud`` claim that issued tokens must contain. Must be the URL that
+    *clients* (LibreChat) actually use — e.g. ``http://host:9002/mcp``
+    when the client runs outside Docker, or ``http://lifelog-mcp:9001/mcp``
+    when the client runs inside the same Docker network.
+    """
 
     model_config = {"env_file": ".env", "env_prefix": "LIFELOG_"}
 

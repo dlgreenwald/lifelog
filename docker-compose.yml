@@ -158,6 +158,11 @@ services:
       - LIFELOG_API_BASE_URL=http://server:8443
       - LIFELOG_OIDC_ISSUER=${OIDC_ISSUER_URL}
       - LIFELOG_MCP_PORT=9001
+      # Public URL clients use to reach this MCP server.
+      # MUST be the URL that LibreChat uses — e.g. http://host:9002/mcp
+      # when LibreChat runs on the host, or http://lifelog-mcp:9001/mcp
+      # when LibreChat runs inside Docker.
+      - LIFELOG_MCP_URL=${LIFELOG_MCP_URL:-http://localhost:9002/mcp}
     depends_on:
       - server
 
