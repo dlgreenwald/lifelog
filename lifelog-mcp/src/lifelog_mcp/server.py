@@ -300,14 +300,11 @@ def create_server() -> MCPServer:
 
 def run():
     """Run the MCP server with streamable-http transport."""
-    # Configure standard logging to flow through uvicorn's pipeline to Docker logs
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    root_logger.addHandler(handler)
-    # Suppress uvicorn's noisy access log (we only care about auth errors)
+    # Suppress noisy uvicorn access logs (we only care about auth errors)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    # Ensure our logger always has a handler writing to stdout, even if
+    # the MCP SDK's uvicorn internals reset the root logger.
+    _ensure_logging_to_stdout()
 
     server = create_server()
 
@@ -326,6 +323,32 @@ def run():
         port=settings.lifelog_mcp_port,
         streamable_http_path="/mcp",
     )
+
+
+def _ensure_logging_to_stdout() -> None:
+    """Add a stdout handler to our logger if none exists.
+
+    The MCP SDK's uvicorn internals reset the root logging configuration
+    on startup. Adding a handler directly to our module logger ensures our
+    log events always reach stdout.
+    """
+    our_logger = logging.getLogger("lifelog_mcp")
+    if not any(
+        isinstance(h, logging.StreamHandler) and h.stream == sys.stdout
+        for h in our_logger.handlers
+    ):
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        handler.setLevel(logging.INFO)
+        our_logger.addHandler(handler)
+        our_logger.setLevel(logging.INFO)
+    # Also propagate to root so logging.getLogger() callers work
+    root = logging.getLogger()
+    if not root.handlers:
+        root_handler = logging.StreamHandler(sys.stdout)
+        root_handler.setFormatter(logging.Formatter("%(message)s"))
+        root.addHandler(root_handler)
+        root.setLevel(logging.INFO)
 
 
 if __name__ == "__main__":
