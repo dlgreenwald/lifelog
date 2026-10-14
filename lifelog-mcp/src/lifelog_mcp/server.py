@@ -35,9 +35,11 @@ class JWKSTokenVerifier(TokenVerifier):
         try:
             payload = await _validate_token(token)
             scopes = payload.get("scope", "").split()
-            logger.debug(
+            # Log at INFO so operators can see what tokens are being received
+            logger.info(
                 "token_validated",
-                subject=payload.get("sub"),
+                sub=payload.get("sub"),
+                iss=payload.get("iss"),
                 scopes=scopes,
             )
             return AccessToken(
@@ -48,10 +50,10 @@ class JWKSTokenVerifier(TokenVerifier):
                 claims=payload,
             )
         except AuthError as exc:
-            logger.warning("token_validation_failed", error=exc.message)
+            logger.warning("auth_failed", reason=exc.message)
             return None
         except Exception as exc:
-            logger.exception("unexpected_token_error", error=str(exc))
+            logger.exception("auth_error", error=str(exc))
             return None
 
 
@@ -88,7 +90,10 @@ async def _validate_token(token: str) -> dict:
     if not token:
         raise AuthError("Empty token")
     if not settings.lifelog_oidc_issuer:
+        logger.error("auth_config_error", error="LIFELOG_OIDC_ISSUER not set")
         raise AuthError("LIFELOG_OIDC_ISSUER not configured")
+
+    logger.debug("validating_token", issuer=settings.lifelog_oidc_issuer)
 
     try:
         client = _get_jwk_client(settings.lifelog_oidc_issuer)
@@ -108,6 +113,7 @@ async def _validate_token(token: str) -> dict:
     except pyjwt.InvalidIssuerError:
         raise AuthError("Invalid token issuer")
     except Exception as exc:  # noqa: BLE001  # PyJWKClient raises varied network/decode errors
+        logger.warning("jwt_decode_error", error=str(exc), issuer=settings.lifelog_oidc_issuer)
         raise AuthError(f"Token validation failed: {exc}")
 
 
@@ -321,6 +327,7 @@ def run():
         port=settings.lifelog_mcp_port,
         api_base=settings.lifelog_api_base_url,
         oidc_issuer=settings.lifelog_oidc_issuer,
+        required_scopes=["lifelog:tools.read"],
     )
 
     server.run(
