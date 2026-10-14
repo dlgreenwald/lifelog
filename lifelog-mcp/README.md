@@ -72,7 +72,7 @@ mcpServers:
       Ask me about what you discussed, decided, or planned.
 ```
 
-> **Note:** Unlike the federated setup, the `clientSecret` is required here because LibreChat must authenticate directly to the shared Authentik instance during token exchange. This is the same Authentik that authenticated the user in the first place.
+> **Note:** `clientSecret` is the **MCP server's OAuth2 client secret** (from Step 1), not the user's credentials. LibreChat authenticates as the MCP server during token exchange, so it needs the MCP server's `client_id` and `clientSecret`. This is required in the shared-instance setup because LibreChat connects directly to the same Authentik that authenticated the user.
 
 Restart LibreChat after updating `librechat.yaml`.
 
