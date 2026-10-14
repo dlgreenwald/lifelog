@@ -205,6 +205,7 @@ def create_server() -> MCPServer:
         instructions="Use these tools to search recordings, browse calendar days, view recording details, get action items, decisions, and speaker information.",
         auth=auth_settings,
         token_verifier=JWKSTokenVerifier(),
+        log_level=settings.lifelog_mcp_log_level.upper(),
     )
 
     # Register tools with the server
@@ -327,33 +328,18 @@ def run():
 
 
 def _configure_logging() -> None:
-    """Configure Python logging so lifelog_mcp and uvicorn logs reach stdout.
+    """Configure the lifelog_mcp logger so its messages reach stdout.
 
-    We set the level and handler on the 'lifelog_mcp' logger and on
-    uvicorn's access logger so operators can see every HTTP request,
-    token exchange detail, and tool call at DEBUG level.
+    The uvicorn.access log level is controlled by the UVICORN_ACCESS_LOGLEVEL
+    environment variable (set in docker-compose). The SDK's log_level
+    (passed to MCPServer constructor) controls the root/MCP SDK log level.
+    We only manage the 'lifelog_mcp' logger here.
     """
-    import logging.config
-
     level = getattr(logging, settings.lifelog_mcp_log_level.upper(), logging.DEBUG)
     formatter = logging.Formatter(
         "%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-
-    # uvicorn.access logs every HTTP request at INFO — set to our level
-    uac = logging.getLogger("uvicorn.access")
-    uac.setLevel(level)
-    # Remove any existing handlers (they may suppress output) and add ours
-    for h in uac.handlers[:]:
-        uac.removeHandler(h)
-    uh = logging.StreamHandler(sys.stdout)
-    uh.setFormatter(formatter)
-    uh.setLevel(level)
-    uac.addHandler(uh)
-    uac.propagate = False
-
-    # lifelog_mcp logger
     our_logger = logging.getLogger("lifelog_mcp")
     for h in our_logger.handlers[:]:
         our_logger.removeHandler(h)
