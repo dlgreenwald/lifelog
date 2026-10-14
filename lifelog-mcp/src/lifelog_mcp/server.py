@@ -34,7 +34,6 @@ class JWKSTokenVerifier(TokenVerifier):
         try:
             payload = await _validate_token(token)
             scopes = payload.get("scope", "").split()
-            # Log at INFO so operators can see what tokens are being received
             logger.info(
                 "token_validated sub=%s iss=%s scopes=%s",
                 payload.get("sub"),
@@ -221,7 +220,7 @@ def create_server() -> MCPServer:
         Use this as the primary tool for answering questions like 'what did I discuss with Alex last week'
         or 'show me all meetings about budget'. Returns matching recordings with highlighted snippets.
         """
-        logger.info("tool_called tool=search_recordings query=%s limit=%s", query, limit)
+        logger.info("tool_called tool=search_recordings query=%r limit=%s", query, limit)
         result = await _search_recordings(
             query=query,
             start_date=start_date,
@@ -239,7 +238,7 @@ def create_server() -> MCPServer:
 
         Use this to browse recordings from a known date.
         """
-        logger.info("tool_called tool=get_recordings_by_date date=%s", date)
+        logger.info("tool_called tool=get_recordings_by_date date=%r", date)
         result = await _get_recordings_by_date(date=date)
         logger.info("tool_completed tool=get_recordings_by_date result_length=%s", len(result))
         return result
@@ -265,21 +264,18 @@ def create_server() -> MCPServer:
         Use this to answer questions like 'what action items did I capture yesterday'
         or 'show me all pending todos'.
         """
-        logger.info("tool_called tool=get_todos date=%s status=%s limit=%s", date, status, limit)
+        logger.info("tool_called tool=get_todos date=%r status=%r limit=%s", date, status, limit)
         result = await _get_todos(date=date, status=status, limit=limit)
         logger.info("tool_completed tool=get_todos result_length=%s", len(result))
         return result
 
     @server.tool(name="get_decisions")
-    async def get_decisions(
-        date: str | None = None,
-        limit: int = 50,
-    ) -> str:
+    async def get_decisions(date: str | None = None, limit: int = 50) -> str:
         """Get decisions captured from voice recordings, optionally filtered by date.
 
         Use this to answer questions like 'what decisions did I make last week'.
         """
-        logger.info("tool_called tool=get_decisions date=%s limit=%s", date, limit)
+        logger.info("tool_called tool=get_decisions date=%r limit=%s", date, limit)
         result = await _get_decisions(date=date, limit=limit)
         logger.info("tool_completed tool=get_decisions result_length=%s", len(result))
         return result
@@ -300,21 +296,21 @@ def create_server() -> MCPServer:
 
 def run():
     """Run the MCP server with streamable-http transport."""
-    # Suppress noisy uvicorn access logs (we only care about auth errors)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    # Ensure our logger always has a handler writing to stdout, even if
-    # the MCP SDK's uvicorn internals reset the root logger.
-    _ensure_logging_to_stdout()
+    # Configure Python logging to match uvicorn's dictConfig style so our
+    # lifelog_mcp logger events appear in Docker logs alongside uvicorn's.
+    # The MCP SDK's configure_logging() may have set up handlers; we add ours
+    # to the uvicorn logger (which has propagate=False) so events flow there.
+    _configure_logging()
 
     server = create_server()
 
     logger.info(
-        "mcp_server_starting host=%s port=%s api_base=%s oidc_issuer=%s required_scopes=%s",
+        "mcp_server_starting host=%s port=%s api_base=%s oidc_issuer=%s "
+        "required_scopes=['lifelog:tools.read']",
         settings.lifelog_mcp_host,
         settings.lifelog_mcp_port,
         settings.lifelog_api_base_url,
         settings.lifelog_oidc_issuer,
-        ["lifelog:tools.read"],
     )
 
     server.run(
@@ -325,29 +321,31 @@ def run():
     )
 
 
-def _ensure_logging_to_stdout() -> None:
-    """Add a stdout handler to our logger if none exists.
+def _configure_logging() -> None:
+    """Configure Python logging so lifelog_mcp module logs reach stdout.
 
-    The MCP SDK's uvicorn internals reset the root logging configuration
-    on startup. Adding a handler directly to our module logger ensures our
-    log events always reach stdout.
+    Uvicorn uses child loggers (uvicorn, uvicorn.error) with
+    propagate=False that write directly to their own handlers.
+    We add a handler to the 'lifelog_mcp' logger so our events
+    appear in Docker logs alongside uvicorn's.
     """
+    import logging.config
+
+    # Suppress noisy uvicorn access log
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+    # Add a stdout handler to our module logger if not already present
     our_logger = logging.getLogger("lifelog_mcp")
-    if not any(
-        isinstance(h, logging.StreamHandler) and h.stream == sys.stdout
-        for h in our_logger.handlers
-    ):
+    if not our_logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(logging.Formatter("%(message)s"))
         handler.setLevel(logging.INFO)
         our_logger.addHandler(handler)
         our_logger.setLevel(logging.INFO)
-    # Also propagate to root so logging.getLogger() callers work
+
+    # Ensure the root logger doesn't swallow events
     root = logging.getLogger()
-    if not root.handlers:
-        root_handler = logging.StreamHandler(sys.stdout)
-        root_handler.setFormatter(logging.Formatter("%(message)s"))
-        root.addHandler(root_handler)
+    if not root.level:
         root.setLevel(logging.INFO)
 
 
