@@ -296,13 +296,13 @@ def create_server() -> MCPServer:
 
 def run():
     """Run the MCP server with streamable-http transport."""
-    # Configure Python logging to match uvicorn's dictConfig style so our
-    # lifelog_mcp logger events appear in Docker logs alongside uvicorn's.
-    # The MCP SDK's configure_logging() may have set up handlers; we add ours
-    # to the uvicorn logger (which has propagate=False) so events flow there.
-    _configure_logging()
-
     server = create_server()
+
+    # Configure our logger AFTER create_server() so the MCP SDK's
+    # configure_logging() (called inside MCPServer.__init__) runs first.
+    # This way we know the root logger already has a handler and we
+    # set propagate=False on our logger to prevent double-output.
+    _configure_logging()
 
     logger.info(
         "mcp_server_starting host=%s port=%s api_base=%s oidc_issuer=%s "
@@ -324,29 +324,24 @@ def run():
 def _configure_logging() -> None:
     """Configure Python logging so lifelog_mcp module logs reach stdout.
 
-    Uvicorn uses child loggers (uvicorn, uvicorn.error) with
-    propagate=False that write directly to their own handlers.
-    We add a handler to the 'lifelog_mcp' logger so our events
-    appear in Docker logs alongside uvicorn's.
+    We only touch the 'lifelog_mcp' logger — add a stdout handler to it.
+    We do NOT call basicConfig() or configure the root logger, because:
+    1. MCPServer.__init__() already called configure_logging() which may
+       have set up the root logger; we don't want to override it.
+    2. The uvicorn child loggers (uvicorn.error, uvicorn.access) have
+       propagate=False and manage their own handlers — leave them alone.
     """
     import logging.config
 
-    # Suppress noisy uvicorn access log
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
-    # Add a stdout handler to our module logger if not already present
     our_logger = logging.getLogger("lifelog_mcp")
-    if not our_logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        handler.setLevel(logging.INFO)
-        our_logger.addHandler(handler)
-        our_logger.setLevel(logging.INFO)
-
-    # Ensure the root logger doesn't swallow events
-    root = logging.getLogger()
-    if not root.level:
-        root.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.setLevel(logging.INFO)
+    our_logger.addHandler(handler)
+    our_logger.setLevel(logging.INFO)
+    our_logger.propagate = False
 
 
 if __name__ == "__main__":
