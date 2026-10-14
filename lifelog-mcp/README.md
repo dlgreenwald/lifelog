@@ -196,7 +196,8 @@ curl -X POST http://localhost:9001/mcp \
 | `LIFELOG_MCP_PORT` | `9001` | Port the MCP server listens on |
 | `LIFELOG_MCP_HOST` | `0.0.0.0` | Host the MCP server binds to |
 | `LIFELOG_MCP_URL` | `http://localhost:9002/mcp` | Public URL clients use to reach this MCP server. **Must match the URL LibreChat uses** — e.g. `http://localhost:9002/mcp` when LibreChat runs on the host, or `http://lifelog-mcp:9001/mcp` when LibreChat runs inside Docker. Used as the OAuth 2.0 resource URL (RFC 9728); must be the URL clients actually call, not the internal Docker hostname. |
-| `LIFELOG_MCP_LOG_LEVEL` | `DEBUG` | Python log level for the `lifelog_mcp` and `uvicorn.access` loggers. `DEBUG` shows every HTTP request, token exchange detail, and tool call. `INFO` (production) shows only startup, tool calls, and auth results. |
+| `LIFELOG_MCP_LOG_LEVEL` | `DEBUG` | Python log level for the `lifelog_mcp` logger. `DEBUG` shows token exchange, JWKS fetch, and tool call details. `INFO` shows only startup and auth results. |
+| `UVICORN_ACCESS_LOGLEVEL` | `DEBUG` | Uvicorn access log level. `DEBUG` shows every HTTP request (method, path, status, duration). `INFO` (production) shows only errors. |
 
 In `docker-compose`, `LIFELOG_OIDC_ISSUER` is set from `${OIDC_ISSUER_URL}` and `LIFELOG_MCP_URL` defaults to `http://localhost:9002/mcp` (override with `${LIFELOG_MCP_URL}` if LibreChat is inside Docker).
 
