@@ -151,7 +151,9 @@ services:
 
   # LifeLog MCP server — LibreChat MCP tools
   lifelog-mcp:
-    build: ./lifelog-mcp
+    build:
+      context: ./lifelog-mcp
+      no-cache: true
     ports:
       - "9002:9001"
     environment:
