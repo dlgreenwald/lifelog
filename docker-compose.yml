@@ -149,6 +149,18 @@ services:
     # or after a host reboot. "no" would leave a stale container running.
     restart: unless-stopped
 
+  # LifeLog MCP server — LibreChat MCP tools
+  lifelog-mcp:
+    build: ./lifelog-mcp
+    ports:
+      - "9002:9001"
+    environment:
+      - LIFELOG_API_BASE_URL=http://server:8443
+      - LIFELOG_OIDC_ISSUER=${OIDC_ISSUER_URL}
+      - LIFELOG_MCP_PORT=9001
+    depends_on:
+      - server
+
   meilisearch:
     image: getmeili/meilisearch:v1.12
     container_name: lifelog-meilisearch

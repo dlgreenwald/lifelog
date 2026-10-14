@@ -21,6 +21,9 @@ pip-delete-this-directory.txt
 venv/
 ENV/
 
+# lifelog-mcp venv
+lifelog-mcp/.venv/
+
 # pytest / coverage
 .pytest_cache/
 .coverage

@@ -119,6 +119,10 @@ lifelog/
 │   ├── auth.py            API key + OIDC validation
 │   ├── crypto.py          Per-user Fernet audio encryption
 │   └── rate_limit.py      Shared rate limiter instance (slowapi)
+├── lifelog-mcp/           MCP server for LibreChat agent tools (Python)
+│   ├── src/lifelog_mcp/  tools/, auth.py, config.py, server.py
+│   ├── tests/             pytest tests (16 tests)
+│   └── build.sh           venv → ruff → pytest
 ├── transcription-worker/  Standalone WhisperX ASR + diarization GPU worker
 ├── speaker-id/src/        ECAPA-TDNN microservice (Python)
 ├── dashboard/src/         React SPA (TypeScript)
@@ -186,6 +190,14 @@ npm run test:watch   # Vitest watch mode
 npm run build        # Production build
 ```
 
+### Lifelog MCP server
+
+```bash
+cd lifelog-mcp
+./build.sh                              # venv → ruff → pytest (16 tests)
+uv run python -m lifelog_mcp.server    # Start MCP server on :9001 (requires LIFELOG_OIDC_ISSUER)
+```
+
 ### Firmware-OTA
 
 ```bash
@@ -228,6 +240,10 @@ cd transcription-worker && python -m pytest -q           # 35 tests
 
 # Dashboard (108 tests pass)
 cd dashboard && npx vitest run                            # 108 tests
+
+# lifelog-mcp
+cd lifelog-mcp && ./build.sh                              # 16 tests
+
 # Firmware-OTA
 cd firmware-ota && pio test -e test                       # 78 tests
 ```
@@ -448,7 +464,7 @@ A failed build produces `conclusion: failure` for that component's job in `ci.ym
 
 ### Test counts
 
-Total: **~428 tests** across 6 components (180 server + 8 diarization + 19 speaker-id + 35 transcription-worker + 108 dashboard + 78 firmware-ota).
+Total: **~444 tests** across 7 components (180 server + 8 diarization + 19 speaker-id + 35 transcription-worker + 108 dashboard + 78 firmware-ota + 16 lifelog-mcp).
 ### Python test framework
 
 - **pytest** with `pytest-asyncio` (`asyncio_mode = "auto"`)
@@ -512,7 +528,7 @@ Before merging any change:
 0. **Build**: Run the component's `build.sh` (or `pio test -e test` for firmware) — this catches lint errors, format drift, pip-audit CVEs, and test failures before they reach CI. Never commit if `build.sh` reports any failures.
 1. **Lint**: `ruff check src/ tests/` passes on all Python services (0 errors)
 2. **Type check**: `npx tsc --noEmit` passes on dashboard (0 errors)
-3. **Tests**: All ~428 tests pass across all 6 components
+3. **Tests**: All ~444 tests pass across all 7 components
 4. **No regressions**: Existing functionality not broken
 
 Python services use these ruff rules (in `pyproject.toml`):
@@ -547,6 +563,7 @@ Each component has a `build.sh` that runs its full verification pipeline. The to
 | `speaker-id/build.sh` | venv bootstrap (uv) → ruff lint → pytest (19 tests) |
 | `dashboard/build.sh` | tsc type check → vite build → vitest (108 tests) → bundle size |
 | `transcription-worker/build.sh` | venv bootstrap (uv) → ruff lint → py_compile → pytest (35 tests) |
+| `lifelog-mcp/build.sh` | venv bootstrap (uv) → ruff lint → pytest (16 tests) |
 
 **Run everything:**
 
