@@ -298,10 +298,14 @@ def create_server() -> MCPServer:
 
 def run():
     """Run the MCP server with streamable-http transport."""
-    # MUST configure logging BEFORE create_server() — MCPServer.__init__ calls
-    # configure_logging() which sets up uvicorn's loggers. Our root handler
-    # and propagate=True on uvicorn.access must be in place first.
-    _configure_logging()
+    import sys
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
+    )
 
     server = create_server()
 
@@ -321,34 +325,6 @@ def run():
         port=settings.lifelog_mcp_port,
         streamable_http_path="/mcp",
     )
-
-
-def _configure_logging() -> None:
-    """Configure Python's root logger — called BEFORE create_server().
-
-    This must run BEFORE MCPServer.__init__() calls configure_logging() (which
-    sets up uvicorn's loggers). We set up the root logger with a stdout handler
-    and set uvicorn.access.propagate=True so access log messages bubble up to
-    the root handler.
-    """
-    import sys
-
-    root = logging.getLogger()
-    if not root.handlers:
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-        )
-        root.addHandler(handler)
-    root.setLevel(logging.DEBUG)
-
-    # Enable propagation so uvicorn.access messages bubble up to the root handler.
-    # The SDK's configure_logging() sets uvicorn.access.propagate=False in its
-    # dictConfig, but since disable_existing_loggers=False, our change here sticks.
-    logging.getLogger("uvicorn.access").propagate = True
 
 
 if __name__ == "__main__":
