@@ -221,7 +221,6 @@ def create_server() -> MCPServer:
         instructions="Use these tools to search recordings, browse calendar days, view recording details, get action items, decisions, and speaker information.",
         auth=auth_settings,
         token_verifier=LoggingTokenVerifierWrapper(JWKSTokenVerifier()),
-        middleware=[AuthLoggingMiddleware],
     )
 
     # Register tools with the server
@@ -315,6 +314,8 @@ def create_server() -> MCPServer:
 
 def run():
     """Run the MCP server with streamable-http transport."""
+    import uvicorn
+
     server = create_server()
 
     # Configure our logger AFTER create_server() so the MCP SDK's
@@ -332,12 +333,27 @@ def run():
         settings.lifelog_oidc_issuer,
     )
 
-    server.run(
-        transport="streamable-http",
+    # Build the raw Starlette app via the MCP SDK, then wrap it with our
+    # auth-logging middleware. We MUST do this here (not via MCPServer constructor
+    # middleware=) because the SDK's streamable_http_app() creates its own
+    # middleware list and does not include user-supplied middleware.
+    # _lowlevel_server is the mcp.server.lowlevel.Server instance created in
+    # MCPServer.__init__; it has streamable_http_app() which MCPServer.run() calls.
+    raw_app = server._lowlevel_server.streamable_http_app(
+        streamable_http_path="/mcp",
+        host=settings.lifelog_mcp_host,
+    )
+    wrapped_app = AuthLoggingMiddleware(raw_app)
+
+    # Run uvicorn directly so our wrapped app is used instead of the SDK
+    # re-creating its own app internally (which would bypass our middleware).
+    config = uvicorn.Config(
+        wrapped_app,
         host=settings.lifelog_mcp_host,
         port=settings.lifelog_mcp_port,
-        streamable_http_path="/mcp",
+        log_level="info",
     )
+    uvicorn.Server(config).run()
 
 
 def _configure_logging() -> None:
