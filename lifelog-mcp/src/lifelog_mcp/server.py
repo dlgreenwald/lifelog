@@ -7,7 +7,6 @@ built-in Bearer token verification (JWKS-based OIDC).
 from __future__ import annotations
 
 import logging
-import sys
 
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -299,13 +298,12 @@ def create_server() -> MCPServer:
 
 def run():
     """Run the MCP server with streamable-http transport."""
-    server = create_server()
-
-    # Configure our logger AFTER create_server() so the MCP SDK's
-    # configure_logging() (called inside MCPServer.__init__) runs first.
-    # This way we know the root logger already has a handler and we
-    # set propagate=False on our logger to prevent double-output.
+    # MUST configure logging BEFORE create_server() — MCPServer.__init__ calls
+    # configure_logging() which sets up uvicorn's loggers. Our root handler
+    # and propagate=True on uvicorn.access must be in place first.
     _configure_logging()
+
+    server = create_server()
 
     logger.info(
         "mcp_server_starting host=%s port=%s mcp_url=%s api_base=%s oidc_issuer=%s "
@@ -317,8 +315,6 @@ def run():
         settings.lifelog_oidc_issuer,
     )
 
-    # Use the SDK's built-in server.run() which properly initializes uvicorn.
-    # The SDK handles auth middleware correctly through MCPServer.
     server.run(
         transport="streamable-http",
         host=settings.lifelog_mcp_host,
@@ -328,27 +324,31 @@ def run():
 
 
 def _configure_logging() -> None:
-    """Configure the lifelog_mcp logger so its messages reach stdout.
+    """Configure Python's root logger — called BEFORE create_server().
 
-    The uvicorn.access log level is controlled by the UVICORN_ACCESS_LOGLEVEL
-    environment variable (set in docker-compose). The SDK's log_level
-    (passed to MCPServer constructor) controls the root/MCP SDK log level.
-    We only manage the 'lifelog_mcp' logger here.
+    This must run BEFORE MCPServer.__init__() calls configure_logging() (which
+    sets up uvicorn's loggers). We set up the root logger with a stdout handler
+    and set uvicorn.access.propagate=True so access log messages bubble up to
+    the root handler.
     """
-    level = getattr(logging, settings.lifelog_mcp_log_level.upper(), logging.DEBUG)
-    formatter = logging.Formatter(
-        "%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    our_logger = logging.getLogger("lifelog_mcp")
-    for h in our_logger.handlers[:]:
-        our_logger.removeHandler(h)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(formatter)
-    handler.setLevel(level)
-    our_logger.addHandler(handler)
-    our_logger.setLevel(level)
-    our_logger.propagate = False
+    import sys
+
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+        root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+
+    # Enable propagation so uvicorn.access messages bubble up to the root handler.
+    # The SDK's configure_logging() sets uvicorn.access.propagate=False in its
+    # dictConfig, but since disable_existing_loggers=False, our change here sticks.
+    logging.getLogger("uvicorn.access").propagate = True
 
 
 if __name__ == "__main__":
