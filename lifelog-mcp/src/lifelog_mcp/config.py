@@ -1,22 +1,38 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     """Lifelog MCP server settings — all from environment variables."""
 
-    lifelog_api_base_url: str = "http://server:8443"
+    lifelog_api_base_url: str = Field(
+        default="http://server:8443",
+        validation_alias="LIFELOG_API_BASE_URL",
+    )
     """Base URL of the main LifeLog FastAPI server (internal Docker hostname)."""
 
-    lifelog_oidc_issuer: str = "https://auth.example.com"
+    lifelog_oidc_issuer: str = Field(
+        default="https://auth.example.com",
+        validation_alias="LIFELOG_OIDC_ISSUER",
+    )
     """OIDC provider issuer URL used for JWKS token validation."""
 
-    lifelog_mcp_port: int = 9001
+    lifelog_mcp_port: int = Field(
+        default=9001,
+        validation_alias="LIFELOG_MCP_PORT",
+    )
     """Port the MCP server listens on."""
 
-    lifelog_mcp_host: str = "0.0.0.0"
+    lifelog_mcp_host: str = Field(
+        default="0.0.0.0",
+        validation_alias="LIFELOG_MCP_HOST",
+    )
     """Host the MCP server binds to."""
 
-    lifelog_mcp_url: str = "http://localhost:9002/mcp"
+    lifelog_mcp_url: str = Field(
+        default="http://localhost:9002/mcp",
+        validation_alias="LIFELOG_MCP_URL",
+    )
     """Public URL clients use to reach this MCP server.
 
     This is used as the ``resource_server_url`` in AuthSettings, which
@@ -28,15 +44,15 @@ class Settings(BaseSettings):
     when the client runs inside the same Docker network.
     """
 
-    lifelog_mcp_log_level: str = "DEBUG"
-    """Python log level for the lifelog_mcp and uvicorn loggers.
+    lifelog_mcp_log_level: str = Field(
+        default="DEBUG",
+        validation_alias="LIFELOG_MCP_LOG_LEVEL",
+    )
+    """Python log level for the ``lifelog_mcp`` and ``uvicorn.access`` loggers.
 
-    DEBUG shows all HTTP requests, token exchange details, tool calls, and
-    full auth events. INFO (default for production) shows only startup,
-    tool calls, and auth results.
+    DEBUG shows every HTTP request, token exchange detail, and tool call.
+    INFO (production default) shows only startup, tool calls, and auth results.
     """
-
-    model_config = {"env_file": ".env", "env_prefix": "LIFELOG_"}
 
 
 settings = Settings()
