@@ -16,6 +16,7 @@ from mcp.server.auth.settings import AuthSettings
 from pydantic import AnyHttpUrl
 
 from lifelog_mcp import tools as lifelog_tools
+from lifelog_mcp.auth import LoggingTokenVerifierWrapper
 from lifelog_mcp.config import settings
 
 logger = logging.getLogger("lifelog_mcp")
@@ -30,16 +31,14 @@ class JWKSTokenVerifier(TokenVerifier):
     """TokenVerifier that validates JWTs against an OIDC JWKS endpoint."""
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        """Validate a raw Bearer JWT and return an AccessToken with its claims."""
+        """Validate a raw Bearer JWT and return an AccessToken with its claims.
+
+        All auth events (token received, accepted, rejected) are logged by
+        LoggingTokenVerifierWrapper — do not log here to avoid duplication.
+        """
         try:
             payload = await _validate_token(token)
             scopes = payload.get("scope", "").split()
-            logger.info(
-                "token_validated sub=%s iss=%s scopes=%s",
-                payload.get("sub"),
-                payload.get("iss"),
-                scopes,
-            )
             return AccessToken(
                 token=token,
                 client_id=payload.get("client_id", "lifelog-mcp"),
@@ -47,11 +46,11 @@ class JWKSTokenVerifier(TokenVerifier):
                 subject=payload.get("sub"),
                 claims=payload,
             )
-        except AuthError as exc:
-            logger.warning("auth_failed reason=%s", exc.message)
+        except AuthError:
+            # AuthError is logged by LoggingTokenVerifierWrapper
             return None
-        except Exception:
-            logger.exception("auth_error")
+        except Exception:  # noqa: BLE001
+            # Unexpected errors also logged by wrapper
             return None
 
 
@@ -202,7 +201,7 @@ def create_server() -> MCPServer:
         description="Read-only access to your LifeLog voice journal",
         instructions="Use these tools to search recordings, browse calendar days, view recording details, get action items, decisions, and speaker information.",
         auth=auth_settings,
-        token_verifier=JWKSTokenVerifier(),
+        token_verifier=LoggingTokenVerifierWrapper(JWKSTokenVerifier()),
     )
 
     # Register tools with the server
