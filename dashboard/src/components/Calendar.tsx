@@ -20,6 +20,7 @@ import type { DateRange } from 'react-day-picker';
 import { api } from '../api/client';
 
 import DayView from './DayView';
+import UploadModal from './UploadModal';
 import type { Recording, CalendarDay, Todo } from '../types';
 
 function getThisWeekRange(): DateRange {
@@ -60,6 +61,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
   const [selectedDay, setSelectedDay] = useState<Date | undefined>(
     getInitialSelected()?.from
   );
+  const [uploadOpen, setUploadOpen] = useState(false);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
 
@@ -402,6 +404,9 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
   // Full sidebar content (calendar + todos - for desktop)
   const sidebarContent = (
     <div className="calendar-sidebar">
+      <Button variant="default" size="sm" className="w-full justify-start mb-2" onClick={() => setUploadOpen(true)}>
+        Upload Recording
+      </Button>
       <ShadcnCalendar
         mode="range"
         selected={selected}
@@ -569,6 +574,8 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
           </div>
         </div>
       )}
+
+      <UploadModal open={uploadOpen} onOpenChange={setUploadOpen} />
     </div>
   );
 }

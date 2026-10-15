@@ -12,6 +12,7 @@ import SpeakerLabel from './components/SpeakerLabel';
 import SettingsPage from './pages/SettingsPage';
 import SearchPage from './pages/SearchPage';
 import { ThemeProvider } from './components/theme-provider';
+import { useTheme } from 'next-themes';
 import { MobileNav } from './components/MobileNav';
 import { setAuthProvider } from './api/client';
 import { useEffect } from 'react';
@@ -74,7 +75,8 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
+    <ThemeProvider attribute="data-theme" defaultTheme="system" storageKey="vite-ui-theme">
+      <DarkModeSync />
       <BrowserRouter>
         <AuthProvider>
           <AppRoutes />
@@ -82,4 +84,18 @@ export default function App() {
       </BrowserRouter>
     </ThemeProvider>
   );
+}
+
+function DarkModeSync() {
+  const { resolvedTheme } = useTheme();
+  useEffect(() => {
+    if (resolvedTheme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [resolvedTheme]);
+  // Static .dark class forces Tailwind JIT to generate all dark: variants
+  // (JIT only emits dark: CSS when .dark exists statically in source)
+  return <div className="dark" style={{ display: 'none' }} aria-hidden="true" />;
 }
