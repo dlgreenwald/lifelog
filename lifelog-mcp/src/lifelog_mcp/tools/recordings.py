@@ -10,16 +10,22 @@ def _build_get_recordings_by_date_tool() -> Tool:
     return Tool(
         name="get_recordings_by_date",
         description=(
-            "Get all voice recordings for a specific calendar date. "
-            "Use this to browse recordings from a known date."
+            "Get all voice recordings for a specific calendar date (YYYY-MM-DD). "
+            "Valid categories: 'work', 'personal'. "
+            "Use this to browse recordings from a known date, optionally filtered by category."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "date": {
                     "type": "string",
-                    "description": "Date in YYYY-MM-DD format",
+                    "description": "Date in YYYY-MM-DD format, e.g. '2026-10-13'",
                     "pattern": r"^\d{4}-\d{2}-\d{2}$",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Filter by category: 'work' or 'personal'",
+                    "enum": ["work", "personal"],
                 },
             },
             "required": ["date"],
@@ -48,13 +54,16 @@ def _build_get_recording_detail_tool() -> Tool:
     )
 
 
-async def _get_recordings_by_date(token: str, date: str) -> TextContent:
+async def _get_recordings_by_date(token: str, date: str, category: str | None = None) -> TextContent:
     async with httpx.AsyncClient(
         base_url=settings.lifelog_api_base_url,
         headers={"Authorization": f"Bearer {token}"},
         timeout=15.0,
     ) as client:
-        resp = await client.get(f"/api/v1/dashboard/recordings/{date}")
+        params = {}
+        if category:
+            params["category"] = category
+        resp = await client.get(f"/api/v1/dashboard/recordings/{date}", params=params)
         resp.raise_for_status()
         data = resp.json()
 

@@ -156,7 +156,7 @@ services:
       - "9002:9001"
     environment:
       - LIFELOG_API_BASE_URL=http://server:8443
-      - LIFELOG_OIDC_ISSUER=${OIDC_ISSUER_URL}
+      - LIFELOG_OIDC_ISSUER=${LIFELOG_OIDC_ISSUER}
       - LIFELOG_MCP_PORT=9001
       # Public URL clients use to reach this MCP server.
       # MUST be the URL that LibreChat uses — e.g. http://host:9002/mcp

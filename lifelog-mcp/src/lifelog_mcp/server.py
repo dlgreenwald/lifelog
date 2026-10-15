@@ -10,14 +10,70 @@ import logging
 
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
+from mcp.types import TextContent
 from pydantic import AnyHttpUrl
 
 from lifelog_mcp import tools as lifelog_tools
 from lifelog_mcp.config import settings
 
 logger = logging.getLogger("lifelog_mcp")
+
+
+# Monkey-patch BearerAuthBackend.authenticate to log all rejection paths.
+# Without this, missing/invalid auth headers produce a bare 401 with no trace.
+_orig_authenticate = BearerAuthBackend.authenticate
+
+async def _authenticate_with_logging(self, conn):
+    all_headers = {k: v for k, v in conn.headers.items()}
+    auth_header = next(
+        (conn.headers.get(key) for key in conn.headers if key.lower() == "authorization"),
+        None,
+    )
+    if not auth_header:
+        logger.debug("auth_missing_header headers=%s", all_headers)
+        return None
+    if not auth_header.lower().startswith("bearer "):
+        logger.debug("auth_invalid_scheme header=%s", auth_header[:50])
+        return None
+    token = auth_header[7:]
+    if not token:
+        logger.debug("auth_empty_token")
+        return None
+    return await _orig_authenticate(self, conn)
+
+BearerAuthBackend.authenticate = _authenticate_with_logging
+
+
+# Monkey-patch RequireAuthMiddleware._send_auth_error to omit resource_metadata.
+# Without this, the WWW-Authenticate header includes resource_metadata pointing to
+# the MCP server's /.well-known/oauth-protected-resource/mcp endpoint. LibreChat
+# then tries to use the MCP server as the OAuth authorization server instead of
+# the explicit authorization_url configured in the LibreChat yaml. Removing
+# resource_metadata forces LibreChat to use its explicit oauth config.
+import mcp.server.auth.middleware.bearer_auth as bearer_auth_module
+
+_orig_send_auth_error = bearer_auth_module.RequireAuthMiddleware._send_auth_error
+
+async def _send_auth_error_no_resource_metadata(self, send, status_code, error, description):
+    # Build WWW-Authenticate header WITHOUT resource_metadata
+    www_authenticate = f'Bearer error="{error}", error_description="{description}"'
+    body = {"error": error, "error_description": description}
+    body_bytes = __import__("json").dumps(body).encode()
+    await send({
+        "type": "http.response.start",
+        "status": status_code,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body_bytes)).encode()),
+            (b"www-authenticate", www_authenticate.encode()),
+        ],
+    })
+    await send({"type": "http.response.body", "body": body_bytes})
+
+bearer_auth_module.RequireAuthMiddleware._send_auth_error = _send_auth_error_no_resource_metadata
 
 
 # ----------------------------------------------------------------------------
@@ -32,6 +88,10 @@ class JWKSTokenVerifier(TokenVerifier):
         """Validate a raw Bearer JWT and return an AccessToken with its claims."""
         token_prefix = token[:20] + "..." if token and len(token) > 20 else "(empty)"
         logger.info("token_received prefix=%s", token_prefix)
+
+        if not token:
+            logger.debug("auth_no_token")
+            return None
 
         try:
             payload = await _validate_token(token)
@@ -77,7 +137,8 @@ def _get_jwk_client(issuer: str):
     import jwt as pyjwt
 
     if issuer not in _jwk_clients:
-        jwks_url = f"{issuer.rstrip('/')}/.well-known/jwks.json"
+        # Authentik uses /jwks/ not /.well-known/jwks.json
+        jwks_url = f"{issuer.rstrip('/')}/jwks/"
         _jwk_clients[issuer] = pyjwt.PyJWKClient(jwks_url)
     return _jwk_clients[issuer]
 
@@ -101,7 +162,7 @@ async def _validate_token(token: str) -> dict:
             token,
             signing_key.key,
             algorithms=["RS256", "ES256"],
-            audience=None,
+            options={"verify_aud": False},
             issuer=settings.lifelog_oidc_issuer,
         )
         return dict(payload)
@@ -149,11 +210,12 @@ async def _search_recordings(
     )
 
 
-async def _get_recordings_by_date(date: str) -> str:
+async def _get_recordings_by_date(date: str, category: str | None = None) -> str:
     token = _get_bearer_token()
-    result = await lifelog_tools.recordings.call(
-        token=token, tool_name="get_recordings_by_date", date=date
-    )
+    kwargs = {"tool_name": "get_recordings_by_date", "date": date}
+    if category:
+        kwargs["category"] = category
+    result = await lifelog_tools.recordings.call(token=token, **kwargs)
     return result.text
 
 
@@ -201,7 +263,48 @@ def create_server() -> MCPServer:
         name="lifelog-mcp",
         version="1.0.0",
         description="Read-only access to your LifeLog voice journal",
-        instructions="Use these tools to search recordings, browse calendar days, view recording details, get action items, decisions, and speaker information.",
+        instructions="""You are connected to a voice journal MCP server. Read this carefully — it tells you how to use the tools correctly.
+
+== THE MOST IMPORTANT RULE ==
+The search tool does NOT understand abstract concepts like "work", "meetings", "my week", "what I did". It matches EXACT WORDS spoken in recordings.
+- BAD query: "work activities" → returns nothing useful
+- GOOD query: "project deadline" → finds recordings where you said "project" and "deadline"
+- BAD query: "what did I do last week" → returns nothing
+- GOOD approach: use get_recordings_by_date to pull recordings for that week, then read the transcripts
+
+== CONTEXT-FIRST FOR BROAD QUESTIONS ==
+When a user asks about a time period or broad topic ("what did I do last week", "summarize my meetings"):
+1. Use get_recordings_by_date with the date range (e.g. start_date="2026-10-07", end_date="2026-10-13")
+2. This returns ALL recordings for that range (ids, timestamps, speakers, duration)
+3. Use get_recording_detail on interesting recordings to read the full transcript
+4. Reason over the actual transcript content to answer the question
+DO NOT try to search_recordings with an abstract query — it won't work.
+
+== CATEGORY (work/personal) ==
+The search index does NOT contain category information.
+- To filter by category: use get_recordings_by_date with category="work" or category="personal"
+- Then read specific recordings with get_recording_detail
+
+== VALID SEARCH PARAMETERS ==
+search_recordings parameters:
+- query: the EXACT words you think were spoken (not concepts)
+- start_date / end_date: YYYY-MM-DD format, e.g. "2026-10-07"
+- kind: "transcript" | "summary" | "decision" | "todo" (never use "meeting")
+- speaker: exact speaker name as enrolled
+- limit: max results (default 20)
+
+get_recordings_by_date parameters:
+- date: YYYY-MM-DD, e.g. "2026-10-13"
+- category: "work" | "personal" (optional)
+
+get_recording_detail parameters:
+- recording_id: the numeric ID from get_recordings_by_date results
+
+== FOR ACTION ITEMS ==
+Use get_todos — todos are indexed separately, not found by search_recordings kind="todo"
+
+== FOR DECISIONS ==
+Use get_decisions""",
         auth=auth_settings,
         token_verifier=JWKSTokenVerifier(),
         log_level=settings.lifelog_mcp_log_level.upper(),
@@ -216,7 +319,7 @@ def create_server() -> MCPServer:
         speaker: str | None = None,
         kind: str | None = None,
         limit: int = 20,
-    ) -> str:
+    ) -> TextContent:
         """Search across all voice recording transcripts, summaries, action items, and decisions.
 
         Use this as the primary tool for answering questions like 'what did I discuss with Alex last week'
@@ -231,28 +334,28 @@ def create_server() -> MCPServer:
             kind=kind,
             limit=limit,
         )
-        logger.info("tool_completed tool=search_recordings result_length=%s", len(result))
+        logger.info("tool_completed tool=search_recordings result_length=%s", len(result.text))
         return result
 
     @server.tool(name="get_recordings_by_date")
-    async def get_recordings_by_date(date: str) -> str:
+    async def get_recordings_by_date(date: str, category: str | None = None) -> TextContent:
         """Get all voice recordings for a specific calendar date (YYYY-MM-DD).
 
-        Use this to browse recordings from a known date.
+        Use this to browse recordings from a known date. Optionally filter by category.
         """
-        logger.info("tool_called tool=get_recordings_by_date date=%r", date)
-        result = await _get_recordings_by_date(date=date)
-        logger.info("tool_completed tool=get_recordings_by_date result_length=%s", len(result))
+        logger.info("tool_called tool=get_recordings_by_date date=%r category=%r", date, category)
+        result = await _get_recordings_by_date(date=date, category=category)
+        logger.info("tool_completed tool=get_recordings_by_date result_length=%s", len(result.text))
         return result
 
     @server.tool(name="get_recording_detail")
-    async def get_recording_detail(recording_id: int) -> str:
+    async def get_recording_detail(recording_id: int) -> TextContent:
         """Get the full details of a specific recording including transcript segments,
         speaker labels, summary, action items, decisions, and metadata.
         """
         logger.info("tool_called tool=get_recording_detail recording_id=%s", recording_id)
         result = await _get_recording_detail(recording_id=recording_id)
-        logger.info("tool_completed tool=get_recording_detail result_length=%s", len(result))
+        logger.info("tool_completed tool=get_recording_detail result_length=%s", len(result.text))
         return result
 
     @server.tool(name="get_todos")
@@ -260,7 +363,7 @@ def create_server() -> MCPServer:
         date: str | None = None,
         status: str | None = None,
         limit: int = 50,
-    ) -> str:
+    ) -> TextContent:
         """Get action items (todos) from voice recordings, optionally filtered by date or status.
 
         Use this to answer questions like 'what action items did I capture yesterday'
@@ -268,29 +371,29 @@ def create_server() -> MCPServer:
         """
         logger.info("tool_called tool=get_todos date=%r status=%r limit=%s", date, status, limit)
         result = await _get_todos(date=date, status=status, limit=limit)
-        logger.info("tool_completed tool=get_todos result_length=%s", len(result))
+        logger.info("tool_completed tool=get_todos result_length=%s", len(result.text))
         return result
 
     @server.tool(name="get_decisions")
-    async def get_decisions(date: str | None = None, limit: int = 50) -> str:
+    async def get_decisions(date: str | None = None, limit: int = 50) -> TextContent:
         """Get decisions captured from voice recordings, optionally filtered by date.
 
         Use this to answer questions like 'what decisions did I make last week'.
         """
         logger.info("tool_called tool=get_decisions date=%r limit=%s", date, limit)
         result = await _get_decisions(date=date, limit=limit)
-        logger.info("tool_completed tool=get_decisions result_length=%s", len(result))
+        logger.info("tool_completed tool=get_decisions result_length=%s", len(result.text))
         return result
 
     @server.tool(name="get_speakers")
-    async def get_speakers(recording_id: int | None = None) -> str:
+    async def get_speakers(recording_id: int | None = None) -> TextContent:
         """Get all enrolled speakers with voiceprint counts and recording counts.
 
         Use this to see who has been identified in your recordings.
         """
         logger.info("tool_called tool=get_speakers recording_id=%s", recording_id)
         result = await _get_speakers(recording_id=recording_id)
-        logger.info("tool_completed tool=get_speakers result_length=%s", len(result))
+        logger.info("tool_completed tool=get_speakers result_length=%s", len(result.text))
         return result
 
     return server

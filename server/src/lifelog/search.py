@@ -26,6 +26,8 @@ Typo tolerance: explicitly enabled — minWordSizeForTypos: { default: 4, prefix
   → words <4 chars: up to 1 typo accepted
 """
 
+from datetime import datetime, timezone
+
 import meilisearch
 from meilisearch.errors import MeilisearchApiError
 
@@ -44,11 +46,26 @@ FILTERABLE = [
     "status",
     "speaker",
     "conversation_id",
+    "date_ts",
     "date",
     "participants",
     "user_id",
 ]
-SORTABLE = ["date", "conversation_id"]
+SORTABLE = ["date_ts", "conversation_id"]
+
+# ── Helpers ─────────────────────────────────────────────────────────
+
+
+def _date_str_to_ts(date_str: str) -> int:
+    """Convert YYYY-MM-DD string to Unix timestamp at start of day UTC.
+
+    Returns 0 if date_str is empty (used for decisions/todos without dates).
+    """
+    if not date_str:
+        return 0
+    dt = datetime.strptime(date_str[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
 
 # ── Client ─────────────────────────────────────────────────────────
 
@@ -132,6 +149,7 @@ def upsert_recording(
         "speaker": "",
         "kind": KIND_TRANSCRIPT,
         "date": date[:10] if date else "",
+        "date_ts": _date_str_to_ts(date),
         "participants": participants or [],
         "status": "",
         "topics": "",
@@ -158,6 +176,7 @@ def upsert_summary(
         "speaker": "",
         "kind": KIND_SUMMARY,
         "date": date[:10] if date else "",
+        "date_ts": _date_str_to_ts(date),
         "participants": participants,
         "status": "",
         "topics": topics,
@@ -248,8 +267,8 @@ def search(
         kind: "turn" | "summary" | "decision" | "todo"
         status: "open" | "done" (applies to todos)
         speaker: speaker name
-        date_from: "YYYY-MM-DD"
-        date_to: "YYYY-MM-DD"
+        date_from: "YYYY-MM-DD" — converted to Unix timestamp and filtered in Meilisearch via date_ts
+        date_to: "YYYY-MM-DD" — converted to Unix timestamp and filtered in Meilisearch via date_ts
         participants: comma-separated speaker names
         limit: max results to return
         offset: pagination offset
@@ -257,11 +276,11 @@ def search(
     Returns:
         Meilisearch search result dict with hits, estimatedTotalHits, processingTimeMs.
     """
-    filters = _build_filters(
-        kind, status, speaker, date_from, date_to, participants, user_id
-    )
+    # Build Meilisearch filter with date_from/date_to (converted to date_ts >=/<= by _build_filters)
+    filters = _build_filters(kind, status, speaker, date_from, date_to, participants, user_id)
     index = get_client().index(INDEX_NAME)
-    return index.search(
+
+    result = index.search(
         q,
         {
             "filter": filters if filters else None,
@@ -279,6 +298,7 @@ def search(
                 "speaker",
                 "kind",
                 "date",
+                "date_ts",
                 "status",
                 "_formatted",
             ],
@@ -290,6 +310,8 @@ def search(
             "showMatchesPosition": True,
         },
     )
+
+    return result
 
 
 def _build_filters(
@@ -314,10 +336,12 @@ def _build_filters(
         parts.append(f'speaker = "{speaker}"')
 
     if date_from:
-        parts.append(f"date >= '{date_from}'")
+        ts = int(datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+        parts.append(f"date_ts >= {ts}")
 
     if date_to:
-        parts.append(f"date <= '{date_to}'")
+        ts = int(datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()) + 86399
+        parts.append(f"date_ts <= {ts}")
 
     if participants:
         for name in participants.split(","):

@@ -1,19 +1,24 @@
 """search_recordings — full-text search across transcripts, summaries, todos, and decisions."""
 
+import logging
+
 import httpx
 from mcp.types import TextContent, Tool
 
 from lifelog_mcp.config import settings
+
+logger = logging.getLogger("lifelog_mcp")
 
 
 def _build_tool() -> Tool:
     return Tool(
         name="search_recordings",
         description=(
-            "Search across all voice recording transcripts, summaries, action items, "
-            "and decisions using natural language. Returns recordings that match the query "
-            "with highlighted snippets. Use this as the primary tool for answering questions "
-            "like 'what did I discuss with Alex last week' or 'show me all meetings about budget'."
+            "Search across transcripts, summaries, decisions, and todos using EXACT WORDS from recordings. "
+            "IMPORTANT: 'work activities' or 'meetings' will NOT match anything — use literal words like 'project deadline client'. "
+            "For date-range or broad queries ('what did I do last week'), use get_recordings_by_date instead. "
+            "Valid kind values: 'transcript', 'summary', 'decision', 'todo'. "
+            "Do NOT use kind='meeting' or any other invalid value."
         ),
         inputSchema={
             "type": "object",
@@ -26,11 +31,11 @@ def _build_tool() -> Tool:
                 },
                 "start_date": {
                     "type": "string",
-                    "description": "Filter results to recordings on or after this date (YYYY-MM-DD)",
+                    "description": "Filter results to recordings on or after this date (YYYY-MM-DD, e.g. '2026-10-07')",
                 },
                 "end_date": {
                     "type": "string",
-                    "description": "Filter results to recordings on or before this date (YYYY-MM-DD)",
+                    "description": "Filter results to recordings on or before this date (YYYY-MM-DD, e.g. '2026-10-13')",
                 },
                 "speaker": {
                     "type": "string",
@@ -38,7 +43,7 @@ def _build_tool() -> Tool:
                 },
                 "kind": {
                     "type": "string",
-                    "description": "Filter by content type: 'transcript', 'summary', 'decision', or 'todo'",
+                    "description": "Filter by content type: 'transcript', 'summary', 'decision', or 'todo'. Do NOT use 'meeting'.",
                     "enum": ["transcript", "summary", "decision", "todo"],
                 },
                 "limit": {
@@ -79,7 +84,9 @@ async def _call(
         timeout=30.0,
     ) as client:
         resp = await client.get("/api/v1/search", params=params)
-        resp.raise_for_status()
+        if not resp.is_success:
+            logger.error("search_failed status=%d body=%s", resp.status_code, resp.text)
+            resp.raise_for_status()
         data = resp.json()
 
     hits = data.get("hits", [])

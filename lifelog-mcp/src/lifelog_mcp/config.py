@@ -54,5 +54,15 @@ class Settings(BaseSettings):
     INFO (production default) shows only startup, tool calls, and auth results.
     """
 
+    lifelog_client_secret: str = Field(
+        default="",
+        validation_alias="LIFELOG_CLIENT_SECRET",
+    )
+    """OAuth2 client secret for the lifelog-mcp provider in Authentik.
+
+    Used for HS256 token validation — the provider uses symmetric signing
+    (client_secret as the HMAC key) rather than asymmetric RS256.
+    """
+
 
 settings = Settings()
