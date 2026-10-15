@@ -177,3 +177,11 @@ backups/
 # one line; promote to a GitHub Issue when committed; PRs link to the issue
 # with "Part of #N" or "Fixes #N". Not a PR target — do not commit.
 TODO.md
+
+# ---------- Hardware (KiCad / SKiDL generated) ----------
+# ERC/DRC validation reports (auto-generated)
+hardware/*.erc
+# SKiDL generated cache files
+hardware/*_sklib*.py
+# KiCad per-user project settings
+*.kicad_prl
