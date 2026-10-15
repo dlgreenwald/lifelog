@@ -55,7 +55,10 @@ async def resolve_speaker(user: dict, segment_audios: list[bytes]) -> dict:
             },
         )
         if response.status_code == 400:
+            # All audio chunks were too short / decode-failed — not an error,
+            # just means we have no embedding to match.
             logger.warning("speaker_resolve_400", response_body=response.text)
+            return {"match": None}
         response.raise_for_status()
         result = response.json()
     duration = time.monotonic() - start

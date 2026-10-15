@@ -464,6 +464,40 @@ def _get_align_model(models: dict, language_code: str) -> tuple:
     return models["align_model"], models["metadata"]
 
 
+def _build_overlap_set(diarize_df) -> set[tuple[float, float]]:
+    """Return set of (start, end) tuples from diarize_df that cross-speaker overlap.
+
+    A segment's time range is added to the set if any part of it overlaps with
+    a segment belonging to a different speaker. This is used to flag speaker_segments
+    that were recorded during a cross-speaker overlap period.
+    """
+    if diarize_df is None or len(diarize_df) == 0:
+        return set()
+
+    rows = diarize_df.to_dict("records")
+    overlapping: set[tuple[float, float]] = set()
+
+    for i, row_i in enumerate(rows):
+        spk_i = str(row_i["speaker"])
+        start_i = float(row_i["start"])
+        end_i = float(row_i["end"])
+        for j, row_j in enumerate(rows):
+            if i == j:
+                continue
+            spk_j = str(row_j["speaker"])
+            if spk_i == spk_j:
+                continue
+            start_j = float(row_j["start"])
+            end_j = float(row_j["end"])
+            # Check for time overlap
+            if start_i < end_j and start_j < end_i:
+                # Mark the overlapping portion of row_i
+                overlapping.add((start_i, end_i))
+                break  # row_i is overlapping; move to next row_i
+
+    return overlapping
+
+
 def transcribe_audio(
     models: dict, audio_np: np.ndarray, sample_rate: int, language: str | None = None
 ) -> dict:
@@ -496,11 +530,27 @@ def transcribe_audio(
         )
         aligned_segments = _as_segment_dicts(aligned.get("segments", aligned))
 
-    diarization = models["diarize"](audio_np)
+    diarize_result = models["diarize"](audio_np, return_embeddings=True)
+    # Handle both tuple (diarization_df, embeddings_dict) and bare DataFrame returns.
+    # Some pyannote.audio versions return a bare DataFrame when embeddings are unavailable.
+    if isinstance(diarize_result, tuple):
+        diarize_df, speaker_embeddings = diarize_result
+    else:
+        diarize_df = diarize_result
+        speaker_embeddings = {}
+
+    # Detect which diarization segments overlap with a DIFFERENT speaker.
+    # These time ranges are used to flag speaker_segments that occurred during
+    # a cross-speaker overlap period — those segments will be excluded from
+    # centroid enrollment on the server side.
+    overlapping_ranges = _build_overlap_set(diarize_df)
+
     import whisperx
 
     diarized = whisperx.assign_word_speakers(
-        diarization, {"segments": aligned_segments}
+        diarize_df,
+        {"segments": aligned_segments},
+        speaker_embeddings=speaker_embeddings,
     )
     segments = _as_segment_dicts(diarized.get("segments", aligned_segments))
     groups = group_into_speaker_segments(segments)
@@ -512,6 +562,15 @@ def transcribe_audio(
         segment["audio"] = _extract_segment_opus(
             audio_np, sample_rate, segments, group["segment_indices"]
         )
+        # Flag segments whose time range overlaps with a cross-speaker region.
+        # These will be skipped during centroid enrollment on the server.
+        seg_start = segment.get("start", 0)
+        seg_end = segment.get("end", 0)
+        if any(
+            ov_start < seg_end and ov_end > seg_start
+            for ov_start, ov_end in overlapping_ranges
+        ):
+            segment["overlap_with"] = True
         speaker_segments.append(segment)
 
     speaker_map = asr_result.get("speaker_map", {})
@@ -522,4 +581,5 @@ def transcribe_audio(
         "full_transcript": {"segments": segments, "language": detected_language},
         "speaker_map": speaker_map,
         "speaker_segments": speaker_segments,
+        "speaker_embeddings": speaker_embeddings or {},
     }

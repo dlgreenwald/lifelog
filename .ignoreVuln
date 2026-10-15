@@ -30,6 +30,12 @@ PYSEC-2026-3624
 # entry when nltk>=3.10.4 is released and resolves the vulnerability.
 PYSEC-2026-3740
 
+# multidict (transitive via aiohttp / diarization)
+# Path traversal in multidict (CVE-2026-104874 / PYSEC-2026-XXXX).
+# Affects multidict < 6.9.1. No fixed release on PyPI yet as of 2026-10-09.
+# Drop this entry when multidict>=6.9.1 is on PyPI.
+CVE-2026-104874
+
 # urllib3 (transitive via httpx / speaker-id)
 # HTTPoxy via absolute URL in requests (CVE-2026-44791 / PYSEC-2026-4175).
 # Server-side request forgery via absolute URL in ConnectionPool.urlopen()

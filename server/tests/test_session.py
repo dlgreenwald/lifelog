@@ -620,6 +620,7 @@ class TestHourlyReprocessing:
                 "end": 1.0,
                 "text": "hello",
                 "audio_filename": "segment.enc",
+                "chunk_idx": 0,
             },
             {
                 "speaker": "SPEAKER_01",
@@ -627,6 +628,7 @@ class TestHourlyReprocessing:
                 "end": 2.0,
                 "text": "world",
                 "audio_filename": "segment.enc",
+                "chunk_idx": 0,
             },
         ]
         assert "audio" not in saved[0]

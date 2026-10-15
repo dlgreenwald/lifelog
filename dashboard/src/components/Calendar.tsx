@@ -348,6 +348,31 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
   // Mobile calendar - single day selection
   const mobileCalendar = (
     <div className="calendar-sidebar">
+      <div className="active-recording-panel">
+        {activeRecording && (
+          <Button
+            variant="destructive"
+            size="sm"
+            className="w-full"
+            onClick={async () => {
+              if (!activeRecording) return;
+              const sessionId = activeRecording.session_id;
+              if (!sessionId) return;
+              try {
+                await api.endSession(sessionId);
+                loadActive();
+              } catch (err) {
+                console.error('Failed to end session:', err);
+              }
+            }}
+          >
+            End Recording
+          </Button>
+        )}
+        <Button size="sm" className="w-full" style={{ background: '#2c3e50', color: '#fff' }} onClick={() => setUploadOpen(true)}>
+          Upload Recording
+        </Button>
+      </div>
       <ShadcnCalendar
         mode="single"
         selected={selectedDay}
@@ -404,9 +429,31 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
   // Full sidebar content (calendar + todos - for desktop)
   const sidebarContent = (
     <div className="calendar-sidebar">
-      <Button variant="default" size="sm" className="w-full justify-start mb-2" onClick={() => setUploadOpen(true)}>
-        Upload Recording
-      </Button>
+      <div className="active-recording-panel">
+        {activeRecording && (
+          <Button
+            variant="destructive"
+            size="sm"
+            className="w-full"
+            onClick={async () => {
+              if (!activeRecording) return;
+              const sessionId = activeRecording.session_id;
+              if (!sessionId) return;
+              try {
+                await api.endSession(sessionId);
+                loadActive();
+              } catch (err) {
+                console.error('Failed to end session:', err);
+              }
+            }}
+          >
+            End Recording
+          </Button>
+        )}
+        <Button size="sm" className="w-full" style={{ background: '#2c3e50', color: '#fff' }} onClick={() => setUploadOpen(true)}>
+          Upload Recording
+        </Button>
+      </div>
       <ShadcnCalendar
         mode="range"
         selected={selected}

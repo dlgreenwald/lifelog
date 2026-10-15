@@ -524,3 +524,60 @@ async def test_create_decision_standalone():
     mock_create.assert_called_once()
     call_kwargs = mock_create.call_args
     assert call_kwargs.kwargs["recording_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_end_session():
+    """End session marks session as ended for the current user."""
+    app = _app_with_mocks()
+
+    with (
+        patch(
+            "lifelog.routes.dashboard.get_session_user_id",
+            new_callable=AsyncMock,
+            return_value=1,
+        ) as mock_get_owner,
+        patch(
+            "lifelog.routes.dashboard.end_session",
+            new_callable=AsyncMock,
+        ) as mock_end,
+    ):
+        client = TestClient(app)
+        response = client.post("/sessions/42/end")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    mock_get_owner.assert_called_once_with(42)
+    mock_end.assert_called_once_with(42)
+
+
+@pytest.mark.asyncio
+async def test_end_session_not_found():
+    """End session returns 404 when session does not exist."""
+    app = _app_with_mocks()
+
+    with patch(
+        "lifelog.routes.dashboard.get_session_user_id",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        client = TestClient(app)
+        response = client.post("/sessions/999/end")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_end_session_forbidden():
+    """End session returns 403 when session belongs to another user."""
+    app = _app_with_mocks(oidc_user={"id": 1, "name": "Alice", "tz": "UTC"})
+
+    with patch(
+        "lifelog.routes.dashboard.get_session_user_id",
+        new_callable=AsyncMock,
+        return_value=999,  # different user
+    ):
+        client = TestClient(app)
+        response = client.post("/sessions/42/end")
+
+    assert response.status_code == 403

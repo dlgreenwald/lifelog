@@ -38,9 +38,25 @@ def match_centroid(
     for vp in voiceprints:
         vp_embedding = np.array(vp["embedding"])
         sim = cosine_similarity(centroid, vp_embedding)
+        logger.debug(
+            "voiceprint_compare",
+            speaker_id=vp["speaker_id"],
+            name=vp["name"],
+            similarity=sim,
+            threshold=threshold,
+        )
         if sim > best_sim:
             best_sim = sim
             best = {"speaker_id": vp["speaker_id"], "name": vp["name"]}
+
+    logger.info(
+        "match_result",
+        best_speaker_id=best["speaker_id"] if best else None,
+        best_name=best["name"] if best else None,
+        best_similarity=best_sim,
+        threshold=threshold,
+        above_threshold=best is not None and best_sim > threshold,
+    )
 
     if best is None or best_sim <= threshold:
         return None
@@ -92,6 +108,15 @@ async def resolve_speaker(data: dict):
 
     centroid = compute_centroid(embeddings)
     match = match_centroid(centroid, voiceprints) if voiceprints else None
+    logger.info(
+        "resolve_complete",
+        embedding_count=len(embeddings),
+        voiceprint_count=len(voiceprints),
+        matched_speaker_id=match["speaker_id"] if match else None,
+        matched_name=match["name"] if match else None,
+        matched_similarity=match.get("similarity") if match else None,
+        new_speaker=match is None,
+    )
     return {"centroid": centroid.tolist(), "match": match}
 
 

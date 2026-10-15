@@ -26,6 +26,7 @@ class JobResult(BaseModel):
     full_transcript: dict
     speaker_segments: list[dict] = Field(default_factory=list)
     speaker_map: dict
+    speaker_embeddings: dict = Field(default_factory=dict)
     utterance_spans: list[UtteranceSpan] = Field(default_factory=list)
     utterance_ids: list[int] = Field(default_factory=list)
 
@@ -293,6 +294,7 @@ async def complete_job(job_id: int, body: JobResult):
             "full_transcript": body.full_transcript,
             "speaker_map": body.speaker_map,
             "speaker_segments": body.speaker_segments,
+            "speaker_embeddings": body.speaker_embeddings,
             "utterance_spans": [
                 {
                     "utterance_id": span.utterance_id,

@@ -114,6 +114,8 @@ export const api = {
     }),
   getDailySummary: (date: string) => fetchApi(`/dashboard/daily-summary/${date}`),
   getActiveRecording: () => fetchApi('/dashboard/active-recording'),
+  endSession: (sessionId: number) =>
+    fetchApi(`/dashboard/sessions/${sessionId}/end`, { method: 'POST' }),
   renameSpeaker: (speakerId: number, name: string) =>
     fetchApi('/speakers/rename', {
       method: 'POST',
