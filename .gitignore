@@ -93,6 +93,9 @@ ca.key
 ca.crt
 
 # ---------- OS ----------
+# Accidentally created by npm/pip when parsing package specifiers
+=*
+
 .DS_Store
 .DS_Store?
 ._*
