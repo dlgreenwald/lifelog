@@ -53,3 +53,4 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S110", "BLE001", "DTZ001"]  # try-except-pass in tests is intentional; naive datetimes OK in tests
+"src/lifelog/worker.py" = ["DTZ001"]  # naive datetime for postgres sort fallback; noqa keeps the intent explicit

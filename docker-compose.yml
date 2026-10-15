@@ -149,6 +149,25 @@ services:
     # or after a host reboot. "no" would leave a stale container running.
     restart: unless-stopped
 
+  # LifeLog MCP server — LibreChat MCP tools
+  lifelog-mcp:
+    build: ./lifelog-mcp
+    ports:
+      - "9002:9001"
+    environment:
+      - LIFELOG_API_BASE_URL=http://server:8443
+      - LIFELOG_OIDC_ISSUER=${LIFELOG_OIDC_ISSUER}
+      - LIFELOG_MCP_PORT=9001
+      # Public URL clients use to reach this MCP server.
+      # MUST be the URL that LibreChat uses — e.g. http://host:9002/mcp
+      # when LibreChat runs on the host, or http://lifelog-mcp:9001/mcp
+      # when LibreChat runs inside Docker.
+      - LIFELOG_MCP_URL=${LIFELOG_MCP_URL:-http://localhost:9002/mcp}
+      # DEBUG shows every HTTP request, token exchange, and tool call.
+      - LIFELOG_MCP_LOG_LEVEL=${LIFELOG_MCP_LOG_LEVEL:-DEBUG}
+    depends_on:
+      - server
+
   meilisearch:
     image: getmeili/meilisearch:v1.12
     container_name: lifelog-meilisearch

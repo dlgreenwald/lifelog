@@ -34,6 +34,12 @@ Wear a small recorder, forget about it, and review your days through a web dashb
 - **TODO & decision tracking** — Automatically extracted from conversations
 - **Multi-service architecture** — Orchestrator + GPU services, scalable and distributable
 
+**AI Agent Integration (MCP)**
+- **LibreChat MCP tools** — The `lifelog-mcp` service exposes all recording data as MCP tools for AI agents
+- **Natural language queries** — Ask "what did I discuss with Alex last week?" via semantic search
+- **On-Behalf-Of auth** — LibreChat exchanges user tokens via Authentik OBO token exchange; each query is per-user
+- **Read-only tools** — search_recordings, get_recordings_by_date, get_recording_detail, get_todos, get_decisions, get_speakers
+
 ## Privacy & Security
 
 LifeLog is designed so that **your voice data never touches the outside internet**:
@@ -67,6 +73,8 @@ graph LR
     ORCH -->|SSL| PG[(PostgreSQL)]
     DASH[Dashboard<br/>React :3000] -->|OIDC Bearer| ORCH
     DASH -.->|OIDC Auth Code + PKCE| IDP
+    MCP[Lifelog MCP<br/>:9001] -->|Bearer (OBO)| ORCH
+    MCP -.->|OIDC JWKS| IDP
 ```
 
 GPU services (transcription-worker, speaker-id) run on dedicated machines. The orchestrator, database, and dashboard run in Docker on the main server. **Nothing runs in the cloud.**
@@ -264,9 +272,12 @@ cd transcription-worker && python -m pytest -q           # 10 tests
 # Dashboard
 cd dashboard && npx vitest run                            # 89 tests
 
+# lifelog-mcp
+cd lifelog-mcp && ./build.sh                              # 16 tests
+
 # Firmware (native tests, no hardware required)
 cd firmware-ota && pio test -e test                       # 69 tests
-**Total: ~324 tests** across 6 components.
+**Total: ~340 tests** across 7 components.
 
 
 ## Project Structure
