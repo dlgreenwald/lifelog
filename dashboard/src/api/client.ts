@@ -166,4 +166,29 @@ export const api = {
   },
   getSearchFacets: () => fetchApi('/search/facets'),
   reindexSearch: () => fetchApi('/search/reindex', { method: 'POST' }),
+
+  uploadRecording: async (file: File, recordedAtEpoch: number, durationS?: number): Promise<{ status: string; session_id: number; recording_id: number }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('recorded_at', String(recordedAtEpoch));
+    if (durationS !== undefined) {
+      formData.append('duration_s', String(durationS));
+    }
+    // fetchApi injects Content-Type: application/json by default when headers are set;
+    // for FormData we must omit Content-Type so the browser sets the boundary.
+    const headers: Record<string, string> = {};
+    if (_getToken) {
+      const token = await _getToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+    }
+    const response = await fetch(`${API_BASE}/upload/offline`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!response.ok) {
+      throw new Error(`Upload failed: ${response.statusText}`);
+    }
+    return response.json();
+  },
 };
