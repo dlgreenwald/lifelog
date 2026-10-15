@@ -426,7 +426,7 @@ export default function Calendar({ calendarOpen, onCalendarToggle }: CalendarPro
           </Button>
         </div>
       )}
-      <Button variant="default" size="sm" className="w-full justify-start mb-2" onClick={() => setUploadOpen(true)}>
+      <Button size="sm" className="w-full" style={{ background: '#2c3e50', color: '#fff' }} onClick={() => setUploadOpen(true)}>
         Upload Recording
       </Button>
       <ShadcnCalendar
