@@ -3,3 +3,5 @@
 #
 # All PR component builds run in ci.yml (path-filtered).
 # All service publish pipelines run in main-*.yml (on push to main).
+
+on: workflow_dispatch
