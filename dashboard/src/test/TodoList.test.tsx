@@ -15,6 +15,10 @@ vi.mock('../api/client', () => ({
   },
 }));
 
+vi.mock('../utils/format', () => ({
+  todayKey: () => '2026-01-15',
+}));
+
 const mockApi = vi.mocked(api);
 
 function makeTodo(overrides: Partial<Todo> = {}): Todo {
@@ -277,7 +281,7 @@ describe('TodoList', () => {
       expect(mockApi.createTodo).toHaveBeenCalledWith({
         task: 'New task',
         owner: 'Alice',
-        due: new Date().toISOString().slice(0, 10),
+        due: '2026-01-15',
         priority: 'medium',
       });
     });
