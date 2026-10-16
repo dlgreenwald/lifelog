@@ -495,7 +495,7 @@ cd dashboard && npx vitest run                            # 137 tests
 # Firmware (native tests, no hardware required)
 cd firmware-ota && pio test -e test                       # 78 tests
 **Total: ~439 tests** across 6 components.
-
+```
 
 ## Project Structure
 
