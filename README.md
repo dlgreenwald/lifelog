@@ -65,15 +65,285 @@ graph LR
     ORCH -->|HTTPS| SPK[Speaker ID<br/>ECAPA-TDNN GPU :8443]
     ORCH -->|OpenAI-compat API| LLM[Local LLM<br/>Ollama/llama.cpp]
     ORCH -->|SSL| PG[(PostgreSQL)]
+    ORCH <-->|search index| MEILI[Meilisearch<br/>:7700]
     DASH[Dashboard<br/>React :3000] -->|OIDC Bearer| ORCH
+    DASH -->|full-text search| MEILI
     DASH -.->|OIDC Auth Code + PKCE| IDP
 ```
 
-GPU services (transcription-worker, speaker-id) run on dedicated machines. The orchestrator, database, and dashboard run in Docker on the main server. **Nothing runs in the cloud.**
+GPU services (transcription-worker, speaker-id) run on dedicated machines. The orchestrator, database, dashboard, and Meilisearch run in Docker on the main server. **Nothing runs in the cloud.**
 
-## Getting Started
+## Quick Start with Published Images
+
+The fastest way to get LifeLog running. Images are published to GitHub Container Registry on every merge to `main`.
 
 ### Prerequisites
+
+- **Docker** with Docker Compose v2+ and **NVIDIA GPU** (transcription-worker + speaker-id)
+- A machine running an **OpenAI-compatible LLM** (Ollama, llama.cpp, vLLM)
+- An **OIDC provider** (Keycloak, Auth0, Authelia, etc.)
+
+### 1. (Optional) Pre-pull images
+
+```bash
+docker pull ghcr.io/dlgreenwald/lifelog-server:latest
+docker pull ghcr.io/dlgreenwald/lifelog-transcription-worker:latest
+docker pull ghcr.io/dlgreenwald/lifelog-speaker-id:latest
+docker pull ghcr.io/dlgreenwald/lifelog-dashboard:latest
+```
+
+`docker-compose up -d` pulls automatically if the image is not present locally. Pre-pulling is only useful to verify connectivity to GHCR or to warm the cache before deploying.
+
+### 2. Create your docker-compose.yml
+
+Save the following as `docker-compose.yml` in a new directory. Copy the `.env` variables from the table below into a `.env` file in the same directory, then start the stack.
+
+```yaml
+# docker-compose.yml — uses published GHCR images
+# All user-specific values are read from environment variables.
+# Define them in a .env file or export them in your shell before running.
+version: "3.8"
+
+x-common-env: &common-env
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+  OPENAI_MODEL: ${OPENAI_MODEL}
+  HF_TOKEN: ${HF_TOKEN}
+  OIDC_ISSUER_URL: ${OIDC_ISSUER_URL}
+  OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-lifelog-dashboard}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: lifelog
+      POSTGRES_USER: lifelog
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lifelog"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    ports:
+      - "7700:7700"
+    volumes:
+      - meilisearch-data:/meili_data
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-searchdevkey}
+      MEILI_ENV: development
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--spider", "http://127.0.0.1:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  server:
+    image: ghcr.io/dlgreenwald/lifelog-server:latest
+    ports:
+      - "8444:8443"
+    environment:
+      <<: *common-env
+      SPEAKER_ID_URL: "http://speaker-id:8443"
+      MEILI_HOST: "http://meilisearch:7700"
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-searchdevkey}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: lifelog
+      POSTGRES_USER: lifelog
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - audio-data:/data/audio
+    depends_on:
+      postgres:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8443/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  transcription-worker:
+    image: ghcr.io/dlgreenwald/lifelog-transcription-worker:latest
+    ports:
+      - "9001:9000"
+    environment:
+      SERVER_URL: "http://server:8443"
+      HF_TOKEN: ${HF_TOKEN}
+      ASR_MODEL: large-v3
+      ASR_DEVICE: cuda
+      ASR_COMPUTE_TYPE: int8
+      IDLE_UNLOAD_SECONDS: ${TRANSCRIPTION_IDLE_UNLOAD_SECONDS:-300}
+      WARM_KEEPALIVE_SECONDS: ${TRANSCRIPTION_WARM_KEEPALIVE_SECONDS:-60}
+      IDLE_PROCESS_RESTART_SECONDS: ${TRANSCRIPTION_IDLE_PROCESS_RESTART_SECONDS:-900}
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    depends_on:
+      server:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  speaker-id:
+    image: ghcr.io/dlgreenwald/lifelog-speaker-id:latest
+    ports:
+      - "8445:8443"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  dashboard:
+    image: ghcr.io/dlgreenwald/lifelog-dashboard:latest
+    ports:
+      - "3000:80"
+    environment:
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-lifelog-dashboard}
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  audio-data:
+  meilisearch-data:
+  hf-cache:
+```
+
+Create a `.env` file next to `docker-compose.yml` with at least these variables:
+
+```bash
+# .env — required variables (no defaults; must be set)
+POSTGRES_PASSWORD=change-me-to-a-strong-password
+OPENAI_BASE_URL=http://host.docker.internal:11434/v1
+OPENAI_MODEL=qwen2.5:7b
+HF_TOKEN=hf_your-huggingface-token-here
+OIDC_ISSUER_URL=https://keycloak.example.com/realms/lifelog
+OIDC_CLIENT_ID=lifelog-dashboard
+
+# Optional — defaults shown
+MEILI_MASTER_KEY=searchdevkey
+CORS_ORIGINS=http://localhost:3000
+TRANSCRIPTION_IDLE_UNLOAD_SECONDS=300
+TRANSCRIPTION_WARM_KEEPALIVE_SECONDS=60
+TRANSCRIPTION_IDLE_PROCESS_RESTART_SECONDS=900
+```
+
+> **LLM server**: `host.docker.internal` reaches the Docker host machine. Change `OPENAI_BASE_URL` to match your LLM backend:
+> - **Ollama**: `http://host.docker.internal:11434/v1`
+> - **llama.cpp**: `http://host.docker.internal:8080/v1`
+> - **vLLM**: `http://host.docker.internal:8000/v1`
+> - **LM Studio**: `http://host.docker.internal:1234/v1`
+
+### 3. Start the stack
+
+```bash
+docker-compose up -d
+```
+
+Services started:
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| **Dashboard** | `http://localhost:3000` | React SPA |
+| **Orchestrator** | `https://localhost:8444` | FastAPI, HTTPS |
+| **Transcription worker** | `http://localhost:9001/health` | WhisperX transcription + diarization, GPU |
+| **Speaker ID** | `https://localhost:8445` | ECAPA-TDNN, GPU |
+| **PostgreSQL** | `localhost:5432` | SSL enabled |
+| **Meilisearch** | `localhost:7700` | Full-text search index |
+
+Check service health:
+
+```bash
+docker-compose ps
+docker-compose logs -f server    # tail orchestrator logs
+```
+
+### 4. Open the dashboard
+
+Navigate to `http://localhost:3000` and log in via your OIDC provider.
+
+### 5. Flash the firmware
+
+Pre-built firmware images (including esp-sr models for noise suppression and VAD) are published to GitHub Actions after every merge to `main`.
+
+**Download the firmware**
+
+1. Go to the repository's **Actions** tab → **Workflows** → **main-firmware** → the latest green run.
+2. Download the **`firmware-main-<sha>`** artifact.
+3. Extract the archive — you need `bootloader.bin`, `partitions.bin`, `firmware.bin`, and `srmodels.bin`.
+
+Or, if a [release](https://github.com/dlgreenwald/lifelog/releases) exists, download the firmware assets from there.
+
+**Flash using a browser**
+
+No software installation required — use the official **Espressif ESP Tool** in your browser:
+
+1. Open **[https://espressif.github.io/esptool-js/](https://espressif.github.io/esptool-js/)** in Chrome or Edge.
+2. Click **Connect** and select your XIAO ESP32-S3 serial port.
+3. Add the four bin files with their addresses:
+   | File | Address |
+   |------|---------|
+   | `bootloader.bin` | `0x0` |
+   | `partitions.bin` | `0x8000` |
+   | `firmware.bin` | `0x10000` |
+   | `srmodels.bin` | `0x610000` |
+4. Click **Program** to flash them all.
+
+The esp-sr models (noise suppression + voice activity detection) are MIT-licensed and bundled in `srmodels.bin` from the same build — no separate download required.
+
+### 6. Configure WiFi and OIDC on the device
+
+On first boot, the ESP32 creates a WiFi access point. Connect to it and navigate to `192.168.4.1` to enter your OIDC provider credentials and device code. The device uses RFC 8628 device code flow to obtain access tokens, which are stored in internal flash — no API keys need to be programmed into the firmware.
+
+---
+
+## Building from Source (Development)
+
+If you want to run the latest unreleased code or contribute changes, clone and build locally:
+
+```bash
+git clone <repo-url> lifelog
+cd lifelog
+
+# Create your environment file
+cp .env.example .env
+# Edit .env with your values
+
+# Generate self-signed TLS certificates for inter-service HTTPS
+./scripts/generate-certs.sh
+
+# Build and start all services
+docker-compose up -d
+```
+
+> **Note**: Building from source requires Docker buildx and may take 10–20 minutes on first build due to WhisperX and ECAPA-TDNN model downloads.
+
+### Prerequisites (building from source)
 
 - **Docker** with Docker Compose v2+
 - **NVIDIA GPU** (for transcription-worker and speaker-id services)
@@ -82,58 +352,67 @@ GPU services (transcription-worker, speaker-id) run on dedicated machines. The o
 - **Node.js 20+** (only for dashboard dev without Docker)
 - **PlatformIO** (only for firmware)
 
-### 1. Clone and configure
+## Configuration Reference
 
-```bash
-git clone <repo-url> lifelog
-cd lifelog
+All configuration is via environment variables. Copy `.env.example` to `.env` and set at least the required variables before starting.
 
-# Create your environment file
-cp .env.example .env
-```
+### Required
 
-Edit `.env` and fill in:
-
-| Variable | What to set |
+| Variable | Description |
 |----------|-------------|
-| `POSTGRES_PASSWORD` | Any strong password |
-| `OPENAI_BASE_URL` | Your LLM endpoint (e.g. `http://192.168.1.50:11434/v1`) |
-| `OPENAI_MODEL` | Model name (e.g. `qwen2.5:7b`) |
-| `HF_TOKEN` | Hugging Face token for the transcription-worker diarization model |
-| `OIDC_ISSUER_URL` | Your OIDC provider URL |
-| `OIDC_CLIENT_ID` | OIDC client ID |
-| `OIDC_REDIRECT_URI` | Dashboard URL (e.g. `https://localhost:3000`) |
+| `POSTGRES_PASSWORD` | PostgreSQL password for the `lifelog` database user |
+| `OPENAI_BASE_URL` | Your LLM server — `http://host.docker.internal:11434/v1` for Ollama on the host, `http://host.docker.internal:8080/v1` for llama.cpp, `http://host.docker.internal:8000/v1` for vLLM |
+| `OPENAI_MODEL` | Model name running on your LLM server (e.g. `qwen2.5:7b`, `llama3.3:70b`) |
+| `HF_TOKEN` | Hugging Face token with accepted model terms for the pyannote diarization model used by the transcription worker |
+| `OIDC_ISSUER_URL` | Your OIDC provider's issuer URL (e.g. `https://your-keycloak.example.com/realms/lifelog`) |
+| `OIDC_CLIENT_ID` | OIDC client ID registered for the dashboard |
 
-### 2. Generate TLS certificates
+### Optional
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | `ollama` | API key for your LLM endpoint (Ollama ignores this) |
+| `SPEAKER_ID_URL` | `http://speaker-id:8443` | Internal URL of the speaker-id service |
+| `TRANSCRIPTION_SERVER_URL` | `http://server:8443` | Internal URL the transcription worker uses to poll jobs |
+| `TRANSCRIPTION_WORKER_POLL_INTERVAL` | `5` | Seconds between job polls by the transcription worker |
+| `TRANSCRIPTION_IDLE_UNLOAD_SECONDS` | `300` | Unload WhisperX models after this many seconds of inactivity |
+| `TRANSCRIPTION_WARM_KEEPALIVE_SECONDS` | `60` | Keep models warm for this long after a job completes |
+| `TRANSCRIPTION_IDLE_PROCESS_RESTART_SECONDS` | `900` | Exit and restart the container after extended idleness (reclaims GPU memory from CTranslate2/pyannote pinned buffers that in-process unload cannot free) |
+| `INSTANT_ASR_MODEL` | `large-v3` | WhisperX model for quick (ASR-only) transcripts |
+| `INSTANT_ASR_LANGUAGE` | _(auto)_ | Language code for instant transcripts; leave empty for auto-detection |
+| `MEILI_HOST` | `http://meilisearch:7700` | Internal Meilisearch URL |
+| `MEILI_MASTER_KEY` | `searchdevkey` | Meilisearch master key |
+| `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated list of allowed CORS origins |
+| `LOG_LEVEL` | `INFO` | Python log level (`DEBUG`, `INFO`, `WARNING`) |
+| `OIDC_SIMULATOR_CLIENT_ID` | _(none)_ | Enable OIDC token simulator for development without a real IdP |
+
+### OIDC Provider Setup
+
+Register a new client in your identity provider with the following settings:
+
+- **Client ID**: `lifelog-dashboard` (or your chosen `OIDC_CLIENT_ID`)
+- **Client type**: Public (SPA)
+- **Redirect URI**: `http://localhost:3000` (or your dashboard URL)
+- **Token endpoint auth method**: `None` or `PKCE`
+- **Scopes**: `openid`, `profile`, `email`
+
+For Keycloak, also ensure `Direct Access Grants` is disabled and `Standard Flow` (authorization code) is enabled.
+
+### Pinning a Specific Version
+
+The `:latest` tag always tracks the `main` branch. To pin to a stable release:
 
 ```bash
-./scripts/generate-certs.sh
+# List available tags at ghcr.io/dlgreenwald/lifelog-server
+docker pull ghcr.io/dlgreenwald/lifelog-server:v0.1.0
+docker pull ghcr.io/dlgreenwald/lifelog-transcription-worker:v0.1.0
+docker pull ghcr.io/dlgreenwald/lifelog-speaker-id:v0.1.0
+docker pull ghcr.io/dlgreenwald/lifelog-dashboard:v0.1.0
 ```
 
-This creates self-signed certs for the server and speaker-id services.
+Then update the `image:` values in your `docker-compose.images.yml`.
 
-### 3. Start the server stack
-
-```bash
-docker-compose up -d
-```
-
-Services started:
-| Service | URL | Notes |
-|---------|-----|-------|
-| **Dashboard** | `http://localhost:3000` | React SPA |
-| **Orchestrator** | `https://localhost:8444` | FastAPI, HTTPS |
-| **Transcription worker** | `http://localhost:9001/health` | WhisperX transcription + diarization, GPU |
-| **Speaker ID** | `https://localhost:8445` | ECAPA-TDNN, GPU |
-| **PostgreSQL** | `localhost:5432` | SSL enabled |
-
-### 4. Open the dashboard
-
-Navigate to `http://localhost:3000` and log in via your OIDC provider.
-
-### 5. Configure the ESP32
-
-On first boot, the ESP32 creates a WiFi access point. Connect to it and navigate to `192.168.4.1` to enter your OIDC provider credentials and device code. The device uses RFC 8628 device code flow to obtain access tokens, which are stored in internal flash — no API keys need to be programmed into the firmware.
+---
 
 ## Firmware
 
@@ -256,17 +535,17 @@ npm test          # Run vitest
 
 ```bash
 # Python services
-cd server && .venv/bin/python -m pytest tests/ -q        # 134 tests
+cd server && .venv/bin/python -m pytest tests/ -q        # 180 tests
 cd diarization && .venv/bin/python -m pytest tests/ -q   # 8 tests
-cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 14 tests
-cd transcription-worker && python -m pytest -q           # 10 tests
+cd speaker-id && .venv/bin/python -m pytest tests/ -q    # 19 tests
+cd transcription-worker && python -m pytest -q           # 35 tests
 
 # Dashboard
-cd dashboard && npx vitest run                            # 89 tests
+cd dashboard && npx vitest run                            # 119 tests
 
 # Firmware (native tests, no hardware required)
-cd firmware-ota && pio test -e test                       # 69 tests
-**Total: ~324 tests** across 6 components.
+cd firmware-ota && pio test -e test                       # 78 tests
+**Total: ~439 tests** across 6 components.
 
 
 ## Project Structure
@@ -290,17 +569,3 @@ lifelog/
 ## License
 
 Licensed under the [MIT License](LICENSE).
-
-## Roadmap
-
-- [x] **OAuth Device Flow** — ESP32-side RFC 8628 device code flow is implemented. Tokens stored in ESP32 flash (Preferences/NVS), not SD card. TTS readout not applicable to XIAO ESP32-S3 Sense (no audio output).
-- [ ] **Least privilege / server-side scope enforcement** — ESP32 device tokens should be scoped to only the upload endpoint. Currently no server-side scope enforcement on device tokens.
-- [ ] **Output format: OGG not WAV** — Final audio files should be stored as OGG (Opus) rather than WAV to reduce storage size.
-- [ ] **User disk limits with automatic cleanup** — Implement per-user storage quotas. When quota is exceeded, automatically delete audio files (freeing disk space) while preserving the recording metadata, transcript, and speaker segments.
-- [ ] **Age limits on recordings** — Allow users to configure how long recordings are retained before automatic deletion.
-- [ ] **Improved conversation gap detection** — Better detection of conversation pauses to automatically split sessions.
-- [ ] **Improved firmware upload** — Over-the-air firmware update UX and reliability improvements.
-- [ ] **Out-of-order upload handling** — The server currently expects chunks to be uploaded in order. Handle the case where the device disconnects from WiFi, collects many utterances offline, then reconnects and uploads a large batch. The server needs to reconstruct the correct ordering and timing.
-- [ ] **Agentic LLM features** — Near-real-time transcription processing enables the LLM to detect and execute actions from spoken commands (e.g., "take a photo", "email this transcript", "add a reminder"). Requires configurable action plugins and user consent flows.
-- [ ] **On-demand photos via touch button** — Trigger a photo capture on demand via a capacitive touch button on the device. Requires firmware enhancement and device hardware changes.
-- [ ] **Battery fuel gauge and charging state** — Estimate battery state of charge only when running from battery. While USB charging, report `"Charging"` with no state-of-charge value; update the API and device-status dashboard accordingly.
