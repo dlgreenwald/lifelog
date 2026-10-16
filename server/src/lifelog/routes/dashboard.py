@@ -236,26 +236,8 @@ async def get_recording_detail(
         )
         raise HTTPException(status_code=404, detail="Recording not found")
 
-    # Fetch speaker_segments to resolve raw SPEAKER_XX labels in transcript.
-    import json
-
-    from lifelog.database import pool
-
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT speaker_segments FROM recordings WHERE id = $1", recording_id
-        )
-        speaker_segments: list = []
-        if row and row["speaker_segments"]:
-            raw = row["speaker_segments"]
-            if isinstance(raw, str):
-                try:
-                    raw = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    raw = []
-            speaker_segments = raw if isinstance(raw, list) else []
-
-    _resolve_transcript_speaker_labels(recording, speaker_segments)
+    # Resolve SPEAKER_XX labels in transcript using speaker_segments from get_recording.
+    _resolve_transcript_speaker_labels(recording, recording.get("speaker_segments") or [])
     return _normalize_recording(recording)
 
 

@@ -270,7 +270,7 @@ class TestSessionCRUD:
 
     @pytest.mark.asyncio
     async def test_get_recording_with_session_audio_filenames(self, mock_conn):
-        """get_recording returns audio_filenames from session_utterances."""
+        """get_recording returns speaker_segments for session recordings."""
         from lifelog.database import get_recording
 
         fake_recording = {
@@ -279,24 +279,26 @@ class TestSessionCRUD:
             "session_id": 5,
             "audio_filename": "legacy.opus",
             "timestamp": datetime.now(UTC),
+            "speaker_segments": [
+                {"speaker": "Alice", "start": 0, "end": 3, "text": "Hello", "audio_filename": "alice.enc"},
+                {"speaker": "Bob", "start": 3, "end": 6, "text": "Hi", "audio_filename": "bob.enc"},
+            ],
         }
-        fake_audio = [
-            {"audio_filename": "utt1.opus"},
-            {"audio_filename": "utt2.opus"},
-        ]
         mock_conn.fetchrow.return_value = fake_recording
-        mock_conn.fetch.return_value = fake_audio
         pool = _make_mock_pool(mock_conn)
 
         with patch("lifelog.database.pool", pool):
             result = await get_recording(1, 10)
 
         assert result is not None
-        assert result["audio_filenames"] == ["utt1.opus", "utt2.opus"]
+        assert "speaker_segments" in result
+        assert len(result["speaker_segments"]) == 2
+        assert result["speaker_segments"][0]["speaker"] == "Alice"
+        assert result["speaker_segments"][0]["audio_filename"] == "alice.enc"
 
     @pytest.mark.asyncio
     async def test_get_recording_no_session_legacy(self, mock_conn):
-        """get_recording without session_id uses legacy audio_filename."""
+        """get_recording without session_id returns the recording as-is."""
         from lifelog.database import get_recording
 
         fake_recording = {
@@ -305,6 +307,7 @@ class TestSessionCRUD:
             "session_id": None,
             "audio_filename": "legacy.opus",
             "timestamp": datetime.now(UTC),
+            "speaker_segments": [],
         }
         mock_conn.fetchrow.return_value = fake_recording
         pool = _make_mock_pool(mock_conn)
@@ -313,7 +316,8 @@ class TestSessionCRUD:
             result = await get_recording(1, 10)
 
         assert result is not None
-        assert result["audio_filenames"] == ["legacy.opus"]
+        assert result["audio_filename"] == "legacy.opus"
+        assert "speaker_segments" in result
 
     @pytest.mark.asyncio
     async def test_get_session_utterances_in_range(self, mock_conn):
