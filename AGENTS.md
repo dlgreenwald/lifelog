@@ -598,4 +598,18 @@ Local validation: `actionlint .github/workflows/*.yml` runs against `.github/act
 **Action versions** are pinned to stable SemVer major releases on `node24` (clears the deprecation notices GitHub Actions started emitting in 2026 against `node20` actions):
 `actions/checkout@v5`, `actions/setup-python@v6`, `actions/setup-node@v5`, `astral-sh/setup-uv@v7`, `actions/cache@v4`, `actions/upload-artifact@v4`, `dorny/paths-filter@v3` (PR-only, `ci.yml`), `docker/setup-buildx-action@v3`, `docker/login-action@v3`, `docker/build-push-action@v6`, `softprops/action-gh-release@v2`, `github/codeql-action/{init,analyze}@v4`.
 
-**Docker publishing** uses GitHub Container Registry (`ghcr.io`) with the auto-provisioned `GITHUB_TOKEN`. No `DOCKER_USERNAME` / `DOCKER_PASSWORD` secrets are required. Each of `main-{server,speaker-id,transcription-worker,dashboard}.yml` runs three sequential jobs (`test → publish → retag-latest`) inside the same workflow file, so the `:latest` write is synchronized with that workflow's just-completed publish. `publish` emits `outputs.image-tag: ${{ env.SOURCE_TAG }}`; the `retag-latest` job reads `needs.publish.outputs.image-tag` as its source for `:latest`. On a `containers-vX.Y.Z` tag push, `containers.yml` pulls whatever `:latest` the post-merge surface has set and retags to `:X.Y.Z` (plus `<sha>`, `:rc-N` if applicable) without rebuilding. Tagged releases also push `:X.Y.Z` and `<sha>` tags. Packages are private by default; promote to public later from each package's settings if needed.
+**Docker publishing** uses GitHub Container Registry (`ghcr.io`) with the auto-provisioned `GITHUB_TOKEN`. No `DOCKER_USERNAME` / `DOCKER_PASSWORD` secrets are required. Each of `main-{server,speaker-id,transcription-worker,dashboard}.yml` runs three sequential jobs (`test → publish → retag-latest`) inside the same workflow file, so the `:latest` write is synchronized with that workflow's just-completed publish. `publish` emits `outputs.image-tag: ${{ env.SOURCE_TAG }}`; the `retag-latest` job reads `needs.publish.outputs.image-tag` as its source for `:latest`. On a `containers-vX.Y.Z` tag push, `containers.yml` pulls whatever `:latest` the post-merge surface has set and retags as `:X.Y.Z` (plus `<sha>`, `:rc-N` if applicable) without rebuilding. Tagged releases also push `:X.Y.Z` and `<sha>` tags. Packages are private by default; promote to public later from each package's settings if needed.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five-role vocabulary with default label strings. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Multi-context: `CONTEXT-MAP.md` at root, per-context `CONTEXT.md` files. See `docs/agents/domain.md`.
