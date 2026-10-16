@@ -7,9 +7,10 @@ name: 'Main: Firmware'
 # Release when somebody cuts a firmware-v* tag. This workflow verifies
 # that the firmware still builds and tests pass after a merge, and uploads
 # the build outputs (firmware.bin / bootloader.bin / partitions.bin /
-# SHA256SUMS) as a 90-day Actions artifact so they're inspectable per run
-# without requiring a release tag. PR builds deliberately don't get these —
-# the firmware production compile is a post-merge job, not a PR job.
+# srmodels.bin / SHA256SUMS) as a 90-day Actions artifact so they're
+# inspectable per run without requiring a release tag. PR builds deliberately
+# don't get these — the firmware production compile is a post-merge job,
+# not a PR job.
 
 on:
   push:
@@ -47,9 +48,58 @@ jobs:
         working-directory: firmware-ota
         run: pio run -e xiao_esp32s3
 
+      - name: Pack esp-sr models into srmodels.bin
+        # esp-sr model files are MIT-licensed and downloaded by PlatformIO into
+        # .pio/libdeps/. We pack them into srmodels.bin (same format as movemodel.py)
+        # so users don't need PlatformIO to get a working device.
+        working-directory: firmware-ota
+        run: |
+          python3 << 'PYEOF'
+          import struct, os
+          base = '.pio/libdeps/xiao_esp32s3/esp-sr/model'
+          STR_LEN = 32
+          def pack_str(s):
+              b = s.encode('utf-8')[:STR_LEN]
+              return b + b'\x00' * (STR_LEN - len(b))
+          def all_files(path):
+              result = {}
+              for root, dirs, files in os.walk(path):
+                  for f in sorted(files):
+                      rel = os.path.relpath(os.path.join(root, f), path)
+                      with open(os.path.join(root, f), 'rb') as fh:
+                          result[rel] = fh.read()
+              return result
+          models = {}
+          for name in os.listdir(base):
+              model_path = os.path.join(base, name)
+              if os.path.isdir(model_path):
+                  files = all_files(model_path)
+                  if files:
+                      models[name] = files
+          # header: 4 (model count) + sum(32+4 per model) + sum(32+4+4 per file)
+          header_size = 4 + sum(STR_LEN + 4 for _ in models) + sum((STR_LEN + 8 for _ in f) for f in models.values())
+          offsets = {}
+          cur = header_size
+          for name in sorted(models):
+              for fname in sorted(models[name]):
+                  offsets[(name, fname)] = cur
+                  cur += len(models[name][fname])
+          out = struct.pack('<I', len(models))
+          for name in sorted(models):
+              out += pack_str(name) + struct.pack('<I', len(models[name]))
+              for fname in sorted(models[name]):
+                  out += pack_str(fname) + struct.pack('<II', offsets[(name, fname)], len(models[name][fname]))
+          for name in sorted(models):
+              for fname in sorted(models[name]):
+                  out += models[name][fname]
+          with open('.pio/build/xiao_esp32s3/srmodels.bin', 'wb') as fh:
+              fh.write(out)
+          print(f'Packed {len(out)/1024:.0f} KB')
+          PYEOF
+
       - name: Generate SHA256SUMS
         working-directory: firmware-ota/.pio/build/xiao_esp32s3
-        run: sha256sum firmware.bin bootloader.bin partitions.bin > SHA256SUMS
+        run: sha256sum firmware.bin bootloader.bin partitions.bin srmodels.bin > SHA256SUMS
 
       - name: Upload merged-to-main firmware artifacts
         uses: actions/upload-artifact@v4
@@ -59,5 +109,6 @@ jobs:
             firmware-ota/.pio/build/xiao_esp32s3/firmware.bin
             firmware-ota/.pio/build/xiao_esp32s3/bootloader.bin
             firmware-ota/.pio/build/xiao_esp32s3/partitions.bin
+            firmware-ota/.pio/build/xiao_esp32s3/srmodels.bin
             firmware-ota/.pio/build/xiao_esp32s3/SHA256SUMS
           if-no-files-found: error
