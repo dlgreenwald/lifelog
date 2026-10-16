@@ -237,7 +237,9 @@ async def get_recording_detail(
         raise HTTPException(status_code=404, detail="Recording not found")
 
     # Resolve SPEAKER_XX labels in transcript using speaker_segments from get_recording.
-    _resolve_transcript_speaker_labels(recording, recording.get("speaker_segments") or [])
+    _resolve_transcript_speaker_labels(
+        recording, recording.get("speaker_segments") or []
+    )
     return _normalize_recording(recording)
 
 

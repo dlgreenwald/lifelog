@@ -280,8 +280,20 @@ class TestSessionCRUD:
             "audio_filename": "legacy.opus",
             "timestamp": datetime.now(UTC),
             "speaker_segments": [
-                {"speaker": "Alice", "start": 0, "end": 3, "text": "Hello", "audio_filename": "alice.enc"},
-                {"speaker": "Bob", "start": 3, "end": 6, "text": "Hi", "audio_filename": "bob.enc"},
+                {
+                    "speaker": "Alice",
+                    "start": 0,
+                    "end": 3,
+                    "text": "Hello",
+                    "audio_filename": "alice.enc",
+                },
+                {
+                    "speaker": "Bob",
+                    "start": 3,
+                    "end": 6,
+                    "text": "Hi",
+                    "audio_filename": "bob.enc",
+                },
             ],
         }
         mock_conn.fetchrow.return_value = fake_recording
