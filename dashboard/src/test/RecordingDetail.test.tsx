@@ -167,8 +167,15 @@ describe('RecordingDetail', () => {
     });
   });
 
-  it('renders audio player when audio_filename exists', async () => {
-    mockApi.getRecording.mockResolvedValue(mockRecording);
+  it('renders audio player when speaker_segments exist', async () => {
+    const withSegments = {
+      ...mockRecording,
+      speaker_segments: [
+        { speaker: 'Alice', start: 0, end: 3, text: 'Let us plan Q1.', audio_filename: 'alice.enc' },
+        { speaker: 'Bob', start: 3, end: 6, text: 'Sounds good.', audio_filename: 'bob.enc' },
+      ],
+    };
+    mockApi.getRecording.mockResolvedValue(withSegments);
 
     renderDetail();
 
@@ -178,9 +185,9 @@ describe('RecordingDetail', () => {
     });
   });
 
-  it('does not render audio player when no audio_filename', async () => {
-    const noAudio = { ...mockRecording, audio_filename: null };
-    mockApi.getRecording.mockResolvedValue(noAudio);
+  it('does not render audio player when no speaker_segments', async () => {
+    const noSegments = { ...mockRecording, speaker_segments: [] };
+    mockApi.getRecording.mockResolvedValue(noSegments);
 
     renderDetail();
 

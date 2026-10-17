@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown } from 'lucide-react';
 import { api } from '../api/client';
@@ -8,18 +8,13 @@ import AudioPlayer from './AudioPlayer';
 import TranscriptBubble from './TranscriptBubble';
 import SummaryCard from './SummaryCard';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
-import type { Recording, Todo, Decision } from '../types';
-
-function revokeAudioUrl(url: string): void {
-  if (typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(url);
-}
+import type { Recording, Speaker, Todo, Decision } from '../types';
 
 export default function RecordingDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [recording, setRecording] = useState<Recording | null>(null);
-  const [audioUrls, setAudioUrls] = useState<string[]>([]);
   const [recordingTodos, setRecordingTodos] = useState<Todo[]>([]);
   const [recordingDecisions, setRecordingDecisions] = useState<Decision[]>([]);
   const [selfSpeakerIds, setSelfSpeakerIds] = useState<number[]>([]);
@@ -89,70 +84,16 @@ export default function RecordingDetail() {
 
   const isLive = id?.startsWith('active-');
   const numericRecordingId = id && !isLive ? Number(id) : undefined;
-  const audioUrlsByFilename = useRef(new Map<string, string>());
-  const pendingAudioFilenames = useRef(new Set<string>());
-  const audioRecordingId = useRef<string | null>(null);
-  useEffect(() => {
-    if (!recording) return;
-    const recordingKey = id ?? null;
-    if (audioRecordingId.current !== recordingKey) {
-      audioUrlsByFilename.current.forEach(revokeAudioUrl);
-      audioUrlsByFilename.current.clear();
-      pendingAudioFilenames.current.clear();
-      audioRecordingId.current = recordingKey;
-      setAudioUrls([]);
-    }
 
-    const filenames = recording.audio_filenames?.length
-      ? recording.audio_filenames
-      : recording.audio_filename ? [recording.audio_filename] : [];
-    if (filenames.length === 0) {
-      setAudioUrls([]);
-      return;
-    }
-
-    const missing = filenames.filter(
-      (filename) => !audioUrlsByFilename.current.has(filename) &&
-        !pendingAudioFilenames.current.has(filename),
-    );
-    missing.forEach((filename) => pendingAudioFilenames.current.add(filename));
-    let cancelled = false;
-    Promise.allSettled(missing.map(async (filename) => {
-      try {
-        const url = await api.fetchAudio(`/dashboard/audio/${filename}`);
-        return { filename, url };
-      } finally {
-        pendingAudioFilenames.current.delete(filename);
-      }
-    })).then((results) => {
-      const newlyFetched: string[] = [];
-      if (cancelled) {
-        results.forEach((result) => {
-          if (result.status === 'fulfilled') newlyFetched.push(result.value.url);
-        });
-        newlyFetched.forEach(revokeAudioUrl);
-        return;
-      }
-      results.forEach((result) => {
-        if (result.status === 'fulfilled') {
-          audioUrlsByFilename.current.set(result.value.filename, result.value.url);
-        }
-      });
-      setAudioUrls(
-        filenames.flatMap((filename) => {
-          const url = audioUrlsByFilename.current.get(filename);
-          return url ? [url] : [];
-        }),
-      );
-    });
-
-    return () => { cancelled = true; };
-  }, [recording, id]);
-
-  useEffect(() => () => {
-    audioUrlsByFilename.current.forEach(revokeAudioUrl);
-    audioUrlsByFilename.current.clear();
-  }, []);
+  // Speaker segments with audio — AudioPlayer handles lazy fetching via audio_filename
+  const playerSegments: Speaker[] = (recording?.speaker_segments ?? []).map((seg, i) => ({
+    id: i,
+    name: seg.speaker,
+    start: seg.start,
+    end: seg.end,
+    text: seg.text,
+    audio_filename: seg.audio_filename,
+  }));
 
 
   const loadRecording = useCallback(() => {
@@ -418,19 +359,10 @@ export default function RecordingDetail() {
 
       {isMobile ? (
         <>
-          {audioUrls.length > 0 && (
+          {playerSegments.length > 0 && (
             <div className="audio-player">
               <h3>Audio</h3>
-              <AudioPlayer
-                sources={audioUrls}
-                segments={rawSegments.map((s, i) => ({
-                  id: i,
-                  name: s.name,
-                  text: s.text,
-                  start: 0,
-                  end: 0,
-                }))}
-              />
+              <AudioPlayer segments={playerSegments} />
             </div>
           )}
 
@@ -746,19 +678,10 @@ export default function RecordingDetail() {
           </div>
 
           <div className="recording-right-col">
-            {audioUrls.length > 0 && (
+            {playerSegments.length > 0 && (
               <div className="audio-player">
                 <h3>Audio</h3>
-                <AudioPlayer
-                  sources={audioUrls}
-                  segments={rawSegments.map((s, i) => ({
-                    id: i,
-                    name: s.name,
-                    text: s.text,
-                    start: 0,
-                    end: 0,
-                  }))}
-                />
+                <AudioPlayer segments={playerSegments} />
               </div>
             )}
 

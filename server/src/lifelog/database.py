@@ -269,70 +269,14 @@ async def get_recording(user_id: int, recording_id: int) -> dict | None:
             and result["created_at"] < session_ended_at
         )
 
-        # Attach audio_filenames derived from speaker_segments (not created_at timestamps).
-        # The segments carry audio_filename references from the transcription service,
-        # which is more reliable than session_utterances.created_at as a timeline marker.
-        if result.get("session_id"):
-            segments = result.get("speaker_segments", [])
-            # json columns are returned as strings by asyncpg — parse if needed
-            if segments and isinstance(segments, str):
-                import json
-
-                segments = json.loads(segments)
-            if segments and isinstance(segments, list):
-                seen, audio_filenames = set(), []
-                for seg in segments:
-                    if isinstance(seg, dict):
-                        fn = seg.get("audio_filename")
-                    else:
-                        continue
-                    if fn and fn not in seen:
-                        seen.add(fn)
-                        audio_filenames.append(fn)
-                if audio_filenames:
-                    result["audio_filenames"] = audio_filenames
-                    result.pop("speaker_segments", None)
-                    return result
-            # Fallback: use audio_range to filter session_utterances
-            audio_range_start = result.get("audio_range_start")
-            audio_range_end = result.get("audio_range_end")
-            if audio_range_start and audio_range_end:
-                audio_rows = await conn.fetch(
-                    """
-                    SELECT audio_filename
-                    FROM session_utterances
-                    WHERE session_id = $1
-                      AND created_at > $2 AT TIME ZONE 'UTC' - INTERVAL '2 minutes'
-                      AND created_at < $3 AT TIME ZONE 'UTC' + INTERVAL '2 minutes'
-                    ORDER BY created_at
-                    """,
-                    result["session_id"],
-                    audio_range_start,
-                    audio_range_end,
-                )
-                result["audio_filenames"] = [
-                    r["audio_filename"] for r in audio_rows if r["audio_filename"]
-                ]
-            else:
-                audio_rows = await conn.fetch(
-                    """
-                    SELECT audio_filename
-                    FROM session_utterances
-                    WHERE session_id = $1
-                    ORDER BY created_at
-                    """,
-                    result["session_id"],
-                )
-                result["audio_filenames"] = [
-                    r["audio_filename"] for r in audio_rows if r["audio_filename"]
-                ]
-        else:
-            # Legacy: single audio_filename
-            result["audio_filenames"] = (
-                [result["audio_filename"]] if result.get("audio_filename") else []
-            )
-        # Remove speaker_segments from response to avoid leaking large data
-        result.pop("speaker_segments", None)
+        # Return speaker_segments as-is for audio playback. Parse JSON string if asyncpg
+        # returned it as a string (JSONB columns are deserialized by asyncpg when possible,
+        # but the column may still be a string on older rows).
+        raw_segments = result.get("speaker_segments")
+        if isinstance(raw_segments, str):
+            result["speaker_segments"] = json.loads(raw_segments)
+        # audio_filenames is no longer returned — speaker_segments[].audio_filename
+        # is the source of audio for the dashboard player.
         return result
 
 

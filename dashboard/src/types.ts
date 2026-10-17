@@ -24,7 +24,7 @@ export interface Recording {
   notes: string[] | null;
   conversation_changes: ConversationChange[] | null;
   audio_filename: string | null;
-  audio_filenames?: string[];
+  speaker_segments?: SpeakerSegment[];
   category?: string;
   session_id?: number | null;
   partition_index?: number;
@@ -39,6 +39,18 @@ export interface Speaker {
   end: number;
   text: string;
   speaker_id?: number;
+  /** Encrypted audio file for this segment, fetchable via GET /audio/{filename}. */
+  audio_filename?: string;
+}
+
+/** Speaker segment from the transcription pipeline — speech-only audio clip with timing. */
+export interface SpeakerSegment {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+  audio_filename?: string;
+  chunk_idx?: number;
 }
 
 export interface SpeakerSummary {
