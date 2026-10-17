@@ -12,6 +12,10 @@ import { Fragment } from "react"
 
 import { cn } from "@/lib/utils"
 
+const DialogContext = React.createContext<{
+  onOpenChange: (open: boolean) => void
+} | null>(null)
+
 // Dialog — root component. Manages open/close state and renders the backdrop.
 // Renders inline (no portal), so CSS custom properties cascade normally.
 const Dialog = ({
@@ -25,21 +29,23 @@ const Dialog = ({
 }) => (
   <Transition show={open} as={Fragment} appear>
     <HeadlessDialog open={open} onClose={onOpenChange}>
-      {/* Backdrop — wrapped in Transition.Child for fade animations */}
-      <Transition.Child
-        as={Fragment}
-        enter="ease-out duration-200"
-        enterFrom="opacity-0"
-        enterTo="opacity-100"
-        leave="ease-in duration-150"
-        leaveFrom="opacity-100"
-        leaveTo="opacity-0"
-      >
-        <DialogBackdrop className="fixed inset-0 z-50 bg-black/80" />
-      </Transition.Child>
+      <DialogContext.Provider value={{ onOpenChange }}>
+        {/* Backdrop — wrapped in Transition.Child for fade animations */}
+        <Transition.Child
+          as={Fragment}
+          enter="ease-out duration-200"
+          enterFrom="opacity-0"
+          enterTo="opacity-100"
+          leave="ease-in duration-150"
+          leaveFrom="opacity-100"
+          leaveTo="opacity-0"
+        >
+          <DialogBackdrop className="fixed inset-0 z-50 bg-black/80" />
+        </Transition.Child>
 
-      {/* Content — rendered inline inside #root, inherits CSS vars */}
-      {children}
+        {/* Content — rendered inline inside #root, inherits CSS vars */}
+        {children}
+      </DialogContext.Provider>
     </HeadlessDialog>
   </Transition>
 )
@@ -69,25 +75,25 @@ const DialogContent = ({
       style={{ transform: "translate(-50%, -50%)" }}
     >
       {children}
-      {/* Close button — dispatches close event via closest dialog element */}
-      <button
-        type="button"
-        className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none"
-        onClick={() => {
-          const dialog = document.querySelector("[role='dialog']");
-          if (dialog) {
-            dialog.dispatchEvent(
-              new CustomEvent("close", { bubbles: true, cancelable: true })
-            );
-          }
-        }}
-      >
-        <X className="h-4 w-4" />
-        <span className="sr-only">Close</span>
-      </button>
+      {/* Close button — uses context to close the dialog */}
+      <CloseButton />
     </DialogPanel>
   </Transition.Child>
 )
+
+const CloseButton = () => {
+  const ctx = React.useContext(DialogContext);
+  return (
+    <button
+      type="button"
+      className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none"
+      onClick={() => ctx?.onOpenChange(false)}
+    >
+      <X className="h-4 w-4" />
+      <span className="sr-only">Close</span>
+    </button>
+  );
+}
 
 const DialogHeader = ({
   className,
