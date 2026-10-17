@@ -125,7 +125,7 @@ export default function SpeakerLabel() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden px-4 py-4">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 shrink-0">
         <h2 className="text-xl font-semibold tracking-tight">Speakers</h2>
         {checked.length === 2 && (
           <Button onClick={handleMerge} size="sm" data-testid="merge-button">
@@ -137,7 +137,7 @@ export default function SpeakerLabel() {
       {speakers.length === 0 ? (
         <p className="text-muted-foreground">No speakers enrolled yet.</p>
       ) : (
-        <div className="border rounded-lg overflow-hidden">
+        <div className="border rounded-lg overflow-auto flex-1 min-h-0">
           <Table>
             <TableHeader>
               <TableRow>
