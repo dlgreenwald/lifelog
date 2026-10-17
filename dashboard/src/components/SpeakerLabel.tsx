@@ -18,7 +18,7 @@ type SortColumn = 'name' | 'voiceprint_count' | 'is_self';
 type SortDirection = 'asc' | 'desc';
 
 export default function SpeakerLabel() {
-  const [speakers, setSpeakers] = useState<SpeakerSummary[]>([]);
+  const [speakers, setSpeakers] = useState<SpeakerSummary[] | null>(null);
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [sortColumn, setSortColumn] = useState<SortColumn>('voiceprint_count');
@@ -91,6 +91,7 @@ export default function SpeakerLabel() {
   };
 
   const sorted = useMemo(() => {
+    if (!speakers) return [];
     return [...speakers].sort((a, b) => {
       let cmp = 0;
       if (sortColumn === 'name') {
@@ -117,7 +118,9 @@ export default function SpeakerLabel() {
         <h2 className="text-xl font-semibold tracking-tight">Speakers</h2>
       </div>
 
-      {speakers.length === 0 ? (
+      {speakers === null ? (
+        <p className="text-muted-foreground">Loading...</p>
+      ) : speakers.length === 0 ? (
         <p className="text-muted-foreground">No speakers enrolled yet.</p>
       ) : (
         <div className="border rounded-lg overflow-auto flex-1 min-h-0">
