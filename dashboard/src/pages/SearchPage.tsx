@@ -15,6 +15,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 const KIND_OPTIONS = [
   { value: 'transcript', label: 'Transcript' },
   { value: 'summary', label: 'Summary' },
+  { value: 'notes', label: 'Notes' },
   { value: 'decision', label: 'Decision' },
   { value: 'todo', label: 'Todo' },
 ];
@@ -22,6 +23,7 @@ const KIND_OPTIONS = [
 const KIND_COLORS: Record<string, string> = {
   transcript: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
   summary: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
+  notes: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
   decision: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
   todo: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
 };
@@ -230,19 +232,18 @@ export default function SearchPage() {
       {/* Date Range */}
       <div>
         <p className="text-sm font-medium mb-2">Date Range</p>
-        <div className="flex gap-2 items-center">
+        <div className="flex flex-col gap-2">
           <Input
             type="date"
             value={activeFilters.date_from}
             onChange={(e) => handleDateFromChange(e.target.value)}
-            className="flex-1"
+            placeholder="Start date"
           />
-          <span>–</span>
           <Input
             type="date"
             value={activeFilters.date_to}
             onChange={(e) => handleDateToChange(e.target.value)}
-            className="flex-1"
+            placeholder="End date"
           />
         </div>
       </div>

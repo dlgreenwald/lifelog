@@ -112,6 +112,19 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ category }),
     }),
+  updateRecordingNotes: (id: string, notes: string) =>
+    fetchApi(`/dashboard/recording/${id}/notes`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes }),
+    }),
+
+  updateRecordingSummary: (id: string, summary: string) =>
+    fetchApi(`/dashboard/recording/${id}/summary`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ summary }),
+    }),
   getDailySummary: (date: string) => fetchApi(`/dashboard/daily-summary/${date}`),
   getActiveRecording: () => fetchApi('/dashboard/active-recording'),
   endSession: (sessionId: number) =>

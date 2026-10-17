@@ -141,6 +141,19 @@ async def ingest_recording(user_id: int, recording_id: int) -> int:
         )
         count += 1
 
+    # ── Notes ─────────────────────────────────────────────────────────
+    notes = recording.get("notes") or ""
+    if notes:
+        search.upsert_notes(
+            user_id=user_id,
+            conversation_id=recording_id,
+            text=notes,
+            participants=speakers,
+            date=timestamp,
+            title=title,
+        )
+        count += 1
+
     # ── Decisions ─────────────────────────────────────────────────────
     decisions = recording.get("decisions") or []
     if isinstance(decisions, str):

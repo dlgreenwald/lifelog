@@ -1,9 +1,17 @@
-import React from "react";
+import React, { useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Pencil, Save, X } from "lucide-react";
+import { Editable, useEditor } from "@wysimark/react";
+import { api } from "../api/client";
 
 interface SummaryCardProps {
+  /** The recording ID, required for saving edits. */
+  recordingId?: string;
+  /** The current summary markdown. */
   markdown: string;
+  /** Called after a successful save so the parent can update its state. */
+  onSummaryChanged?: (summary: string) => void;
 }
 
 /**
@@ -51,29 +59,105 @@ function walkAndFormat(node: React.ReactNode): React.ReactNode {
  * parses them correctly.
  * - Inserts a blank line before standalone list items so react-markdown (which
  *   requires blank lines between block elements) can parse them as a proper list.
- * - Handles lines that start with "- " but have no preceding blank line.
  */
 function preprocessMarkdown(text: string): string {
-  // Insert blank line before a line that starts with "- " or "* " when
-  // the previous line is not blank.
   return text.replace(/(?!\n)\n(- |\* )/g, "\n\n$1");
 }
 
-export default function SummaryCard({ markdown }: SummaryCardProps) {
+export default function SummaryCard({ recordingId, markdown, onSummaryChanged }: SummaryCardProps) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState(markdown);
+
+  const editor = useEditor({});
+
+  const handleSave = useCallback(async () => {
+    if (!editor || !recordingId) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const newMarkdown = editor.getMarkdown();
+      await api.updateRecordingSummary(recordingId, newMarkdown);
+      onSummaryChanged?.(newMarkdown);
+      setDraft(newMarkdown);
+      setEditing(false);
+    } catch {
+      setError("Failed to save summary. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  }, [editor, recordingId, onSummaryChanged]);
+
+  const handleCancel = useCallback(() => {
+    setDraft(markdown);
+    setEditing(false);
+    setError(null);
+  }, [markdown]);
+
+  const handleEnterEdit = useCallback(() => {
+    setDraft(markdown);
+    setEditing(true);
+  }, [markdown]);
+
+  const isEditable = Boolean(recordingId);
+
+  if (!editing) {
+    return (
+      <div className="summary">
+        <div className="summary-header">
+          <h3>Summary</h3>
+          {isEditable && (
+            <button
+              className="summary-edit-btn"
+              onClick={handleEnterEdit}
+              aria-label="Edit summary"
+            >
+              <Pencil size={14} />
+            </button>
+          )}
+        </div>
+        <div className="summary-body">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              p: ({ children }) => <p>{walkAndFormat(children)}</p>,
+              li: ({ children }) => <li>{walkAndFormat(children)}</li>,
+            }}
+          >
+            {preprocessMarkdown(markdown)}
+          </ReactMarkdown>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="summary">
-      <h3>Summary</h3>
+    <div className="summary summary-editing">
+      <div className="summary-header">
+        <h3>Summary</h3>
+      </div>
       <div className="summary-body">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            // Apply [[hilite]] processing to text nodes within paragraphs/lists
-            p: ({ children }) => <p>{walkAndFormat(children)}</p>,
-            li: ({ children }) => <li>{walkAndFormat(children)}</li>,
-          }}
-        >
-          {preprocessMarkdown(markdown)}
-        </ReactMarkdown>
+        <div className="summary-editor-wrapper">
+          <Editable
+            editor={editor}
+            value={draft}
+            onChange={setDraft}
+            placeholder="Add a summary…"
+            className="summary-editor"
+          />
+        </div>
+        {error && <p className="summary-error">{error}</p>}
+        <div className="summary-actions">
+          <button className="summary-save-btn" onClick={handleSave} disabled={saving}>
+            <Save size={14} />
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button className="summary-cancel-btn" onClick={handleCancel} disabled={saving}>
+            <X size={14} />
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
   );

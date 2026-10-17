@@ -16,6 +16,7 @@ def _sanitize(value: str) -> str:
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from lifelog import ingest
 from lifelog import search as search_module
 from lifelog.auth import validate_oidc_token
 from lifelog.crypto import audio_crypto
@@ -48,6 +49,8 @@ from lifelog.database import (
     save_user_settings,
     update_decision_archive,
     update_recording_category,
+    update_recording_notes,
+    update_recording_summary,
     update_todo_completion,
 )
 from lifelog.models import CreateDecision, CreateTodo, UserSettings
@@ -627,6 +630,48 @@ async def update_category_route(
         category=_sanitize(category),
     )
     return {"ok": True}
+
+
+@router.patch("/recording/{recording_id}/notes")
+async def update_recording_notes_route(
+    recording_id: int,
+    body: dict,
+    user: dict = Depends(validate_oidc_token),
+):
+    """Update or clear the notes field for a recording."""
+    notes = body.get("notes")
+    if notes is not None and not isinstance(notes, str):
+        raise HTTPException(status_code=400, detail="notes must be a string or null")
+
+    recording = await get_recording(user["id"], recording_id)
+    if not recording:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    await update_recording_notes(recording_id, user["id"], notes or "")
+    logger.info("recording_notes_updated", recording_id=recording_id)
+    await ingest.ingest_recording(user["id"], recording_id)
+    return {"notes": notes or None}
+
+
+@router.patch("/recording/{recording_id}/summary")
+async def update_recording_summary_route(
+    recording_id: int,
+    body: dict,
+    user: dict = Depends(validate_oidc_token),
+):
+    """Update or clear the long_summary field for a recording."""
+    summary = body.get("summary")
+    if summary is not None and not isinstance(summary, str):
+        raise HTTPException(status_code=400, detail="summary must be a string or null")
+
+    recording = await get_recording(user["id"], recording_id)
+    if not recording:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    await update_recording_summary(recording_id, user["id"], summary or "")
+    logger.info("recording_summary_updated", recording_id=recording_id)
+    await ingest.ingest_recording(user["id"], recording_id)
+    return {"summary": summary or None}
 
 
 @router.get("/active-recording")
