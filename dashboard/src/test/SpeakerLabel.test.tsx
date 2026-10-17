@@ -32,8 +32,9 @@ describe('SpeakerLabel', () => {
       expect(screen.getByText('Alice Ashford')).toBeInTheDocument();
     });
     expect(screen.getByText('Bob Brown')).toBeInTheDocument();
-    expect(screen.getByText('2 voiceprints')).toBeInTheDocument();
-    expect(screen.getByText('1 voiceprints')).toBeInTheDocument();
+    // Voiceprint counts rendered as plain numbers in table cells
+    expect(screen.getByText('2')).toBeInTheDocument();
+    expect(screen.getByText('1')).toBeInTheDocument();
     expect(mockApi.getAllSpeakers).toHaveBeenCalled();
   });
 
