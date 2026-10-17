@@ -281,7 +281,7 @@ export default function SpeakerLabel() {
                         <DropdownMenuTrigger className="h-7 w-7 px-0 border rounded outline-none bg-background text-sm">
                           ⋯
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start">
+                        <DropdownMenuContent side="right">
                           <DropdownMenuItem
                             onClick={() => handleToggleSelf(speaker)}
                           >

@@ -76,9 +76,10 @@ const DropdownMenuSubContent = ({
 
 const DropdownMenuContent = ({
   align,
+  side,
   className,
   ...props
-}: React.HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end' }) => (
+}: React.HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end'; side?: 'top' | 'bottom' | 'left' | 'right' }) => (
   <Menu.Items
     as="div"
     className={cn(
