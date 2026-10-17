@@ -50,7 +50,7 @@ jobs:
       - name: Run dashboard build
         if: inputs.component == 'dashboard'
         run: |
-          npm ci
+          npm install
           npm run test
           npx tsc --noEmit
         working-directory: ./dashboard
