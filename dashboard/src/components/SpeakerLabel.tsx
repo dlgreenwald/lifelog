@@ -170,7 +170,40 @@ export default function SpeakerLabel() {
                     />
                   </TableCell>
                   <TableCell>
-                    <span data-testid={`speaker-name-${speaker.id}`}>{speaker.name}</span>
+                    {renamingId === speaker.id ? (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={renameValue}
+                          onChange={e => setRenameValue(e.target.value)}
+                          aria-label={`New name for ${speaker.name}`}
+                          data-testid={`rename-input-${speaker.id}`}
+                          className="h-7"
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') handleRename(speaker);
+                            if (e.key === 'Escape') { setRenamingId(null); setRenameValue(''); }
+                          }}
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() => handleRename(speaker)}
+                          data-testid={`rename-save-${speaker.id}`}
+                          className="h-7 px-2 text-xs"
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => { setRenamingId(null); setRenameValue(''); }}
+                          data-testid={`rename-cancel-${speaker.id}`}
+                          className="h-7 px-2 text-xs"
+                        >
+                          ✕
+                        </Button>
+                      </div>
+                    ) : (
+                      <span data-testid={`speaker-name-${speaker.id}`}>{speaker.name}</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right text-muted-foreground text-sm">
                     {speaker.voiceprint_count}
@@ -199,25 +232,7 @@ export default function SpeakerLabel() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">
-                      {renamingId === speaker.id ? (
-                        <>
-                          <Input
-                            value={renameValue}
-                            onChange={e => setRenameValue(e.target.value)}
-                            aria-label={`New name for ${speaker.name}`}
-                            data-testid={`rename-input-${speaker.id}`}
-                            className="h-7 w-28"
-                          />
-                          <Button
-                            size="sm"
-                            onClick={() => handleRename(speaker)}
-                            data-testid={`rename-save-${speaker.id}`}
-                            className="h-7"
-                          >
-                            Save
-                          </Button>
-                        </>
-                      ) : (
+                      {renamingId !== speaker.id && (
                         <Button
                           size="sm"
                           variant="outline"
