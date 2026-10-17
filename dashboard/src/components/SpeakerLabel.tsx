@@ -20,8 +20,8 @@ export default function SpeakerLabel() {
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [checked, setChecked] = useState<number[]>([]);
-  const [sortColumn, setSortColumn] = useState<SortColumn>('name');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [sortColumn, setSortColumn] = useState<SortColumn>('voiceprint_count');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   // Blob URLs per speaker ID — only created on first play
   const blobUrls = useRef(new Map<number, string>());
 
