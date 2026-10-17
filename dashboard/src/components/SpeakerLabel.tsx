@@ -10,13 +10,7 @@ import {
   TableRow,
   TableCell,
 } from '@/components/ui/table';
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from '@/components/ui/dropdown-menu';
+import { Popover } from '@headlessui/react';
 import { useIsMobile } from '@/hooks/use-mobile';
 import type { SpeakerSummary } from '../types';
 
@@ -276,34 +270,42 @@ export default function SpeakerLabel() {
                       </div>
                     </TableCell>
                   ) : (
-                    <TableCell className="text-center">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger className="h-7 w-7 px-0 border rounded outline-none bg-background text-sm">
-                          ⋯
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent side="right">
-                          <DropdownMenuItem
-                            onClick={() => handleToggleSelf(speaker)}
-                          >
-                            {speaker.is_self ? 'This is me ✓' : 'This is me'}
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setRenamingId(speaker.id);
-                              setRenameValue(speaker.name);
-                            }}
-                          >
-                            Rename
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={() => handleDelete(speaker)}
-                          >
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                    <TableCell className="text-center align-middle">
+                      <Popover>
+                        {({ open }) => (
+                          <div className="relative inline-block">
+                            <Popover.Button className="h-7 w-7 px-0 border rounded outline-none bg-background text-sm">
+                              {open ? '×' : '⋯'}
+                            </Popover.Button>
+                            {open && (
+                              <Popover.Panel
+                                static
+                                className="absolute right-full mr-1 top-0 z-50 bg-popover border rounded shadow-lg p-1 min-w-[10rem]"
+                              >
+                                <button
+                                  className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-accent whitespace-nowrap"
+                                  onClick={() => handleToggleSelf(speaker)}
+                                >
+                                  {speaker.is_self ? 'This is me ✓' : 'This is me'}
+                                </button>
+                                <div className="h-px bg-muted my-1" />
+                                <button
+                                  className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-accent whitespace-nowrap"
+                                  onClick={() => { setRenamingId(speaker.id); setRenameValue(speaker.name); }}
+                                >
+                                  Rename
+                                </button>
+                                <button
+                                  className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-accent text-destructive whitespace-nowrap"
+                                  onClick={() => handleDelete(speaker)}
+                                >
+                                  Delete
+                                </button>
+                              </Popover.Panel>
+                            )}
+                          </div>
+                        )}
+                      </Popover>
                     </TableCell>
                   )}
                 </TableRow>
