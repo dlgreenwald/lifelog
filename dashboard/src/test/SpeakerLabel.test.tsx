@@ -10,6 +10,7 @@ vi.mock('../api/client', () => ({
     renameSpeaker: vi.fn(),
     mergeSpeakers: vi.fn(),
     deleteSpeaker: vi.fn(),
+    fetchAudio: vi.fn().mockResolvedValue('blob:http://localhost/mock-audio-url'),
   },
 }));
 
@@ -43,9 +44,9 @@ describe('SpeakerLabel', () => {
       expect(screen.getByTestId('speaker-audio-1')).toBeInTheDocument();
     });
     const audio = screen.getByTestId('speaker-audio-1') as HTMLAudioElement;
-    expect(audio.getAttribute('src')).toBe(
-      '/api/v1/dashboard/recording/5/speaker/Alice%20Ashford/audio'
-    );
+    // src is absent — lazy-loaded on first play
+    expect(audio.getAttribute('src')).toBeNull();
+    expect(audio.getAttribute('preload')).toBe('none');
     expect(screen.queryByTestId('speaker-audio-2')).not.toBeInTheDocument();
   });
 

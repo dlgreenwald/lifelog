@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { api } from '../api/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,6 +9,22 @@ export default function SpeakerLabel() {
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [checked, setChecked] = useState<number[]>([]);
+  // Blob URLs per speaker ID — only created on first play
+  const blobUrls = useRef(new Map<number, string>());
+
+  const handleAudioPlay = async (speaker: SpeakerSummary, audioEl: HTMLAudioElement) => {
+    const speakerId = speaker.id;
+    // Already loaded — nothing to do
+    if (blobUrls.current.has(speakerId)) return;
+
+    const path = `/dashboard/recording/${speaker.recording_id}/speaker/${encodeURIComponent(speaker.name)}/audio`;
+    const blobUrl = await api.fetchAudio(path);
+    blobUrls.current.set(speakerId, blobUrl);
+    audioEl.src = blobUrl;
+    audioEl.load();
+    // May be blocked by autoplay policy in some browsers — silent fallback, user clicks again
+    audioEl.play().catch(() => {});
+  };
 
   const refresh = async () => {
     const data = await api.getAllSpeakers();
@@ -17,6 +33,12 @@ export default function SpeakerLabel() {
 
   useEffect(() => {
     refresh();
+    return () => {
+      // Revoke all blob URLs on unmount to free memory
+      for (const url of blobUrls.current.values()) {
+        URL.revokeObjectURL(url);
+      }
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -91,8 +113,9 @@ export default function SpeakerLabel() {
             {speaker.recording_id != null && (
               <audio
                 controls
-                src={`/api/v1/dashboard/recording/${speaker.recording_id}/speaker/${encodeURIComponent(speaker.name)}/audio`}
+                preload="none"
                 data-testid={`speaker-audio-${speaker.id}`}
+                onPlay={e => handleAudioPlay(speaker, e.currentTarget)}
               />
             )}
             <Button
