@@ -280,7 +280,7 @@ export default function SpeakerLabel() {
                             {open && (
                               <Popover.Panel
                                 static
-                                className="absolute right-full mr-1 top-0 z-50 bg-popover border rounded shadow-lg p-1 min-w-[10rem]"
+                                className="absolute right-full mr-1 top-0 z-50 bg-background border rounded shadow-lg p-1 min-w-[10rem]"
                               >
                                 <button
                                   className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-accent whitespace-nowrap"
