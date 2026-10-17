@@ -156,8 +156,8 @@ export default function SpeakerLabel() {
                 <TableHead className="cursor-pointer select-none" onClick={() => handleSort('name')}>
                   Name <SortIcon column="name" />
                 </TableHead>
-                <TableHead className="cursor-pointer select-none w-32 text-right" onClick={() => handleSort('voiceprint_count')}>
-                  Voiceprints <SortIcon column="voiceprint_count" />
+                <TableHead className="cursor-pointer select-none w-20 text-right" onClick={() => handleSort('voiceprint_count')}>
+                  Prints <SortIcon column="voiceprint_count" />
                 </TableHead>
                 {!isMobile && (
                   <TableHead className="cursor-pointer select-none w-28 text-center" onClick={() => handleSort('is_self')}>
