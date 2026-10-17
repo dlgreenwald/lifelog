@@ -999,6 +999,38 @@ async def update_recording_category(recording_id: int, category: str):
         )
 
 
+async def update_recording_notes(recording_id: int, user_id: int, notes: str) -> None:
+    """Update the notes field for a recording. Verifies ownership via user_id."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE recordings
+            SET notes = $1
+            WHERE id = $2 AND user_id = $3
+            """,
+            notes,
+            recording_id,
+            user_id,
+        )
+
+
+async def update_recording_summary(
+    recording_id: int, user_id: int, summary: str
+) -> None:
+    """Update the long_summary field for a recording. Verifies ownership via user_id."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE recordings
+            SET long_summary = $1
+            WHERE id = $2 AND user_id = $3
+            """,
+            summary,
+            recording_id,
+            user_id,
+        )
+
+
 # ── Session operations ─────────────────────────────────────────────
 
 

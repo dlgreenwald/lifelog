@@ -21,7 +21,7 @@ export interface Recording {
   pending_reprocessing?: boolean;
   decisions: Decision[] | null;
   calendar: CalendarEvent[] | null;
-  notes: string[] | null;
+  notes: string | null;
   conversation_changes: ConversationChange[] | null;
   audio_filename: string | null;
   speaker_segments?: SpeakerSegment[];

@@ -36,6 +36,7 @@ from lifelog.config import settings
 INDEX_NAME = "conversations"
 KIND_TRANSCRIPT = "transcript"
 KIND_SUMMARY = "summary"
+KIND_NOTES = "notes"
 KIND_DECISION = "decision"
 KIND_TODO = "todo"
 
@@ -47,6 +48,7 @@ FILTERABLE = [
     "date",
     "participants",
     "user_id",
+    "notes",
 ]
 SORTABLE = ["date", "conversation_id"]
 
@@ -85,7 +87,7 @@ def build_index() -> None:
     # Each kind uses its own text field so _matchesPosition positions are
     # naturally isolated per section when hits are merged by conversation_id.
     index.update_searchable_attributes(
-        ["text", "summary", "decision", "todo", "title", "topics"]
+        ["text", "summary", "notes", "decision", "todo", "title", "topics"]
     )
 
     # Explicit typo tolerance config (v1.12 API)
@@ -161,6 +163,33 @@ def upsert_summary(
         "participants": participants,
         "status": "",
         "topics": topics,
+    }
+    get_client().index(INDEX_NAME).add_documents([doc])
+
+
+def upsert_notes(
+    user_id: int,
+    conversation_id: int,
+    text: str,
+    participants: list[str],
+    date: str,
+    title: str = "",
+) -> None:
+    """Upsert a notes document for a recording."""
+    if not text.strip():
+        return
+    doc = {
+        "id": f"u{user_id}_c{conversation_id}_notes",
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "notes": text,
+        "title": title,
+        "speaker": "",
+        "kind": KIND_NOTES,
+        "date": date[:10] if date else "",
+        "participants": participants,
+        "status": "",
+        "topics": "",
     }
     get_client().index(INDEX_NAME).add_documents([doc])
 
@@ -245,7 +274,7 @@ def search(
     Args:
         q: Free-text search query.
         user_id: If provided, restrict to this user's documents.
-        kind: "turn" | "summary" | "decision" | "todo"
+        kind: "transcript" | "summary" | "notes" | "decision" | "todo"
         status: "open" | "done" (applies to todos)
         speaker: speaker name
         date_from: "YYYY-MM-DD"
@@ -273,6 +302,7 @@ def search(
                 "user_id",
                 "text",
                 "summary",
+                "notes",
                 "decision",
                 "todo",
                 "title",

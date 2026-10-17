@@ -7,6 +7,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import AudioPlayer from './AudioPlayer';
 import TranscriptBubble from './TranscriptBubble';
 import SummaryCard from './SummaryCard';
+import NotesPanel from './NotesPanel';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
 import type { Recording, Speaker, Todo, Decision } from '../types';
 
@@ -283,6 +284,14 @@ export default function RecordingDetail() {
     setRecording(prev => prev ? { ...prev, category } : null);
   };
 
+  const handleNotesChanged = (notes: string) => {
+    setRecording(prev => prev ? { ...prev, notes } : null);
+  };
+
+  const handleSummaryChanged = (summary: string) => {
+    setRecording(prev => prev ? { ...prev, long_summary: summary } : null);
+  };
+
   // Build the full concatenated transcript text (matches how it's indexed in Meilisearch)
   // so character offsets from _matchesPosition map correctly.
   const rawSegments: Array<{ name: string; text: string }> = (
@@ -349,16 +358,25 @@ export default function RecordingDetail() {
 
       {(recording.long_summary ?? recording.summary) && (
         <SummaryCard
+          recordingId={String(numericRecordingId)}
           markdown={
             fmtSummary
               ? fmtSummary
               : (recording.long_summary ?? recording.summary ?? "")
           }
+          onSummaryChanged={handleSummaryChanged}
         />
       )}
 
       {isMobile ? (
         <>
+          {!isLive && numericRecordingId && (
+            <NotesPanel
+              recordingId={String(numericRecordingId)}
+              notes={recording.notes ?? null}
+              onNotesChanged={handleNotesChanged}
+            />
+          )}
           {playerSegments.length > 0 && (
             <div className="audio-player">
               <h3>Audio</h3>
@@ -678,6 +696,13 @@ export default function RecordingDetail() {
           </div>
 
           <div className="recording-right-col">
+            {!isLive && numericRecordingId && (
+              <NotesPanel
+                recordingId={String(numericRecordingId)}
+                notes={recording.notes ?? null}
+                onNotesChanged={handleNotesChanged}
+              />
+            )}
             {playerSegments.length > 0 && (
               <div className="audio-player">
                 <h3>Audio</h3>

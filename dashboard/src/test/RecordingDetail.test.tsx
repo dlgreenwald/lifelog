@@ -43,7 +43,7 @@ const mockRecording: Recording = {
   ],
   todos: null,
   calendar: [{ event: 'Kickoff meeting', time: '2024-01-22 10:00', participants: 'All' }],
-  notes: ['Q1 focus on reliability'],
+  notes: 'Q1 focus on reliability',
   conversation_changes: [],
   audio_filename: 'rec10.enc',
   decisions: null,

@@ -334,6 +334,8 @@ for mod in ["pyannote", "pyannote.audio", "torch"]:
 | `dashboard/src/components/mode-toggle.tsx` | shadcn dark-mode: DropdownMenu-based Light/Dark/System toggle using `useTheme` |
 | `dashboard/src/hooks/use-mobile.ts` | `useIsMobile` hook (used by shadcn Drawer) |
 | `dashboard/src/components/SpeakerLabel.tsx` | Speaker management UI — rename, merge, delete, voiceprint counts, audio preview |
+| `dashboard/src/components/NotesPanel.tsx` | Recording notes — Wysimark editor (view/edit modes), react-markdown view |
+| `dashboard/src/components/SummaryCard.tsx` | LLM summary display — react-markdown view with [[hilite]] highlight support; edit mode via Wysimark |
 | `dashboard/src/components/Settings.tsx` | User settings UI including language preference, LLM context, and ModeToggle |
 | `scripts/generate-certs.sh` | TLS cert generation for all services |
 | `server/entrypoint.sh` | Docker entrypoint — runs alembic migrations before starting server |
@@ -388,6 +390,7 @@ Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/) in `ser
 - `021_nullable_transcript_and_cleanup.py` — Nullable transcript + cleanup
 - `022_session_retry_count.py` — Adds retry_count to sessions
 - `023_speakers_table.py` — Creates speakers table; voiceprints become 1-many per speaker (backfilled from distinct (user_id, name))
+- `032_recording_notes.py` — Adds `notes TEXT NULL` column to recordings
 
 **Running migrations:**
 
@@ -448,7 +451,7 @@ A failed build produces `conclusion: failure` for that component's job in `ci.ym
 
 ### Test counts
 
-Total: **~439 tests** across 6 components (180 server + 8 diarization + 19 speaker-id + 35 transcription-worker + 119 dashboard + 78 firmware-ota).
+Total: **~459 tests** across 6 components (180 server + 8 diarization + 19 speaker-id + 35 transcription-worker + 139 dashboard + 78 firmware-ota).
 ### Python test framework
 
 - **pytest** with `pytest-asyncio` (`asyncio_mode = "auto"`)
