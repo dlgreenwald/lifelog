@@ -21,7 +21,6 @@ export default function SpeakerLabel() {
   const [speakers, setSpeakers] = useState<SpeakerSummary[]>([]);
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState('');
-  const [checked, setChecked] = useState<number[]>([]);
   const [sortColumn, setSortColumn] = useState<SortColumn>('voiceprint_count');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   // Blob URLs per speaker ID — only created on first play
@@ -82,20 +81,6 @@ export default function SpeakerLabel() {
     await refresh();
   };
 
-  const toggleChecked = (id: number) => {
-    setChecked(prev =>
-      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
-    );
-  };
-
-  const handleMerge = async () => {
-    if (checked.length !== 2) return;
-    const [sourceId, targetId] = checked;
-    await api.mergeSpeakers(sourceId, targetId);
-    setChecked([]);
-    await refresh();
-  };
-
   const handleSort = (column: SortColumn) => {
     if (sortColumn === column) {
       setSortDirection(d => (d === 'asc' ? 'desc' : 'asc'));
@@ -128,13 +113,8 @@ export default function SpeakerLabel() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden px-4 py-4">
-      <div className="flex items-center justify-between mb-4 shrink-0">
+      <div className="mb-4 shrink-0">
         <h2 className="text-xl font-semibold tracking-tight">Speakers</h2>
-        {checked.length === 2 && (
-          <Button onClick={handleMerge} size="sm" data-testid="merge-button">
-            Merge Selected
-          </Button>
-        )}
       </div>
 
       {speakers.length === 0 ? (
@@ -144,9 +124,6 @@ export default function SpeakerLabel() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-10">
-                  <span className="sr-only">Select for merge</span>
-                </TableHead>
                 <TableHead className="cursor-pointer select-none" onClick={() => handleSort('name')}>
                   Name <SortIcon column="name" />
                 </TableHead>
@@ -170,15 +147,6 @@ export default function SpeakerLabel() {
             <TableBody>
               {sorted.map(speaker => (
                 <TableRow key={speaker.id} data-testid={`speaker-${speaker.id}`}>
-                  <TableCell>
-                    <input
-                      type="checkbox"
-                      aria-label={`Select ${speaker.name} for merge`}
-                      checked={checked.includes(speaker.id)}
-                      onChange={() => toggleChecked(speaker.id)}
-                      data-testid={`merge-check-${speaker.id}`}
-                    />
-                  </TableCell>
                   <TableCell>
                     {renamingId === speaker.id ? (
                       <div className="flex items-center gap-2">

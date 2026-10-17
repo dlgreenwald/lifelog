@@ -8,7 +8,6 @@ vi.mock('../api/client', () => ({
   api: {
     getAllSpeakers: vi.fn(),
     renameSpeaker: vi.fn(),
-    mergeSpeakers: vi.fn(),
     deleteSpeaker: vi.fn(),
     fetchAudio: vi.fn().mockResolvedValue('blob:http://localhost/mock-audio-url'),
   },
@@ -104,26 +103,6 @@ describe('SpeakerLabel', () => {
     await user.click(screen.getByTestId('delete-button-2'));
 
     expect(mockApi.deleteSpeaker).not.toHaveBeenCalled();
-  });
-
-  it('selecting two speakers and merging calls mergeSpeakers', async () => {
-    const user = userEvent.setup();
-    mockApi.mergeSpeakers.mockResolvedValue({ ok: true });
-    render(<SpeakerLabel />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Alice Ashford')).toBeInTheDocument();
-    });
-    await user.click(screen.getByTestId('merge-check-1'));
-    await user.click(screen.getByTestId('merge-check-2'));
-    await user.click(screen.getByTestId('merge-button'));
-
-    await waitFor(() => {
-      expect(mockApi.mergeSpeakers).toHaveBeenCalledWith(1, 2);
-    });
-    await waitFor(() => {
-      expect(mockApi.getAllSpeakers).toHaveBeenCalledTimes(2);
-    });
   });
 
   it('shows empty state when no speakers', async () => {
