@@ -232,20 +232,19 @@ export default function SpeakerLabel() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">
-                      {renamingId !== speaker.id && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            setRenamingId(speaker.id);
-                            setRenameValue(speaker.name);
-                          }}
-                          data-testid={`rename-button-${speaker.id}`}
-                          className="h-7 px-2 text-xs"
-                        >
-                          Rename
-                        </Button>
-                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setRenamingId(speaker.id);
+                          setRenameValue(speaker.name);
+                        }}
+                        data-testid={`rename-button-${speaker.id}`}
+                        className="h-7 px-2 text-xs"
+                        style={{ visibility: renamingId === speaker.id ? 'hidden' : 'visible' }}
+                      >
+                        Rename
+                      </Button>
                       <Button
                         size="sm"
                         variant="destructive"
