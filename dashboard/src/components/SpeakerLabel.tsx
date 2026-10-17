@@ -10,6 +10,14 @@ import {
   TableRow,
   TableCell,
 } from '@/components/ui/table';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
+import { useIsMobile } from '@/hooks/use-mobile';
 import type { SpeakerSummary } from '../types';
 
 type SortColumn = 'name' | 'voiceprint_count' | 'is_self';
@@ -24,6 +32,7 @@ export default function SpeakerLabel() {
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   // Blob URLs per speaker ID — only created on first play
   const blobUrls = useRef(new Map<number, string>());
+  const isMobile = useIsMobile();
 
   const handleAudioPlay = async (speaker: SpeakerSummary, audioEl: HTMLAudioElement) => {
     const speakerId = speaker.id;
@@ -150,11 +159,18 @@ export default function SpeakerLabel() {
                 <TableHead className="cursor-pointer select-none w-32 text-right" onClick={() => handleSort('voiceprint_count')}>
                   Voiceprints <SortIcon column="voiceprint_count" />
                 </TableHead>
-                <TableHead className="cursor-pointer select-none w-28 text-center" onClick={() => handleSort('is_self')}>
-                  Me? <SortIcon column="is_self" />
-                </TableHead>
+                {!isMobile && (
+                  <TableHead className="cursor-pointer select-none w-28 text-center" onClick={() => handleSort('is_self')}>
+                    Me? <SortIcon column="is_self" />
+                  </TableHead>
+                )}
                 <TableHead className="w-48">Audio</TableHead>
-                <TableHead className="w-48">Actions</TableHead>
+                {!isMobile && (
+                  <TableHead className="w-40">Actions</TableHead>
+                )}
+                {isMobile && (
+                  <TableHead className="w-12" />
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -208,17 +224,19 @@ export default function SpeakerLabel() {
                   <TableCell className="text-right text-muted-foreground text-sm">
                     {speaker.voiceprint_count}
                   </TableCell>
-                  <TableCell className="text-center">
-                    <Button
-                      size="sm"
-                      variant={speaker.is_self ? 'default' : 'outline'}
-                      onClick={() => handleToggleSelf(speaker)}
-                      data-testid={`self-button-${speaker.id}`}
-                      className="h-7 px-2 text-xs"
-                    >
-                      {speaker.is_self ? 'This is me ✓' : 'This is me'}
-                    </Button>
-                  </TableCell>
+                  {!isMobile && (
+                    <TableCell className="text-center">
+                      <Button
+                        size="sm"
+                        variant={speaker.is_self ? 'default' : 'outline'}
+                        onClick={() => handleToggleSelf(speaker)}
+                        data-testid={`self-button-${speaker.id}`}
+                        className="h-7 px-2 text-xs"
+                      >
+                        {speaker.is_self ? 'This is me ✓' : 'This is me'}
+                      </Button>
+                    </TableCell>
+                  )}
                   <TableCell>
                     {speaker.recording_id != null && (
                       <audio
@@ -230,32 +248,64 @@ export default function SpeakerLabel() {
                       />
                     )}
                   </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setRenamingId(speaker.id);
-                          setRenameValue(speaker.name);
-                        }}
-                        data-testid={`rename-button-${speaker.id}`}
-                        className="h-7 px-2 text-xs"
-                        style={{ visibility: renamingId === speaker.id ? 'hidden' : 'visible' }}
-                      >
-                        Rename
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        onClick={() => handleDelete(speaker)}
-                        data-testid={`delete-button-${speaker.id}`}
-                        className="h-7 px-2 text-xs"
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  </TableCell>
+                  {!isMobile ? (
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setRenamingId(speaker.id);
+                            setRenameValue(speaker.name);
+                          }}
+                          data-testid={`rename-button-${speaker.id}`}
+                          className="h-7 px-2 text-xs"
+                          style={{ visibility: renamingId === speaker.id ? 'hidden' : 'visible' }}
+                        >
+                          Rename
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => handleDelete(speaker)}
+                          data-testid={`delete-button-${speaker.id}`}
+                          className="h-7 px-2 text-xs"
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </TableCell>
+                  ) : (
+                    <TableCell className="text-center">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger className="h-7 w-7 px-0 border rounded outline-none bg-background text-sm">
+                          ⋯
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => handleToggleSelf(speaker)}
+                          >
+                            {speaker.is_self ? 'This is me ✓' : 'This is me'}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => {
+                              setRenamingId(speaker.id);
+                              setRenameValue(speaker.name);
+                            }}
+                          >
+                            Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onClick={() => handleDelete(speaker)}
+                          >
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
