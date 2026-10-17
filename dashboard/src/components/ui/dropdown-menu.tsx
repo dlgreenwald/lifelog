@@ -6,8 +6,12 @@ import { cn } from "@/lib/utils"
 
 const DropdownMenu = Menu
 
-const DropdownMenuTrigger = ({ children }: { children: React.ReactNode }) => (
-  <Menu.Button as={React.Fragment}>{children}</Menu.Button>
+const DropdownMenuTrigger = ({ children, className }: { children: React.ReactNode; className?: string }) => (
+  <Menu.Button as={React.Fragment}>
+    {typeof children === 'string'
+      ? <span className={className}>{children}</span>
+      : children}
+  </Menu.Button>
 )
 
 const DropdownMenuGroup = ({ children }: { children: React.ReactNode }) => (
@@ -71,13 +75,16 @@ const DropdownMenuSubContent = ({
 )
 
 const DropdownMenuContent = ({
+  align,
+  side,
   className,
   ...props
-}: React.HTMLAttributes<HTMLDivElement>) => (
+}: React.HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end'; side?: 'top' | 'bottom' | 'left' | 'right' }) => (
   <Menu.Items
     as="div"
     className={cn(
       "z-50 min-w-[8rem] overflow-y-auto overflow-x-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg data-[active]:bg-accent",
+      align === 'end' ? "origin-top-right [&>*]:justify-end" : "",
       className
     )}
     {...props}

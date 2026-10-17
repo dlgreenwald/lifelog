@@ -8,8 +8,8 @@ vi.mock('../api/client', () => ({
   api: {
     getAllSpeakers: vi.fn(),
     renameSpeaker: vi.fn(),
-    mergeSpeakers: vi.fn(),
     deleteSpeaker: vi.fn(),
+    fetchAudio: vi.fn().mockResolvedValue('blob:http://localhost/mock-audio-url'),
   },
 }));
 
@@ -31,8 +31,9 @@ describe('SpeakerLabel', () => {
       expect(screen.getByText('Alice Ashford')).toBeInTheDocument();
     });
     expect(screen.getByText('Bob Brown')).toBeInTheDocument();
-    expect(screen.getByText('2 voiceprints')).toBeInTheDocument();
-    expect(screen.getByText('1 voiceprints')).toBeInTheDocument();
+    // Voiceprint counts rendered as plain numbers in table cells
+    expect(screen.getByText('2')).toBeInTheDocument();
+    expect(screen.getByText('1')).toBeInTheDocument();
     expect(mockApi.getAllSpeakers).toHaveBeenCalled();
   });
 
@@ -43,9 +44,9 @@ describe('SpeakerLabel', () => {
       expect(screen.getByTestId('speaker-audio-1')).toBeInTheDocument();
     });
     const audio = screen.getByTestId('speaker-audio-1') as HTMLAudioElement;
-    expect(audio.getAttribute('src')).toBe(
-      '/api/v1/dashboard/recording/5/speaker/Alice%20Ashford/audio'
-    );
+    // src is absent — lazy-loaded on first play
+    expect(audio.getAttribute('src')).toBeNull();
+    expect(audio.getAttribute('preload')).toBe('none');
     expect(screen.queryByTestId('speaker-audio-2')).not.toBeInTheDocument();
   });
 
@@ -102,26 +103,6 @@ describe('SpeakerLabel', () => {
     await user.click(screen.getByTestId('delete-button-2'));
 
     expect(mockApi.deleteSpeaker).not.toHaveBeenCalled();
-  });
-
-  it('selecting two speakers and merging calls mergeSpeakers', async () => {
-    const user = userEvent.setup();
-    mockApi.mergeSpeakers.mockResolvedValue({ ok: true });
-    render(<SpeakerLabel />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Alice Ashford')).toBeInTheDocument();
-    });
-    await user.click(screen.getByTestId('merge-check-1'));
-    await user.click(screen.getByTestId('merge-check-2'));
-    await user.click(screen.getByTestId('merge-button'));
-
-    await waitFor(() => {
-      expect(mockApi.mergeSpeakers).toHaveBeenCalledWith(1, 2);
-    });
-    await waitFor(() => {
-      expect(mockApi.getAllSpeakers).toHaveBeenCalledTimes(2);
-    });
   });
 
   it('shows empty state when no speakers', async () => {
