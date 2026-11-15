@@ -13,6 +13,12 @@
 **NEVER commit changes without explicit user instruction.** Always ask before running `git commit`. The user decides when changes are ready to commit. **REMIND the user to commit** when a task appears to be working and changes are stable — don't let working changes sit uncommitted.
 
 **NEVER perform a merge.** When a PR is ready (CI passing, all conflicts resolved, up to date with main), push the branch and report to the user — the human performs the merge via the GitHub UI or CLI. This avoids repeated CI cycles triggered by merge commit messages.
+
+**Local guard hooks.** `.githooks/pre-commit` and `.githooks/pre-push` block commits and pushes targeting `main` locally (escape hatch: `--no-verify`). They only fire after enabling the shared hooks path — run this once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
 ## ⚠️ Pull Request Check Rule
 
 After **creating or updating** a PR (via `git push`), ALWAYS run `gh pr checks <number>` and verify all CI checks are passing before reporting completion. If a check fails, fix it in the same session — do not leave a PR with failing checks. Common failures:

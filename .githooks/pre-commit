@@ -1,0 +1,9 @@
+#!/bin/sh
+# Block commits directly on main — all changes go through feature/ branches + PRs.
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$branch" = "main" ]; then
+  echo "ERROR: commits to 'main' are blocked." >&2
+  echo "Create a feature branch instead:  git checkout -b feature/<name>" >&2
+  echo "(Override once: git commit --no-verify)" >&2
+  exit 1
+fi

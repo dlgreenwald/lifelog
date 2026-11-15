@@ -1,0 +1,12 @@
+#!/bin/sh
+# Block direct pushes to origin/main — merge via squash-merged PRs only.
+while read local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      echo "ERROR: pushing to 'main' is blocked." >&2
+      echo "Push a feature branch and open a PR:  git push -u origin <branch>" >&2
+      echo "(Override once: git push --no-verify)" >&2
+      exit 1
+      ;;
+  esac
+done
